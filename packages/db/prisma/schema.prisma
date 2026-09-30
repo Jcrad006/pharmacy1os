@@ -38,6 +38,17 @@ enum FillStatus {
   CANCELLED
 }
 
+enum DurSeverity {
+  INFO
+  WARNING
+  HIGH
+}
+
+enum DurIssueStatus {
+  OPEN
+  RESOLVED
+}
+
 model PharmacySite {
   id            String         @id @default(uuid())
   name          String
@@ -54,16 +65,18 @@ model PharmacySite {
 }
 
 model User {
-  id             String       @id @default(uuid())
-  siteId         String
-  site           PharmacySite @relation(fields: [siteId], references: [id])
-  externalAuthId String?      @unique
-  displayName    String
-  role           UserRole
-  active         Boolean      @default(true)
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  auditEvents    AuditEvent[] @relation("ActorAuditEvents")
+  id                String             @id @default(uuid())
+  siteId            String
+  site              PharmacySite       @relation(fields: [siteId], references: [id])
+  externalAuthId    String?            @unique
+  displayName       String
+  role              UserRole
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
+  resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
+  interventionNotes InterventionNote[] @relation("InterventionAuthors")
 
   @@index([siteId, role])
 }
@@ -103,29 +116,32 @@ model Prescriber {
 }
 
 model Prescription {
-  id              String              @id @default(uuid())
-  siteId          String
-  site            PharmacySite        @relation(fields: [siteId], references: [id])
-  patientId       String
-  patient         Patient             @relation(fields: [patientId], references: [id])
-  prescriberId    String
-  prescriber      Prescriber          @relation(fields: [prescriberId], references: [id])
-  rxNumber        String?
-  medicationName  String
-  strength        String?
-  dosageForm      String?
-  sig             String
-  quantityWritten Decimal?            @db.Decimal(10, 3)
-  refillsAllowed  Int                 @default(0)
-  refillsUsed     Int                 @default(0)
-  writtenDate     DateTime?
-  expirationDate  DateTime?
-  status          PrescriptionStatus  @default(RECEIVED)
-  heldFromStatus  PrescriptionStatus?
-  doNotFillBefore DateTime?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  fills           PrescriptionFill[]
+  id                       String              @id @default(uuid())
+  siteId                   String
+  site                     PharmacySite        @relation(fields: [siteId], references: [id])
+  patientId                String
+  patient                  Patient             @relation(fields: [patientId], references: [id])
+  prescriberId             String
+  prescriber               Prescriber          @relation(fields: [prescriberId], references: [id])
+  rxNumber                 String?
+  medicationName           String
+  strength                 String?
+  dosageForm               String?
+  sig                      String
+  quantityWritten          Decimal?            @db.Decimal(10, 3)
+  refillsAllowed           Int                 @default(0)
+  refillsUsed              Int                 @default(0)
+  writtenDate              DateTime?
+  expirationDate           DateTime?
+  minimumDaysBetweenFills  Int?
+  status                   PrescriptionStatus  @default(RECEIVED)
+  heldFromStatus           PrescriptionStatus?
+  doNotFillBefore          DateTime?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  fills                    PrescriptionFill[]
+  durIssues                DurIssue[]
+  interventionNotes        InterventionNote[]
 
   @@unique([siteId, rxNumber])
   @@index([siteId, status])
@@ -147,6 +163,37 @@ model PrescriptionFill {
 
   @@unique([prescriptionId, fillNumber])
   @@index([scheduledFor, status])
+}
+
+model DurIssue {
+  id             String         @id @default(uuid())
+  prescriptionId String
+  prescription   Prescription   @relation(fields: [prescriptionId], references: [id])
+  code           String
+  title          String
+  description    String?
+  severity       DurSeverity    @default(WARNING)
+  status         DurIssueStatus @default(OPEN)
+  source         String         @default("SYNTHETIC_RULE")
+  createdAt      DateTime       @default(now())
+  resolvedAt     DateTime?
+  resolvedById   String?
+  resolvedBy     User?          @relation("ResolvedDurIssues", fields: [resolvedById], references: [id])
+
+  @@index([prescriptionId, status])
+  @@index([code, status])
+}
+
+model InterventionNote {
+  id             String       @id @default(uuid())
+  prescriptionId String
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id])
+  authorId       String
+  author         User         @relation("InterventionAuthors", fields: [authorId], references: [id])
+  note           String
+  createdAt      DateTime     @default(now())
+
+  @@index([prescriptionId, createdAt])
 }
 
 model AuditEvent {
