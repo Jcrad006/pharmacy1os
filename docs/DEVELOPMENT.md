@@ -105,4 +105,6 @@ Current derived categories:
 
 The API sorts higher clinical severity first, then scheduled due time, then age. Because the exceptions are derived, resolving the underlying source automatically removes the exception.
 
-Patient and prescriber screen searches use their existing server query endpoints instead of filtering only the initial local result set.
+Patient and provider directories use structured server-side filters for last name, first name, date of birth, and phone. Phone search uses a digit-only normalized value, while displayed telephone formatting is preserved.
+
+Primary menu shortcuts are F1 through F6 in sidebar order: Dashboard, Exceptions, Will Call, New Prescription, Patients, Providers. Queue-level J/K, arrows, Home/End, Enter, and / search behavior remains separate.

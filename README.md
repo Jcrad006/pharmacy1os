@@ -122,15 +122,16 @@ The dispensing dashboard now supports a server-backed working view. Staff can se
 
 Queue settings are stored locally on the workstation so the last working view is restored on return.
 
-Current keyboard shortcuts (when not typing in a form):
+Primary menu function keys:
 
-- `/` — focus queue search
-- `Q` — dispensing queue
-- `N` — new prescription
-- `W` — Will Call
-- `P` — patients
-- `R` — prescribers
-- `Enter` in queue search — open the first result
+- `F1` — Dashboard
+- `F2` — Exceptions
+- `F3` — Will Call
+- `F4` — New Prescription
+- `F5` — Patients
+- `F6` — Providers
+
+The workstation intercepts these function keys while active. The existing `/` queue-search shortcut and J/K/arrow queue-row navigation remain available. On keyboards configured to use media controls on the function row, the operating system may require the physical Fn modifier.
 
 ## Exception queue and directories
 
@@ -138,7 +139,7 @@ The workstation now includes an **Exceptions** queue derived directly from live 
 
 There is no separate completion checkbox for these derived exceptions. When the underlying issue is resolved—for example, a DUR issue is resolved or an On Hold prescription is resumed—the corresponding exception disappears automatically.
 
-Patient and prescriber directory searches are now server-backed, so searching is no longer limited to the initial records loaded into the workstation.
+Patient and provider directory searches are server-backed and support separate Last name, First name, DOB, and phone fields. Results are ordered Last name, First name. Phone matching uses normalized digits so punctuation does not have to match.
 
 ## Queue priority and keyboard navigation
 
