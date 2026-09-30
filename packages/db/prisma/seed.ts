@@ -43,7 +43,11 @@ async function main() {
 
   await db.patient.upsert({
     where: { id: ids.patient1 },
-    update: {},
+    update: {
+      dateOfBirth: new Date("1978-04-12T00:00:00Z"),
+      phone: "555-0111",
+      phoneSearch: "5550111",
+    },
     create: {
       id: ids.patient1,
       siteId: ids.site,
@@ -58,7 +62,11 @@ async function main() {
 
   await db.patient.upsert({
     where: { id: ids.patient2 },
-    update: {},
+    update: {
+      dateOfBirth: new Date("1959-09-03T00:00:00Z"),
+      phone: "555-0112",
+      phoneSearch: "5550112",
+    },
     create: {
       id: ids.patient2,
       siteId: ids.site,
@@ -72,7 +80,11 @@ async function main() {
 
   await db.prescriber.upsert({
     where: { id: ids.prescriber1 },
-    update: {},
+    update: {
+      dateOfBirth: new Date("1970-01-15T00:00:00Z"),
+      phone: "555-0201",
+      phoneSearch: "5550201",
+    },
     create: {
       id: ids.prescriber1,
       siteId: ids.site,
@@ -89,7 +101,11 @@ async function main() {
 
   await db.prescriber.upsert({
     where: { id: ids.prescriber2 },
-    update: {},
+    update: {
+      dateOfBirth: new Date("1981-06-22T00:00:00Z"),
+      phone: "555-0203",
+      phoneSearch: "5550203",
+    },
     create: {
       id: ids.prescriber2,
       siteId: ids.site,
