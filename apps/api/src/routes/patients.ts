@@ -30,7 +30,9 @@ function parseDirectoryDate(value?: string) {
   let iso = /^\d{4}-\d{2}-\d{2}T/.test(raw) ? raw.slice(0, 10) : raw;
   const usMatch = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
   if (usMatch) {
-    const [, month, day, year] = usMatch;
+    const month = usMatch[1]!;
+    const day = usMatch[2]!;
+    const year = usMatch[3]!;
     iso = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
   }
 
