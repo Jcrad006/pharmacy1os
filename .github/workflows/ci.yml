@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase3a-catalog-tree-correction]
+    branches: [main, phase3b-ndc-package-pricing]
   pull_request:
   workflow_dispatch:
 
