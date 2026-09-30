@@ -1,6 +1,9 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { healthRoutes } from "./routes/health.js";
+import { developmentRoutes } from "./routes/development.js";
+import { patientRoutes } from "./routes/patients.js";
+import { prescriberRoutes } from "./routes/prescribers.js";
 import { prescriptionRoutes } from "./routes/prescriptions.js";
 
 export function buildApp() {
@@ -14,6 +17,9 @@ export function buildApp() {
   });
 
   app.register(healthRoutes);
+  app.register(developmentRoutes, { prefix: "/api" });
+  app.register(patientRoutes, { prefix: "/api" });
+  app.register(prescriberRoutes, { prefix: "/api" });
   app.register(prescriptionRoutes, { prefix: "/api" });
 
   return app;

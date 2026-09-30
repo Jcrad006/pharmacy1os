@@ -2,26 +2,65 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, phase1-synthetic-dispensing]
   pull_request:
   workflow_dispatch:
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pharmacy1os
+          POSTGRES_PASSWORD: pharmacy1os_dev
+          POSTGRES_DB: pharmacy1os
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pharmacy1os -d pharmacy1os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgresql://pharmacy1os:pharmacy1os_dev@localhost:5432/pharmacy1os?schema=public
       WEB_ORIGIN: http://localhost:5173
+      ALLOW_DEV_IDENTITY: "true"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.17.1
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: pnpm install --no-frozen-lockfile
-      - run: pnpm db:generate
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Validate Prisma schema
+        run: pnpm db:validate
+
+      - name: Apply database migrations
+        run: pnpm db:deploy
+
+      - name: Load synthetic seed data
+        run: pnpm db:seed
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

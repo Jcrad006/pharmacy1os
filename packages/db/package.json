@@ -5,16 +5,23 @@
   "type": "module",
   "scripts": {
     "generate": "prisma generate",
+    "validate": "prisma validate",
     "migrate": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "seed": "tsx prisma/seed.ts",
     "studio": "prisma studio",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "dependencies": { "@prisma/client": "^6.16.3" },
   "devDependencies": {
     "@types/node": "^22.18.6",
     "prisma": "^6.16.3",
+    "tsx": "^4.20.6",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }
