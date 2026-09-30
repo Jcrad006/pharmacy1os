@@ -72,6 +72,7 @@ model PharmacySite {
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
+  productLots   ProductLot[]
   auditEvents   AuditEvent[]
 }
 
@@ -182,6 +183,74 @@ model PrescriberAddress {
 
   @@index([prescriberId, isPrimary])
   @@index([state, postalCode])
+}
+
+model Medication {
+  id            String    @id @default(uuid())
+  genericName   String
+  brandName     String?
+  strength      String
+  dosageForm    String
+  route         String?
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  products      Product[]
+
+  @@index([genericName, strength, dosageForm])
+  @@index([brandName])
+}
+
+model Manufacturer {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  labelerCode String?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+
+  @@index([name])
+}
+
+model Product {
+  id                 String       @id @default(uuid())
+  medicationId       String
+  medication         Medication   @relation(fields: [medicationId], references: [id], onDelete: Restrict)
+  manufacturerId     String
+  manufacturer       Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  ndc                 String
+  ndcSearch           String       @unique
+  labelName           String?
+  packageDescription  String?
+  active              Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  lots                ProductLot[]
+
+  @@index([medicationId, active])
+  @@index([manufacturerId, active])
+  @@index([ndc])
+}
+
+model ProductLot {
+  id             String       @id @default(uuid())
+  siteId         String
+  site           PharmacySite @relation(fields: [siteId], references: [id])
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotNumber      String
+  lotNumberSearch String
+  expirationDate DateTime
+  active         Boolean      @default(true)
+  receivedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([siteId, productId, lotNumberSearch, expirationDate])
+  @@index([siteId, expirationDate])
+  @@index([productId, expirationDate])
+  @@index([lotNumberSearch])
 }
 
 model Prescription {
