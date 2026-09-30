@@ -130,3 +130,10 @@ export function prioritizeQueueByStatus<
 
   return [...priority, ...remainder];
 }
+
+
+export function canWriteInventory(user?: DevUser) {
+  return Boolean(
+    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+  );
+}
