@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1b-dispensing-workstation]
+    branches: [main, phase1c-edit-rts-willcall]
   pull_request:
   workflow_dispatch:
 
