@@ -12,6 +12,7 @@ import type {
   Medication,
   Product,
   ProductLot,
+  ProductExpiration,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -428,7 +429,6 @@ export async function createProductLot(
   productId: string,
   input: {
     lotNumber: string;
-    expirationDate: string;
     receivedAt?: string;
   },
 ) {
@@ -438,6 +438,21 @@ export async function createProductLot(
       method: "POST",
       devUser,
       body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function createProductExpiration(
+  devUser: string,
+  productId: string,
+  expirationDate: string,
+) {
+  return request<{ expiration: ProductExpiration }>(
+    `/api/products/${productId}/expirations`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ expirationDate }),
     },
   );
 }
