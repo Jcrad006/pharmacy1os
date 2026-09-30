@@ -140,6 +140,9 @@ describe("derived exception queue", () => {
       method: "PATCH",
       url: `/api/dur/issues/${issueId}/resolve`,
       headers: pharmacistHeaders,
+      payload: {
+        note: "Synthetic clinical exception reviewed and resolved.",
+      },
     });
     expect(resolve.statusCode).toBe(200);
 

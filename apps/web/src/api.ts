@@ -323,12 +323,17 @@ export async function createDurIssue(
   );
 }
 
-export async function resolveDurIssue(devUser: string, issueId: string) {
+export async function resolveDurIssue(
+  devUser: string,
+  issueId: string,
+  note: string,
+) {
   return request<{ issue: DurIssue }>(
     `/api/dur/issues/${issueId}/resolve`,
     {
       method: "PATCH",
       devUser,
+      body: JSON.stringify({ note }),
     },
   );
 }

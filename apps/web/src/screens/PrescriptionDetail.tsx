@@ -112,6 +112,7 @@ export function PrescriptionDetail({
   const [rx, setRx] = useState<PrescriptionQueueItem | null>(null);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [openHighClinicalIssues, setOpenHighClinicalIssues] = useState<number | null>(null);
   const [quantity, setQuantity] = useState("");
   const [scheduledFor, setScheduledFor] = useState("");
   const [editing, setEditing] = useState(false);
@@ -123,6 +124,7 @@ export function PrescriptionDetail({
     try {
       const next = await getPrescription(devUser, prescriptionId);
       setRx(next);
+      setOpenHighClinicalIssues(null);
       setQuantity(String(next.quantityWritten ?? ""));
       if (!editing) setEditState(editStateFromRx(next));
       if (canReadAudit(user)) {
@@ -415,9 +417,36 @@ export function PrescriptionDetail({
           )}
 
           {rx.status === "PHARMACIST_REVIEW" && (
-            <button className="primary-button" disabled={!verifyAllowed || loading} onClick={() => void transition("READY", "Pharmacist verification completed; prescription is Ready.")}>
-              {verifyAllowed ? "Verify prescription → Ready" : "Pharmacist verification required"}
-            </button>
+            <div className="verification-gate">
+              {openHighClinicalIssues !== null && openHighClinicalIssues > 0 && (
+                <p className="clinical-gate-warning">
+                  Resolve {openHighClinicalIssues} HIGH DUR issue{openHighClinicalIssues === 1 ? "" : "s"} before final verification.
+                </p>
+              )}
+              <button
+                className="primary-button"
+                disabled={
+                  !verifyAllowed ||
+                  loading ||
+                  openHighClinicalIssues === null ||
+                  openHighClinicalIssues > 0
+                }
+                onClick={() =>
+                  void transition(
+                    "READY",
+                    "Pharmacist verification completed; prescription is Ready.",
+                  )
+                }
+              >
+                {!verifyAllowed
+                  ? "Pharmacist verification required"
+                  : openHighClinicalIssues === null
+                    ? "Checking DUR status…"
+                    : openHighClinicalIssues > 0
+                      ? "Resolve HIGH DUR issues first"
+                      : "Verify prescription → Ready"}
+              </button>
+            </div>
           )}
 
           {rx.status === "READY" && (
@@ -487,6 +516,7 @@ export function PrescriptionDetail({
           await load();
         }}
         onError={onError}
+        onBlockersChanged={setOpenHighClinicalIssues}
       />
 
       {canReadAudit(user) && (

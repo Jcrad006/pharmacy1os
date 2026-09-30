@@ -85,6 +85,14 @@
 - [x] Enter-to-open highlighted queue row
 - [x] Unit-tested stable priority ordering
 
+## Phase 1F — Clinical workflow hardening
+- [x] HIGH DUR issues block final pharmacist verification
+- [x] DUR resolution requires a documented resolution note
+- [x] Structured eligibility date on synthetic date-rule issues
+- [x] Automatic resolution of stale synthetic date-rule issues during reprocessing
+- [x] Server-enforced verification gate independent of the workstation UI
+- [x] Database-backed clinical-gate and reconciliation tests
+
 ## Phase 2 — Identity and security
 - Production authentication
 - Sessions
