@@ -14,54 +14,57 @@
 
 ## Phase 1A — Core dispensing foundation
 - [x] Synthetic staff identity for development
-- [x] Patient search API
-- [x] Prescriber search API
-- [x] Patient registration API
-- [x] Prescriber registration API
+- [x] Patient/prescriber search and registration APIs
 - [x] Prescription entry API
 - [x] Live workstation prescription queue
 - [x] Controlled workflow transitions
 - [x] Pharmacist-only final verification
-- [x] Fill creation API
-- [x] Future-fill scheduling API
-- [x] Audit events for core workflow changes
+- [x] Fill creation and future-fill scheduling
+- [x] Core workflow audit events
 
 ## Phase 1B — Full synthetic dispensing workstation
-- [x] Patient registration workstation
-- [x] Prescriber registration workstation
+- [x] Patient/prescriber workstation screens
 - [x] Prescription detail workstation
-- [x] Fill/dispensing workstation controls
-- [x] Separate prescription and fill workflow behavior
-- [x] Original-fill and refill numbering
+- [x] Fill/dispensing controls
+- [x] Separate prescription and fill states
+- [x] Original-fill/refill numbering
 - [x] Refill accounting on sale
 - [x] Scheduled-fill start behavior
-- [x] Hold/resume with previous-state restoration
-- [x] Cancel controls
-- [x] Transfer controls
+- [x] Hold/resume/cancel/transfer
 - [x] Sale-specific permission
 - [x] Audit-history workstation
-- [x] Database-backed end-to-end dispensing integration tests
+- [x] Database-backed end-to-end dispensing tests
 
 ## Phase 1C — Dispensing depth
-
-### Completed
-- [x] Prescription editing with structured before/after audit trail
-- [x] Automatic Data Entry reset after editing a DUR-reviewed order
-- [x] Return-to-stock workflow for Ready, unsold fills
-- [x] Reversal of Ready prescriptions back to DUR Review
+- [x] Audited prescription editing
+- [x] Data Entry reset after editing a DUR-reviewed prescription
+- [x] Return-to-stock workflow
+- [x] Ready reversal to DUR Review
 - [x] Reprocess returned fills without consuming a refill number
-- [x] Dedicated Will Call API and workstation
-- [x] Will Call sale controls
-- [x] Will Call return-to-stock controls
-- [x] Database-backed integration tests for editing, Will Call, and return-to-stock
+- [x] Dedicated Will Call API/workstation
+- [x] Will Call sale/return-to-stock controls
+- [x] Database-backed editing/Will Call/RTS tests
 
-### Next
-- [ ] Prescription expiration logic
-- [ ] Refill-too-soon / date-rule framework
-- [ ] Basic synthetic DUR issue model
-- [ ] Notes and pharmacist intervention records
-- [ ] Better search, filtering, and queue prioritization
-- [ ] Keyboard-first pharmacy workflow
+## Phase 1D — Synthetic clinical/date-rule workflow
+- [x] Prescription expiration enforcement
+- [x] Do-not-fill-before enforcement through shared date-rule engine
+- [x] Configurable minimum-days-between-fills rule
+- [x] Date-rule evaluation for immediate and scheduled fills
+- [x] Structured DUR issue model
+- [x] Automatic DUR issue creation for blocked date rules
+- [x] Manual synthetic DUR issue entry for pharmacist/admin roles
+- [x] DUR issue resolution with resolver/time tracking
+- [x] Pharmacist intervention-note records
+- [x] Clinical/DUR workstation panel
+- [x] Database-backed clinical integration tests
+
+## Phase 1E — Workflow efficiency
+- [ ] Better prescription/patient search
+- [ ] Queue filtering and prioritization
+- [ ] Keyboard-first navigation
+- [ ] Work-queue aging indicators
+- [ ] Saved workstation filters/preferences
+- [ ] Synthetic task/exception queue
 
 ## Phase 2 — Identity and security
 - Production authentication
