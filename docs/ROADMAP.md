@@ -59,12 +59,18 @@
 - [x] Database-backed clinical integration tests
 
 ## Phase 1E — Workflow efficiency
-- [ ] Better prescription/patient search
-- [ ] Queue filtering and prioritization
-- [ ] Keyboard-first navigation
-- [ ] Work-queue aging indicators
-- [ ] Saved workstation filters/preferences
+- [x] Server-backed prescription queue search by Rx/drug/patient/prescriber
+- [x] Workflow-status queue filtering
+- [x] Oldest/newest queue sorting
+- [x] Work-queue aging indicators
+- [x] Saved workstation queue filters/preferences
+- [x] Keyboard shortcuts for queue search and primary work areas
+- [x] Enter-to-open-first queue search workflow
+- [x] Database-backed queue search/filter tests
+- [ ] Patient/prescriber search improvements beyond local loaded records
 - [ ] Synthetic task/exception queue
+- [ ] User-configurable queue priorities
+- [ ] Additional keyboard navigation within tables
 
 ## Phase 2 — Identity and security
 - Production authentication
