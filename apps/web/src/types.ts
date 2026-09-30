@@ -26,6 +26,9 @@ export type FillStatus =
   | "RETURNED_TO_STOCK"
   | "CANCELLED";
 
+export type DurSeverity = "INFO" | "WARNING" | "HIGH";
+export type DurIssueStatus = "OPEN" | "RESOLVED";
+
 export type DevUser = {
   externalAuthId: string;
   displayName: string;
@@ -74,6 +77,7 @@ export type PrescriptionQueueItem = {
   refillsUsed: number;
   writtenDate: string | null;
   expirationDate: string | null;
+  minimumDaysBetweenFills: number | null;
   status: PrescriptionStatus;
   heldFromStatus: PrescriptionStatus | null;
   doNotFillBefore: string | null;
@@ -96,4 +100,32 @@ export type AuditEvent = {
     displayName: string;
     role: UserRole;
   } | null;
+};
+
+export type DurIssue = {
+  id: string;
+  prescriptionId: string;
+  code: string;
+  title: string;
+  description: string | null;
+  severity: DurSeverity;
+  status: DurIssueStatus;
+  source: string;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedBy: {
+    displayName: string;
+    role: UserRole;
+  } | null;
+};
+
+export type InterventionNote = {
+  id: string;
+  prescriptionId: string;
+  note: string;
+  createdAt: string;
+  author: {
+    displayName: string;
+    role: UserRole;
+  };
 };

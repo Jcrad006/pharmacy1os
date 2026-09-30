@@ -224,3 +224,83 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 900px) {
   .will-call-grid { grid-template-columns: 1fr; }
 }
+
+.clinical-panel { border-color: #bed7ca; }
+.clinical-disclaimer {
+  max-width: 360px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff5df;
+  color: #75521a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.clinical-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+.clinical-entry-grid, .clinical-history {
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid #e2ebe6;
+}
+.clinical-history {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+.clinical-caption {
+  margin-top: 12px;
+  color: #64736d;
+  font-size: 12px;
+}
+.stack-form textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 10px 11px;
+  color: #1c2924;
+  background: white;
+  font: inherit;
+}
+.dur-list, .note-list { display: grid; gap: 10px; margin-top: 14px; }
+.dur-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #dce5e0;
+  border-left-width: 4px;
+  border-radius: 10px;
+  padding: 13px;
+  background: #fbfdfc;
+}
+.dur-info { border-left-color: #7393a7; }
+.dur-warning { border-left-color: #c6913e; }
+.dur-high { border-left-color: #b45e5e; }
+.dur-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dur-heading div { display: grid; gap: 3px; }
+.dur-heading span, .dur-card p { color: #66756e; font-size: 12px; }
+.severity-badge {
+  align-self: start;
+  border-radius: 999px;
+  background: #edf2ef;
+  padding: 4px 7px;
+  font-size: 10px !important;
+  font-weight: 800;
+}
+.clinical-note {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #e2e9e5;
+  border-radius: 9px;
+  padding: 12px;
+}
+.clinical-note span { color: #728079; font-size: 11px; }
+@media (max-width: 900px) {
+  .clinical-grid, .clinical-history { grid-template-columns: 1fr; }
+}

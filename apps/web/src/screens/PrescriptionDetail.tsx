@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { ClinicalPanel } from "./ClinicalPanel";
 import {
   createFill,
   getPrescription,
@@ -473,6 +474,17 @@ export function PrescriptionDetail({
           </table>
         </div>
       </section>
+
+      <ClinicalPanel
+        prescription={rx}
+        devUser={devUser}
+        user={user}
+        onChanged={async (text) => {
+          await onMutated(text);
+          await load();
+        }}
+        onError={onError}
+      />
 
       {canReadAudit(user) && (
         <section className="panel">
