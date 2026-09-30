@@ -343,12 +343,6 @@ export async function prescriberRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "firstName and lastName are required." });
       }
 
-      if (!body.practiceLevel?.trim()) {
-        return reply.code(400).send({
-          error: "Provider practice level/credential is required (for example MD, DO, NP, PA).",
-        });
-      }
-
       const dateOfBirth = parseDirectoryDate(body.dateOfBirth);
       if (dateOfBirth === null) {
         return reply.code(400).send({ error: "Invalid date of birth." });
@@ -377,7 +371,7 @@ export async function prescriberRoutes(app: FastifyInstance) {
             siteId: actor.siteId,
             firstName: body.firstName!.trim(),
             lastName: body.lastName!.trim(),
-            practiceLevel: body.practiceLevel!.trim().toUpperCase(),
+            practiceLevel: body.practiceLevel?.trim().toUpperCase() || "UNKNOWN",
             dateOfBirth: dateOfBirth instanceof Date ? dateOfBirth : undefined,
             identifiers:
               identifierResult.identifiers.length > 0
