@@ -59,9 +59,12 @@
 - [x] Database-backed clinical integration tests
 
 ## Phase 1E — Workflow efficiency
-- [ ] Better prescription/patient search
+- [x] F1–F5 main-menu navigation
+- [x] Patient directory search by Last name, First name, DOB, and normalized phone
+- [x] Provider directory search by Last name, First name, DOB, and normalized phone
+- [ ] Better prescription search
 - [ ] Queue filtering and prioritization
-- [ ] Keyboard-first navigation
+- [ ] Extended keyboard-first workflow inside dispensing screens
 - [ ] Work-queue aging indicators
 - [ ] Saved workstation filters/preferences
 - [ ] Synthetic task/exception queue

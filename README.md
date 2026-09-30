@@ -12,7 +12,7 @@ The current prototype includes:
 - Fastify + TypeScript pharmacy API
 - PostgreSQL + Prisma database with versioned migrations
 - Site-scoped patient and prescriber records
-- Patient and prescriber registration screens
+- Patient and provider registration/search screens
 - Synthetic role/permission architecture
 - Prescription entry and live dispensing queue
 - Prescription detail workstation
@@ -29,7 +29,9 @@ The current prototype includes:
 - Configurable synthetic minimum-days-between-fills rule
 - Automatic structured DUR issue creation when a date rule blocks dispensing
 - Pharmacist/admin DUR resolution controls
-- Database-backed dispensing and clinical integration tests
+- F1–F5 workstation navigation for the main pharmacy menus
+- Patient/provider directory search by Last name, First name, DOB, and normalized phone
+- Database-backed dispensing, directory, and clinical integration tests
 - Automated migration, seed, typecheck, test, and production-build validation in CI
 
 ## Dispensing model
@@ -105,6 +107,18 @@ Then open:
 - Workstation: http://localhost:5173
 - API: http://localhost:3001
 - Health check: http://localhost:3001/health
+
+Primary workstation shortcuts:
+
+- F1 — Dashboard
+- F2 — Will Call
+- F3 — New Prescription
+- F4 — Patients
+- F5 — Providers
+
+Pharmacy1OS intercepts these function keys while the workstation is active, including browser-default F1/F5 behavior. On keyboards configured to use media controls on the function row, the operating system may still require the physical Fn modifier.
+
+Patient/provider directory results are sorted as Last name, First name and can be searched by last name, first name, date of birth, or phone number. Phone lookup uses normalized digits, so punctuation in a stored telephone number does not need to match the search input.
 
 The workstation offers synthetic staff identities for exercising role behavior. That selector is development-only and is **not production authentication**.
 

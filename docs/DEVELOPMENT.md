@@ -71,6 +71,27 @@ Pharmacist/admin development roles have `clinical:document` permission and may:
 
 These are **not validated clinical rules**. They exist to exercise the architecture that a future drug-knowledge/DUR/claims integration can use.
 
+## Workstation navigation and directory lookup
+
+The primary workstation function-key map is:
+
+- F1 — Dashboard
+- F2 — Will Call
+- F3 — New Prescription
+- F4 — Patients
+- F5 — Providers
+
+The web client captures these keys and prevents the browser's normal F1/F5 actions while Pharmacy1OS is active. Some operating systems/keyboards map the physical function row to media controls; that behavior is outside the web app and may require the Fn modifier or an OS keyboard setting.
+
+Patient and provider directory APIs support structured filters for:
+
+- last name
+- first name
+- date of birth
+- phone
+
+Names use prefix matching and are sorted Last name, First name. Phone numbers are stored with a normalized digit-only search value so formatted and unformatted input can match. Provider DOB is an optional development field in the current directory model.
+
 ## Automated validation
 
 CI creates a fresh PostgreSQL service and performs:
@@ -83,6 +104,8 @@ CI creates a fresh PostgreSQL service and performs:
 6. TypeScript typecheck
 7. unit + database-backed integration tests
 8. production builds
+
+The directory integration tests verify name-prefix, DOB, and punctuation-insensitive phone lookup for both patients and providers.
 
 The clinical integration tests verify expiration blocking, refill-too-soon blocking, eligibility-date output, automatic DUR issue creation, pharmacist DUR resolution, role restrictions on intervention documentation, manual synthetic DUR issue creation, and retrieval of clinical records.
 
