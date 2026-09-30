@@ -192,3 +192,46 @@ export type ExceptionSummary = {
   pharmacistReview: number;
   scheduled: number;
 };
+
+
+export type ProductLot = {
+  id: string;
+  siteId: string;
+  productId: string;
+  lotNumber: string;
+  expirationDate: string;
+  active: boolean;
+  receivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Manufacturer = {
+  id: string;
+  name: string;
+  labelerCode: string | null;
+  active: boolean;
+};
+
+export type Product = {
+  id: string;
+  medicationId: string;
+  manufacturerId: string;
+  ndc: string;
+  labelName: string | null;
+  packageDescription: string | null;
+  active: boolean;
+  manufacturer: Manufacturer;
+  lots: ProductLot[];
+};
+
+export type Medication = {
+  id: string;
+  genericName: string;
+  brandName: string | null;
+  strength: string;
+  dosageForm: string;
+  route: string | null;
+  active: boolean;
+  products: Product[];
+};

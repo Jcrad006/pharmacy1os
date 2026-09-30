@@ -9,6 +9,9 @@ import type {
   InterventionNote,
   Patient,
   Prescriber,
+  Medication,
+  Product,
+  ProductLot,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -366,5 +369,75 @@ export async function getExceptions(
   return request<{ exceptions: ExceptionItem[]; summary: ExceptionSummary }>(
     `/api/exceptions${suffix}`,
     { devUser },
+  );
+}
+
+
+export async function getMedications(devUser: string, query?: string) {
+  const params = new URLSearchParams();
+  if (query?.trim()) params.set("query", query.trim());
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+
+  const result = await request<{ medications: Medication[] }>(
+    `/api/medications${suffix}`,
+    { devUser },
+  );
+  return result.medications;
+}
+
+export async function createMedication(
+  devUser: string,
+  input: {
+    genericName: string;
+    brandName?: string;
+    strength: string;
+    dosageForm: string;
+    route?: string;
+  },
+) {
+  return request<{ medication: Medication }>("/api/medications", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function createProduct(
+  devUser: string,
+  medicationId: string,
+  input: {
+    ndc: string;
+    manufacturerName: string;
+    manufacturerLabelerCode?: string;
+    labelName?: string;
+    packageDescription?: string;
+  },
+) {
+  return request<{ product: Product }>(
+    `/api/medications/${medicationId}/products`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function createProductLot(
+  devUser: string,
+  productId: string,
+  input: {
+    lotNumber: string;
+    expirationDate: string;
+    receivedAt?: string;
+  },
+) {
+  return request<{ lot: ProductLot }>(
+    `/api/products/${productId}/lots`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
   );
 }
