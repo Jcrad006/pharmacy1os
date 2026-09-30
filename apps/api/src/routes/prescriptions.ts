@@ -27,6 +27,19 @@ type CreatePrescriptionBody = {
   doNotFillBefore?: string;
 };
 
+type UpdatePrescriptionBody = {
+  prescriberId?: string;
+  medicationName?: string;
+  strength?: string | null;
+  dosageForm?: string | null;
+  sig?: string;
+  quantityWritten?: number;
+  refillsAllowed?: number;
+  writtenDate?: string | null;
+  expirationDate?: string | null;
+  doNotFillBefore?: string | null;
+};
+
 type TransitionBody = {
   status?: PrescriptionStatus;
 };
@@ -49,6 +62,13 @@ const validStatuses = new Set<PrescriptionStatus>([
   "TRANSFERRED",
 ]);
 
+const editableStatuses = new Set<PrescriptionStatus>([
+  "RECEIVED",
+  "DATA_ENTRY",
+  "DUR_REVIEW",
+  "ON_HOLD",
+]);
+
 const prescriptionInclude = {
   patient: true,
   prescriber: true,
@@ -67,10 +87,11 @@ function presentPrescription<
   };
 }
 
-function parseDate(value?: string) {
+function parseDate(value?: string | null) {
+  if (value === null) return null;
   if (!value) return undefined;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  return Number.isNaN(date.getTime()) ? "invalid" : date;
 }
 
 function activeFill(
@@ -83,6 +104,66 @@ function activeFill(
   return fills.find((fill) =>
     ["SCHEDULED", "IN_PROGRESS", "READY"].includes(fill.status),
   );
+}
+
+function auditValue(value: unknown): string | number | boolean | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "object" && "toString" in value) {
+    return String(value);
+  }
+  return String(value);
+}
+
+function prescriptionSnapshot(rx: {
+  prescriberId: string;
+  medicationName: string;
+  strength: string | null;
+  dosageForm: string | null;
+  sig: string;
+  quantityWritten: unknown;
+  refillsAllowed: number;
+  writtenDate: Date | null;
+  expirationDate: Date | null;
+  doNotFillBefore: Date | null;
+}) {
+  return {
+    prescriberId: auditValue(rx.prescriberId),
+    medicationName: auditValue(rx.medicationName),
+    strength: auditValue(rx.strength),
+    dosageForm: auditValue(rx.dosageForm),
+    sig: auditValue(rx.sig),
+    quantityWritten: auditValue(rx.quantityWritten),
+    refillsAllowed: auditValue(rx.refillsAllowed),
+    writtenDate: auditValue(rx.writtenDate),
+    expirationDate: auditValue(rx.expirationDate),
+    doNotFillBefore: auditValue(rx.doNotFillBefore),
+  };
+}
+
+function diffSnapshots(
+  before: Record<string, string | number | boolean | null>,
+  after: Record<string, string | number | boolean | null>,
+) {
+  const changes: Record<
+    string,
+    { before: string | number | boolean | null; after: string | number | boolean | null }
+  > = {};
+
+  for (const key of Object.keys(before)) {
+    if (before[key] !== after[key]) {
+      changes[key] = { before: before[key] ?? null, after: after[key] ?? null };
+    }
+  }
+
+  return changes;
 }
 
 export async function prescriptionRoutes(app: FastifyInstance) {
@@ -103,6 +184,31 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         include: prescriptionInclude,
         orderBy: [{ updatedAt: "asc" }],
         take: 100,
+      });
+
+      return {
+        prescriptions: prescriptions.map(presentPrescription),
+      };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/prescriptions/will-call", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:read");
+
+      const prescriptions = await db.prescription.findMany({
+        where: {
+          siteId: actor.siteId,
+          status: "READY",
+        },
+        include: prescriptionInclude,
+        orderBy: [{ updatedAt: "asc" }],
+        take: 200,
       });
 
       return {
@@ -209,7 +315,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       const writtenDate = parseDate(body.writtenDate);
       const doNotFillBefore = parseDate(body.doNotFillBefore);
 
-      if (writtenDate === null || doNotFillBefore === null) {
+      if (writtenDate === "invalid" || doNotFillBefore === "invalid") {
         return reply.code(400).send({ error: "Invalid date value." });
       }
 
@@ -237,8 +343,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             sig: body.sig!.trim(),
             quantityWritten: body.quantityWritten,
             refillsAllowed: Math.max(0, body.refillsAllowed ?? 0),
-            writtenDate,
-            doNotFillBefore,
+            writtenDate: writtenDate instanceof Date ? writtenDate : undefined,
+            doNotFillBefore: doNotFillBefore instanceof Date ? doNotFillBefore : undefined,
             status: "DATA_ENTRY",
           },
           include: prescriptionInclude,
@@ -260,6 +366,170 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       return reply.code(201).send({
         prescription: presentPrescription(prescription),
       });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch("/prescriptions/:id", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:edit");
+      const id = (request.params as { id: string }).id;
+      const body = request.body as UpdatePrescriptionBody;
+
+      const current = await db.prescription.findFirst({
+        where: { id, siteId: actor.siteId },
+        include: prescriptionInclude,
+      });
+
+      if (!current) {
+        return reply.code(404).send({ error: "Prescription not found." });
+      }
+
+      if (!editableStatuses.has(current.status)) {
+        return reply.code(409).send({
+          error: "This prescription cannot be edited in its current workflow state.",
+        });
+      }
+
+      if (activeFill(current.fills)) {
+        return reply.code(409).send({
+          error: "An active fill must be resolved before editing the prescription.",
+        });
+      }
+
+      const suppliedFields = Object.keys(body).filter((key) =>
+        [
+          "prescriberId",
+          "medicationName",
+          "strength",
+          "dosageForm",
+          "sig",
+          "quantityWritten",
+          "refillsAllowed",
+          "writtenDate",
+          "expirationDate",
+          "doNotFillBefore",
+        ].includes(key),
+      );
+
+      if (suppliedFields.length === 0) {
+        return reply.code(400).send({ error: "No editable prescription fields supplied." });
+      }
+
+      if (body.medicationName !== undefined && !body.medicationName.trim()) {
+        return reply.code(400).send({ error: "Medication name cannot be blank." });
+      }
+
+      if (body.sig !== undefined && !body.sig.trim()) {
+        return reply.code(400).send({ error: "Sig cannot be blank." });
+      }
+
+      if (
+        body.quantityWritten !== undefined &&
+        (!Number.isFinite(body.quantityWritten) || body.quantityWritten <= 0)
+      ) {
+        return reply.code(400).send({ error: "Quantity must be greater than zero." });
+      }
+
+      if (
+        body.refillsAllowed !== undefined &&
+        (!Number.isInteger(body.refillsAllowed) ||
+          body.refillsAllowed < current.refillsUsed)
+      ) {
+        return reply.code(400).send({
+          error: "Refills allowed cannot be less than refills already used.",
+        });
+      }
+
+      if (body.prescriberId !== undefined) {
+        const prescriber = await db.prescriber.findFirst({
+          where: { id: body.prescriberId, siteId: actor.siteId },
+          select: { id: true },
+        });
+        if (!prescriber) {
+          return reply.code(400).send({
+            error: "Prescriber does not belong to this pharmacy site.",
+          });
+        }
+      }
+
+      const writtenDate = parseDate(body.writtenDate);
+      const expirationDate = parseDate(body.expirationDate);
+      const doNotFillBefore = parseDate(body.doNotFillBefore);
+
+      if (
+        writtenDate === "invalid" ||
+        expirationDate === "invalid" ||
+        doNotFillBefore === "invalid"
+      ) {
+        return reply.code(400).send({ error: "Invalid date value." });
+      }
+
+      const before = prescriptionSnapshot(current);
+
+      const data: Prisma.PrescriptionUpdateInput = {};
+      if (body.prescriberId !== undefined) {
+        data.prescriber = { connect: { id: body.prescriberId } };
+      }
+      if (body.medicationName !== undefined) data.medicationName = body.medicationName.trim();
+      if (body.strength !== undefined) data.strength = body.strength?.trim() || null;
+      if (body.dosageForm !== undefined) data.dosageForm = body.dosageForm?.trim() || null;
+      if (body.sig !== undefined) data.sig = body.sig.trim();
+      if (body.quantityWritten !== undefined) data.quantityWritten = body.quantityWritten;
+      if (body.refillsAllowed !== undefined) data.refillsAllowed = body.refillsAllowed;
+      if (body.writtenDate !== undefined) data.writtenDate = writtenDate instanceof Date ? writtenDate : null;
+      if (body.expirationDate !== undefined) data.expirationDate = expirationDate instanceof Date ? expirationDate : null;
+      if (body.doNotFillBefore !== undefined) data.doNotFillBefore = doNotFillBefore instanceof Date ? doNotFillBefore : null;
+
+      let workflowReset: { from: PrescriptionStatus; to: PrescriptionStatus } | null = null;
+
+      if (current.status === "DUR_REVIEW") {
+        data.status = "DATA_ENTRY";
+        workflowReset = { from: "DUR_REVIEW", to: "DATA_ENTRY" };
+      } else if (
+        current.status === "ON_HOLD" &&
+        current.heldFromStatus === "DUR_REVIEW"
+      ) {
+        data.heldFromStatus = "DATA_ENTRY";
+        workflowReset = { from: "DUR_REVIEW", to: "DATA_ENTRY" };
+      } else if (current.status === "RECEIVED") {
+        data.status = "DATA_ENTRY";
+        workflowReset = { from: "RECEIVED", to: "DATA_ENTRY" };
+      }
+
+      const updated = await db.$transaction(async (tx) => {
+        const rx = await tx.prescription.update({
+          where: { id },
+          data,
+          include: prescriptionInclude,
+        });
+
+        const after = prescriptionSnapshot(rx);
+        const changes = diffSnapshots(before, after);
+
+        if (Object.keys(changes).length > 0 || workflowReset) {
+          await writeAuditEvent(tx, {
+            siteId: actor.siteId,
+            actorId: actor.id,
+            action: "PRESCRIPTION_EDITED",
+            entityType: "Prescription",
+            entityId: id,
+            requestId: request.id,
+            metadata: {
+              changes,
+              workflowReset,
+            },
+          });
+        }
+
+        return rx;
+      });
+
+      return { prescription: presentPrescription(updated) };
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });
@@ -450,7 +720,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       const prescription = await db.prescription.findFirst({
         where: { id, siteId: actor.siteId },
-        include: { fills: { orderBy: { fillNumber: "desc" } } },
+        include: prescriptionInclude,
       });
 
       if (!prescription) {
@@ -469,24 +739,19 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
-      const nextFillNumber = (prescription.fills[0]?.fillNumber ?? -1) + 1;
-      const totalFillsAllowed = prescription.refillsAllowed + 1;
-
-      if (nextFillNumber >= totalFillsAllowed) {
-        return reply.code(409).send({ error: "No fills remain on this prescription." });
-      }
-
       const scheduledFor = parseDate(body.scheduledFor);
-      if (scheduledFor === null) {
+      if (scheduledFor === "invalid") {
         return reply.code(400).send({ error: "Invalid scheduledFor date." });
       }
 
       const now = new Date();
-      const isFuture = Boolean(scheduledFor && scheduledFor.getTime() > now.getTime());
+      const isFuture = Boolean(
+        scheduledFor instanceof Date && scheduledFor.getTime() > now.getTime(),
+      );
 
       if (
         prescription.doNotFillBefore &&
-        (!scheduledFor ||
+        (!(scheduledFor instanceof Date) ||
           scheduledFor.getTime() < prescription.doNotFillBefore.getTime())
       ) {
         return reply.code(409).send({
@@ -494,26 +759,74 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      const latestFill = prescription.fills[0];
+
+      if (latestFill?.status === "RETURNED_TO_STOCK") {
+        const result = await db.$transaction(async (tx) => {
+          const reprocessed = await tx.prescriptionFill.update({
+            where: { id: latestFill.id },
+            data: {
+              scheduledFor: scheduledFor instanceof Date ? scheduledFor : null,
+              quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
+              status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
+              filledAt: null,
+              soldAt: null,
+            },
+          });
+
+          const rx = await tx.prescription.update({
+            where: { id: prescription.id },
+            data: { status: isFuture ? "DUR_REVIEW" : "PRODUCT_FILL" },
+            include: prescriptionInclude,
+          });
+
+          await writeAuditEvent(tx, {
+            siteId: actor.siteId,
+            actorId: actor.id,
+            action: "PRESCRIPTION_FILL_REPROCESSED",
+            entityType: "PrescriptionFill",
+            entityId: reprocessed.id,
+            requestId: request.id,
+            metadata: {
+              prescriptionId: prescription.id,
+              fillNumber: reprocessed.fillNumber,
+              scheduledFor: reprocessed.scheduledFor?.toISOString() ?? null,
+              immediate: !isFuture,
+            },
+          });
+
+          return { fill: reprocessed, prescription: rx };
+        });
+
+        return reply.code(201).send({
+          fill: result.fill,
+          prescription: presentPrescription(result.prescription),
+        });
+      }
+
+      const nextFillNumber = (latestFill?.fillNumber ?? -1) + 1;
+      const totalFillsAllowed = prescription.refillsAllowed + 1;
+
+      if (nextFillNumber >= totalFillsAllowed) {
+        return reply.code(409).send({ error: "No fills remain on this prescription." });
+      }
+
       const result = await db.$transaction(async (tx) => {
         const created = await tx.prescriptionFill.create({
           data: {
             prescriptionId: prescription.id,
             fillNumber: nextFillNumber,
-            scheduledFor,
+            scheduledFor: scheduledFor instanceof Date ? scheduledFor : undefined,
             quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
             status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
           },
         });
 
-        let rx = prescription;
-
-        if (!isFuture) {
-          rx = await tx.prescription.update({
-            where: { id: prescription.id },
-            data: { status: "PRODUCT_FILL" },
-            include: { fills: { orderBy: { fillNumber: "desc" } } },
-          });
-        }
+        const rx = await tx.prescription.update({
+          where: { id: prescription.id },
+          data: { status: isFuture ? "DUR_REVIEW" : "PRODUCT_FILL" },
+          include: prescriptionInclude,
+        });
 
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
@@ -567,10 +880,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: "Only a scheduled fill can be started." });
       }
 
-      if (
-        fill.scheduledFor &&
-        fill.scheduledFor.getTime() > Date.now()
-      ) {
+      if (fill.scheduledFor && fill.scheduledFor.getTime() > Date.now()) {
         return reply.code(409).send({
           error: "This fill is scheduled for a future date.",
         });
@@ -608,6 +918,87 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
 
         return { fill: started, prescription: rx };
+      });
+
+      return {
+        fill: result.fill,
+        prescription: presentPrescription(result.prescription),
+      };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/return-to-stock", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const id = (request.params as { id: string }).id;
+
+      const fill = await db.prescriptionFill.findUnique({
+        where: { id },
+        include: {
+          prescription: {
+            include: prescriptionInclude,
+          },
+        },
+      });
+
+      if (!fill || fill.prescription.siteId !== actor.siteId) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+
+      if (fill.status !== "READY" || fill.prescription.status !== "READY") {
+        return reply.code(409).send({
+          error: "Only a Ready, unsold fill can be returned to stock.",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const returned = await tx.prescriptionFill.update({
+          where: { id },
+          data: {
+            status: "RETURNED_TO_STOCK",
+            soldAt: null,
+          },
+        });
+
+        const rx = await tx.prescription.update({
+          where: { id: fill.prescriptionId },
+          data: { status: "DUR_REVIEW" },
+          include: prescriptionInclude,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRESCRIPTION_FILL_RETURNED_TO_STOCK",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            prescriptionId: fill.prescriptionId,
+            fillNumber: fill.fillNumber,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRESCRIPTION_STATUS_CHANGED",
+          entityType: "Prescription",
+          entityId: fill.prescriptionId,
+          requestId: request.id,
+          metadata: {
+            from: "READY",
+            to: "DUR_REVIEW",
+            reason: "RETURN_TO_STOCK",
+          },
+        });
+
+        return { fill: returned, prescription: rx };
       });
 
       return {

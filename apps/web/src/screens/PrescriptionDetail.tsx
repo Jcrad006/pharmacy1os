@@ -3,31 +3,97 @@ import {
   createFill,
   getPrescription,
   getPrescriptionAudit,
+  returnFillToStock,
   startFill,
   transitionPrescription,
+  updatePrescription,
 } from "../api";
 import type {
   AuditEvent,
   DevUser,
+  Prescriber,
   PrescriptionQueueItem,
   PrescriptionStatus,
 } from "../types";
 import {
   activeFill,
+  canEditPrescription,
   canProcess,
   canReadAudit,
   canSell,
   canVerify,
   formatPatientName,
   formatPrescriberName,
+  prescriptionCanBeEdited,
+  readyFill,
   remainingRefills,
   statusLabels,
 } from "../workflow";
+
+type EditState = {
+  prescriberId: string;
+  medicationName: string;
+  strength: string;
+  dosageForm: string;
+  sig: string;
+  quantityWritten: string;
+  refillsAllowed: string;
+  writtenDate: string;
+  expirationDate: string;
+  doNotFillBefore: string;
+};
+
+function dateInputValue(value: string | null) {
+  return value ? new Date(value).toISOString().slice(0, 10) : "";
+}
+
+function editStateFromRx(rx: PrescriptionQueueItem): EditState {
+  return {
+    prescriberId: rx.prescriber.id,
+    medicationName: rx.medicationName,
+    strength: rx.strength ?? "",
+    dosageForm: rx.dosageForm ?? "",
+    sig: rx.sig,
+    quantityWritten: String(rx.quantityWritten ?? ""),
+    refillsAllowed: String(rx.refillsAllowed),
+    writtenDate: dateInputValue(rx.writtenDate),
+    expirationDate: dateInputValue(rx.expirationDate),
+    doNotFillBefore: dateInputValue(rx.doNotFillBefore),
+  };
+}
+
+function AuditDetails({ event }: { event: AuditEvent }) {
+  if (event.action !== "PRESCRIPTION_EDITED" || !event.metadata) return null;
+
+  const metadata = event.metadata as {
+    changes?: Record<string, { before: unknown; after: unknown }>;
+    workflowReset?: { from: string; to: string } | null;
+  };
+
+  return (
+    <div className="audit-details">
+      {metadata.changes &&
+        Object.entries(metadata.changes).map(([field, change]) => (
+          <div key={field}>
+            <span>{field}</span>
+            <code>{String(change.before ?? "—")} → {String(change.after ?? "—")}</code>
+          </div>
+        ))}
+      {metadata.workflowReset && (
+        <div>
+          <span>workflow</span>
+          <code>{metadata.workflowReset.from} → {metadata.workflowReset.to}</code>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PrescriptionDetail({
   prescriptionId,
   devUser,
   user,
+  prescribers,
   onBack,
   onMutated,
   onError,
@@ -35,6 +101,7 @@ export function PrescriptionDetail({
   prescriptionId: string;
   devUser: string;
   user?: DevUser;
+  prescribers: Prescriber[];
   onBack: () => void;
   onMutated: (message: string) => Promise<void>;
   onError: (message: string | null) => void;
@@ -44,6 +111,8 @@ export function PrescriptionDetail({
   const [loading, setLoading] = useState(false);
   const [quantity, setQuantity] = useState("");
   const [scheduledFor, setScheduledFor] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editState, setEditState] = useState<EditState | null>(null);
 
   async function load() {
     if (!devUser) return;
@@ -52,6 +121,7 @@ export function PrescriptionDetail({
       const next = await getPrescription(devUser, prescriptionId);
       setRx(next);
       setQuantity(String(next.quantityWritten ?? ""));
+      if (!editing) setEditState(editStateFromRx(next));
       if (canReadAudit(user)) {
         setAudit(await getPrescriptionAudit(devUser, prescriptionId));
       } else {
@@ -97,7 +167,9 @@ export function PrescriptionDetail({
       await onMutated(
         result.fill.status === "SCHEDULED"
           ? "Future fill scheduled."
-          : "Fill created and moved to Product Fill.",
+          : result.fill.status === "IN_PROGRESS" && rx.fills[0]?.status === "RETURNED_TO_STOCK"
+            ? "Returned fill re-entered Product Fill using the same fill number."
+            : "Fill created and moved to Product Fill.",
       );
       setScheduledFor("");
       await load();
@@ -120,6 +192,59 @@ export function PrescriptionDetail({
     }
   }
 
+  async function returnToStock() {
+    if (!rx) return;
+    const fill = readyFill(rx.fills);
+    if (!fill) return;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await returnFillToStock(devUser, fill.id);
+      await onMutated("Ready fill returned to stock; prescription returned to DUR Review.");
+      await load();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Unable to return fill to stock.");
+      setLoading(false);
+    }
+  }
+
+  async function submitEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!rx || !editState) return;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await updatePrescription(devUser, rx.id, {
+        prescriberId: editState.prescriberId,
+        medicationName: editState.medicationName,
+        strength: editState.strength || null,
+        dosageForm: editState.dosageForm || null,
+        sig: editState.sig,
+        quantityWritten: editState.quantityWritten
+          ? Number(editState.quantityWritten)
+          : undefined,
+        refillsAllowed: Number(editState.refillsAllowed),
+        writtenDate: editState.writtenDate
+          ? new Date(`${editState.writtenDate}T00:00:00`).toISOString()
+          : null,
+        expirationDate: editState.expirationDate
+          ? new Date(`${editState.expirationDate}T00:00:00`).toISOString()
+          : null,
+        doNotFillBefore: editState.doNotFillBefore
+          ? new Date(`${editState.doNotFillBefore}T00:00:00`).toISOString()
+          : null,
+      });
+      setEditing(false);
+      await onMutated("Prescription updated; audited changes were recorded.");
+      await load();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Unable to update prescription.");
+      setLoading(false);
+    }
+  }
+
   if (!rx) {
     return <section className="panel"><p>{loading ? "Loading prescription…" : "Prescription not available."}</p></section>;
   }
@@ -127,6 +252,10 @@ export function PrescriptionDetail({
   const processAllowed = canProcess(user);
   const verifyAllowed = canVerify(user);
   const sellAllowed = canSell(user);
+  const editAllowed =
+    canEditPrescription(user) &&
+    prescriptionCanBeEdited(rx.status) &&
+    !currentFill;
   const refillBalance = remainingRefills(rx.refillsAllowed, rx.refillsUsed);
   const scheduledCanStart =
     currentFill?.status === "SCHEDULED" &&
@@ -137,6 +266,18 @@ export function PrescriptionDetail({
       <div className="detail-toolbar">
         <button className="secondary-button" onClick={onBack}>← Queue</button>
         <div className="action-row">
+          {editAllowed && (
+            <button
+              className="secondary-button"
+              disabled={loading}
+              onClick={() => {
+                setEditState(editStateFromRx(rx));
+                setEditing((value) => !value);
+              }}
+            >
+              {editing ? "Close Editor" : "Edit Rx"}
+            </button>
+          )}
           {rx.allowedTransitions.includes("ON_HOLD") && processAllowed && (
             <button className="secondary-button" disabled={loading} onClick={() => void transition("ON_HOLD", "Prescription placed on hold.")}>Hold</button>
           )}
@@ -157,6 +298,47 @@ export function PrescriptionDetail({
         </div>
         <span className={`status large-status status-${rx.status.toLowerCase()}`}>{statusLabels[rx.status]}</span>
       </section>
+
+      {editing && editState && (
+        <section className="panel edit-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Audited order change</p>
+              <h2>Edit Prescription</h2>
+            </div>
+            <span className="edit-warning">Changes after DUR Review return the Rx to Data Entry.</span>
+          </div>
+
+          <form className="form-grid" onSubmit={submitEdit}>
+            <label>
+              Prescriber
+              <select
+                value={editState.prescriberId}
+                onChange={(event) => setEditState({ ...editState, prescriberId: event.target.value })}
+              >
+                {prescribers.map((prescriber) => (
+                  <option value={prescriber.id} key={prescriber.id}>
+                    {formatPrescriberName(prescriber)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>Medication<input value={editState.medicationName} onChange={(event) => setEditState({ ...editState, medicationName: event.target.value })} required /></label>
+            <label>Strength<input value={editState.strength} onChange={(event) => setEditState({ ...editState, strength: event.target.value })} /></label>
+            <label>Dosage form<input value={editState.dosageForm} onChange={(event) => setEditState({ ...editState, dosageForm: event.target.value })} /></label>
+            <label className="wide">Directions / Sig<input value={editState.sig} onChange={(event) => setEditState({ ...editState, sig: event.target.value })} required /></label>
+            <label>Quantity<input type="number" min="0.001" step="0.001" value={editState.quantityWritten} onChange={(event) => setEditState({ ...editState, quantityWritten: event.target.value })} /></label>
+            <label>Refills authorized<input type="number" min={rx.refillsUsed} step="1" value={editState.refillsAllowed} onChange={(event) => setEditState({ ...editState, refillsAllowed: event.target.value })} /></label>
+            <label>Written date<input type="date" value={editState.writtenDate} onChange={(event) => setEditState({ ...editState, writtenDate: event.target.value })} /></label>
+            <label>Expiration date<input type="date" value={editState.expirationDate} onChange={(event) => setEditState({ ...editState, expirationDate: event.target.value })} /></label>
+            <label>Do not fill before<input type="date" value={editState.doNotFillBefore} onChange={(event) => setEditState({ ...editState, doNotFillBefore: event.target.value })} /></label>
+            <div className="form-actions wide action-row">
+              <button className="primary-button" type="submit" disabled={loading}>Save audited changes</button>
+              <button className="secondary-button" type="button" onClick={() => setEditing(false)}>Cancel edit</button>
+            </div>
+          </form>
+        </section>
+      )}
 
       <div className="detail-grid">
         <section className="panel">
@@ -203,7 +385,11 @@ export function PrescriptionDetail({
               <label>Quantity<input type="number" min="0" step="0.001" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
               <label>Schedule for later (optional)<input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} /></label>
               <button className="primary-button" type="submit" disabled={!processAllowed || loading}>
-                {scheduledFor ? "Schedule fill" : "Create fill now"}
+                {rx.fills[0]?.status === "RETURNED_TO_STOCK"
+                  ? "Reprocess returned fill"
+                  : scheduledFor
+                    ? "Schedule fill"
+                    : "Create fill now"}
               </button>
             </form>
           )}
@@ -231,9 +417,21 @@ export function PrescriptionDetail({
           )}
 
           {rx.status === "READY" && (
-            <button className="primary-button" disabled={!sellAllowed || loading} onClick={() => void transition("SOLD", "Prescription marked sold.")}>
-              {sellAllowed ? "Mark prescription sold" : "Sale permission required"}
-            </button>
+            <div className="action-row">
+              <button className="primary-button" disabled={!sellAllowed || loading} onClick={() => void transition("SOLD", "Prescription marked sold.")}>
+                {sellAllowed ? "Mark prescription sold" : "Sale permission required"}
+              </button>
+              <button
+                className="secondary-button"
+                disabled={!processAllowed || loading}
+                onClick={() =>
+                  window.confirm("Return this ready synthetic fill to stock?") &&
+                  void returnToStock()
+                }
+              >
+                Return to Stock
+              </button>
+            </div>
           )}
 
           {rx.status === "SOLD" && refillBalance > 0 && (
@@ -284,7 +482,11 @@ export function PrescriptionDetail({
           <div className="audit-list">
             {audit.map((event) => (
               <article className="audit-event" key={event.id}>
-                <div><strong>{event.action.replaceAll("_", " ")}</strong><span>{event.actor ? `${event.actor.displayName} · ${event.actor.role}` : "System"}</span></div>
+                <div className="audit-main">
+                  <strong>{event.action.replaceAll("_", " ")}</strong>
+                  <span>{event.actor ? `${event.actor.displayName} · ${event.actor.role}` : "System"}</span>
+                  <AuditDetails event={event} />
+                </div>
                 <time>{new Date(event.occurredAt).toLocaleString()}</time>
               </article>
             ))}

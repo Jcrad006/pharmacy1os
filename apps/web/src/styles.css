@@ -124,3 +124,103 @@ tbody tr:last-child td { border-bottom: 0; }
   .wide { grid-column: auto; }
   .inline-fill-form { grid-template-columns: 1fr; }
 }
+
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nav-count {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #38594d;
+  color: #dff7ea;
+  text-align: center;
+  font-size: 11px;
+}
+.queue-count {
+  border-radius: 999px;
+  background: #edf5f1;
+  color: #315a48;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.will-call-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.will-call-card {
+  display: grid;
+  gap: 16px;
+  border: 1px solid #dfe8e3;
+  border-radius: 12px;
+  padding: 18px;
+  background: #fbfdfc;
+}
+.will-call-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+.will-call-main h3 { margin-top: 5px; }
+.will-call-main p { color: #62716a; margin-top: 4px; }
+.will-call-meta {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.will-call-meta div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  border-top: 1px solid #e8eeeb;
+  padding-top: 8px;
+}
+.will-call-meta dt { color: #6c7973; }
+.will-call-meta dd { margin: 0; font-weight: 600; text-align: right; }
+.will-call-empty { grid-column: 1 / -1; }
+
+.edit-panel {
+  border-color: #c8dcd1;
+  background: #fcfefd;
+}
+.edit-warning {
+  max-width: 360px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff5df;
+  color: #75521a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.audit-main { min-width: 0; }
+.audit-details {
+  display: grid;
+  gap: 4px;
+  margin-top: 7px;
+  padding: 8px 10px;
+  background: #f6f9f7;
+  border-radius: 8px;
+}
+.audit-details div {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px;
+}
+.audit-details span {
+  color: #60716a;
+  font-weight: 700;
+}
+.audit-details code {
+  overflow-wrap: anywhere;
+  color: #31463d;
+}
+
+@media (max-width: 900px) {
+  .will-call-grid { grid-template-columns: 1fr; }
+}
