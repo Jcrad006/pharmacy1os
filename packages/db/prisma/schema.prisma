@@ -103,27 +103,28 @@ model Prescriber {
 }
 
 model Prescription {
-  id              String             @id @default(uuid())
+  id              String              @id @default(uuid())
   siteId          String
-  site            PharmacySite       @relation(fields: [siteId], references: [id])
+  site            PharmacySite        @relation(fields: [siteId], references: [id])
   patientId       String
-  patient         Patient            @relation(fields: [patientId], references: [id])
+  patient         Patient             @relation(fields: [patientId], references: [id])
   prescriberId    String
-  prescriber      Prescriber         @relation(fields: [prescriberId], references: [id])
+  prescriber      Prescriber          @relation(fields: [prescriberId], references: [id])
   rxNumber        String?
   medicationName  String
   strength        String?
   dosageForm      String?
   sig             String
-  quantityWritten Decimal?           @db.Decimal(10, 3)
-  refillsAllowed  Int                @default(0)
-  refillsUsed     Int                @default(0)
+  quantityWritten Decimal?            @db.Decimal(10, 3)
+  refillsAllowed  Int                 @default(0)
+  refillsUsed     Int                 @default(0)
   writtenDate     DateTime?
   expirationDate  DateTime?
-  status          PrescriptionStatus @default(RECEIVED)
+  status          PrescriptionStatus  @default(RECEIVED)
+  heldFromStatus  PrescriptionStatus?
   doNotFillBefore DateTime?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
   fills           PrescriptionFill[]
 
   @@unique([siteId, rxNumber])
