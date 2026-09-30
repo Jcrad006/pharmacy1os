@@ -112,6 +112,11 @@
 - [x] Search by drug, brand, manufacturer, NDC, or lot number
 - [x] Drug/Product workstation with F7 navigation
 - [x] Database-backed catalog hierarchy/retrieval tests
+- [x] NDC-specific descriptor
+- [x] Stock-package type and units-per-package
+- [x] Dispensing unit support for each, gram, and milliliter
+- [x] Current price per dispensing unit and per stock package
+- [x] Package/unit price derivation when only one price is entered
 - [ ] Associate scanned lot/expiration information with a specific prescription fill
 
 ## Phase 3 — Pharmacy utilities

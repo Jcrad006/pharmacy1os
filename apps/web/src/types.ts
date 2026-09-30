@@ -222,13 +222,20 @@ export type Manufacturer = {
   active: boolean;
 };
 
+export type ProductUnit = "EACH" | "GRAM" | "MILLILITER";
+
 export type Product = {
   id: string;
   medicationId: string;
   manufacturerId: string;
   ndc: string;
-  labelName: string | null;
+  descriptor: string;
   packageDescription: string | null;
+  packageType: string | null;
+  unitsPerPackage: string | number | null;
+  dispensingUnit: ProductUnit | null;
+  unitPrice: string | number | null;
+  packagePrice: string | number | null;
   active: boolean;
   manufacturer: Manufacturer;
   lots: ProductLot[];

@@ -410,8 +410,13 @@ export async function createProduct(
     ndc: string;
     manufacturerName: string;
     manufacturerLabelerCode?: string;
-    labelName?: string;
+    descriptor: string;
     packageDescription?: string;
+    packageType: string;
+    unitsPerPackage: number;
+    dispensingUnit: "EACH" | "GRAM" | "MILLILITER";
+    unitPrice?: number;
+    packagePrice?: number;
   },
 ) {
   return request<{ product: Product }>(
