@@ -28,8 +28,16 @@ const viewTitles: Record<View, string> = {
   "will-call": "Will Call",
   "new-rx": "New Prescription",
   patients: "Patients",
-  prescribers: "Prescribers",
+  prescribers: "Providers",
   detail: "Prescription Detail",
+};
+
+const functionKeyViews: Partial<Record<string, View>> = {
+  F1: "dashboard",
+  F2: "will-call",
+  F3: "new-rx",
+  F4: "patients",
+  F5: "prescribers",
 };
 
 export function App() {
@@ -98,6 +106,24 @@ export function App() {
     }
   }, [selectedExternalId]);
 
+  useEffect(() => {
+    function handleFunctionKey(event: KeyboardEvent) {
+      const target = functionKeyViews[event.key];
+      if (!target) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setMessage(null);
+      setSelectedPrescriptionId(null);
+      setView(target);
+    }
+
+    window.addEventListener("keydown", handleFunctionKey, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", handleFunctionKey, { capture: true });
+    };
+  }, []);
+
   const counts = useMemo(() => {
     const count = (status: string) => queue.filter((rx) => rx.status === status).length;
     const scheduled = queue.flatMap((rx) => rx.fills).filter(
@@ -151,11 +177,11 @@ export function App() {
         </div>
 
         <nav>
-          <button className={view === "dashboard" ? "nav-item active" : "nav-item"} onClick={() => navigate("dashboard")}>Dashboard</button>
-          <button className={view === "will-call" ? "nav-item active" : "nav-item"} onClick={() => navigate("will-call")}>Will Call <span className="nav-count">{willCall.length}</span></button>
-          <button className={view === "new-rx" ? "nav-item active" : "nav-item"} onClick={() => navigate("new-rx")}>New Prescription</button>
-          <button className={view === "patients" ? "nav-item active" : "nav-item"} onClick={() => navigate("patients")}>Patients</button>
-          <button className={view === "prescribers" ? "nav-item active" : "nav-item"} onClick={() => navigate("prescribers")}>Prescribers</button>
+          <button className={view === "dashboard" ? "nav-item active" : "nav-item"} onClick={() => navigate("dashboard")}><span>Dashboard</span><kbd>F1</kbd></button>
+          <button className={view === "will-call" ? "nav-item active" : "nav-item"} onClick={() => navigate("will-call")}><span>Will Call <span className="nav-count">{willCall.length}</span></span><kbd>F2</kbd></button>
+          <button className={view === "new-rx" ? "nav-item active" : "nav-item"} onClick={() => navigate("new-rx")}><span>New Prescription</span><kbd>F3</kbd></button>
+          <button className={view === "patients" ? "nav-item active" : "nav-item"} onClick={() => navigate("patients")}><span>Patients</span><kbd>F4</kbd></button>
+          <button className={view === "prescribers" ? "nav-item active" : "nav-item"} onClick={() => navigate("prescribers")}><span>Providers</span><kbd>F5</kbd></button>
           <button className="nav-item" disabled>Inventory</button>
           <button className="nav-item" disabled>Reports</button>
         </nav>

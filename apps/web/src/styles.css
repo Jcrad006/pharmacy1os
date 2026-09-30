@@ -304,3 +304,52 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 900px) {
   .clinical-grid, .clinical-history { grid-template-columns: 1fr; }
 }
+
+.nav-item kbd {
+  min-width: 30px;
+  border: 1px solid #527065;
+  border-bottom-color: #789188;
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: #1c342c;
+  color: #cfe0d8;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+.directory-search {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 14px;
+  border: 1px solid #dfe8e3;
+  border-radius: 10px;
+  background: #f8fbf9;
+}
+.directory-search label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+.directory-search input {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  background: white;
+  padding: 9px 10px;
+  color: #1c2924;
+}
+.directory-search-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+}
+@media (max-width: 1050px) {
+  .directory-search { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 650px) {
+  .directory-search { grid-template-columns: 1fr; }
+}

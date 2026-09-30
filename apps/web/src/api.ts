@@ -75,8 +75,29 @@ export async function getPrescriptionAudit(devUser: string, id: string) {
   return result.events;
 }
 
-export async function getPatients(devUser: string) {
-  const result = await request<{ patients: Patient[] }>("/api/patients", { devUser });
+type DirectoryFilters = {
+  lastName?: string;
+  firstName?: string;
+  dateOfBirth?: string;
+  phone?: string;
+  query?: string;
+};
+
+function directoryQuery(filters?: DirectoryFilters) {
+  const params = new URLSearchParams();
+  if (!filters) return "";
+  for (const [key, value] of Object.entries(filters)) {
+    if (value?.trim()) params.set(key, value.trim());
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export async function getPatients(devUser: string, filters?: DirectoryFilters) {
+  const result = await request<{ patients: Patient[] }>(
+    `/api/patients${directoryQuery(filters)}`,
+    { devUser },
+  );
   return result.patients;
 }
 
@@ -97,10 +118,11 @@ export async function createPatient(
   });
 }
 
-export async function getPrescribers(devUser: string) {
-  const result = await request<{ prescribers: Prescriber[] }>("/api/prescribers", {
-    devUser,
-  });
+export async function getPrescribers(devUser: string, filters?: DirectoryFilters) {
+  const result = await request<{ prescribers: Prescriber[] }>(
+    `/api/prescribers${directoryQuery(filters)}`,
+    { devUser },
+  );
   return result.prescribers;
 }
 
@@ -109,6 +131,7 @@ export async function createPrescriber(
   input: {
     firstName: string;
     lastName: string;
+    dateOfBirth?: string;
     npi?: string;
     deaNumber?: string;
     phone?: string;

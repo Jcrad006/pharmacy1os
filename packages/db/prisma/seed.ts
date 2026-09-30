@@ -51,6 +51,7 @@ async function main() {
       lastName: "Example",
       dateOfBirth: new Date("1978-04-12T00:00:00Z"),
       phone: "555-0111",
+      phoneSearch: "5550111",
       email: "casey.example@example.invalid",
     },
   });
@@ -65,6 +66,7 @@ async function main() {
       lastName: "Sample",
       dateOfBirth: new Date("1959-09-03T00:00:00Z"),
       phone: "555-0112",
+      phoneSearch: "5550112",
     },
   });
 
@@ -76,9 +78,11 @@ async function main() {
       siteId: ids.site,
       firstName: "Avery",
       lastName: "Demo",
+      dateOfBirth: new Date("1970-01-15T00:00:00Z"),
       npi: "0000000001",
       deaNumber: "DEMO-DEA-001",
       phone: "555-0201",
+      phoneSearch: "5550201",
       fax: "555-0202",
     },
   });
@@ -91,8 +95,10 @@ async function main() {
       siteId: ids.site,
       firstName: "Cameron",
       lastName: "Example",
+      dateOfBirth: new Date("1981-06-22T00:00:00Z"),
       npi: "0000000002",
       phone: "555-0203",
+      phoneSearch: "5550203",
       fax: "555-0204",
     },
   });
