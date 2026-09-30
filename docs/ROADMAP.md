@@ -67,8 +67,15 @@
 - [x] Keyboard shortcuts for queue search and primary work areas
 - [x] Enter-to-open-first queue search workflow
 - [x] Database-backed queue search/filter tests
-- [ ] Patient/prescriber search improvements beyond local loaded records
-- [ ] Synthetic task/exception queue
+- [x] Server-backed patient directory search
+- [x] Server-backed prescriber directory search
+- [x] Derived synthetic exception queue
+- [x] Clinical/DUR exception category
+- [x] On-hold exception category
+- [x] Pharmacist-review exception category
+- [x] Scheduled-fill exception category
+- [x] Exception search/filtering and severity-first ordering
+- [x] Database-backed exception lifecycle tests
 - [ ] User-configurable queue priorities
 - [ ] Additional keyboard navigation within tables
 

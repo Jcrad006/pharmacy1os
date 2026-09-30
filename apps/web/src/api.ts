@@ -3,6 +3,9 @@ import type {
   DevUser,
   DurIssue,
   DurSeverity,
+  ExceptionItem,
+  ExceptionKind,
+  ExceptionSummary,
   InterventionNote,
   Patient,
   Prescriber,
@@ -90,8 +93,14 @@ export async function getPrescriptionAudit(devUser: string, id: string) {
   return result.events;
 }
 
-export async function getPatients(devUser: string) {
-  const result = await request<{ patients: Patient[] }>("/api/patients", { devUser });
+export async function getPatients(devUser: string, query?: string) {
+  const params = new URLSearchParams();
+  if (query?.trim()) params.set("query", query.trim());
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const result = await request<{ patients: Patient[] }>(
+    `/api/patients${suffix}`,
+    { devUser },
+  );
   return result.patients;
 }
 
@@ -112,10 +121,14 @@ export async function createPatient(
   });
 }
 
-export async function getPrescribers(devUser: string) {
-  const result = await request<{ prescribers: Prescriber[] }>("/api/prescribers", {
-    devUser,
-  });
+export async function getPrescribers(devUser: string, query?: string) {
+  const params = new URLSearchParams();
+  if (query?.trim()) params.set("query", query.trim());
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const result = await request<{ prescribers: Prescriber[] }>(
+    `/api/prescribers${suffix}`,
+    { devUser },
+  );
   return result.prescribers;
 }
 
@@ -286,5 +299,21 @@ export async function createIntervention(
       devUser,
       body: JSON.stringify({ note }),
     },
+  );
+}
+
+export async function getExceptions(
+  devUser: string,
+  options?: { query?: string; kind?: ExceptionKind | ""; limit?: number },
+) {
+  const params = new URLSearchParams();
+  if (options?.query?.trim()) params.set("query", options.query.trim());
+  if (options?.kind) params.set("kind", options.kind);
+  if (options?.limit) params.set("limit", String(options.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+
+  return request<{ exceptions: ExceptionItem[]; summary: ExceptionSummary }>(
+    `/api/exceptions${suffix}`,
+    { devUser },
   );
 }

@@ -5,18 +5,21 @@ import {
   getPrescribers,
   getPrescriptionQueue,
   getWillCall,
+  getExceptions,
 } from "./api";
 import { Dashboard } from "./screens/Dashboard";
 import { NewPrescription } from "./screens/NewPrescription";
 import { Patients } from "./screens/Patients";
 import { Prescribers } from "./screens/Prescribers";
 import { PrescriptionDetail } from "./screens/PrescriptionDetail";
+import { Exceptions } from "./screens/Exceptions";
 import { WillCall } from "./screens/WillCall";
-import type { DevUser, Patient, Prescriber, PrescriptionQueueItem } from "./types";
+import type { DevUser, ExceptionSummary, Patient, Prescriber, PrescriptionQueueItem } from "./types";
 import { roleLabel } from "./workflow";
 
 type View =
   | "dashboard"
+  | "exceptions"
   | "will-call"
   | "new-rx"
   | "patients"
@@ -25,6 +28,7 @@ type View =
 
 const viewTitles: Record<View, string> = {
   dashboard: "Dispensing Dashboard",
+  exceptions: "Exceptions",
   "will-call": "Will Call",
   "new-rx": "New Prescription",
   patients: "Patients",
@@ -39,6 +43,14 @@ export function App() {
   );
   const [queue, setQueue] = useState<PrescriptionQueueItem[]>([]);
   const [willCall, setWillCall] = useState<PrescriptionQueueItem[]>([]);
+  const [exceptionSummary, setExceptionSummary] = useState<ExceptionSummary>({
+    total: 0,
+    clinical: 0,
+    onHold: 0,
+    pharmacistReview: 0,
+    scheduled: 0,
+  });
+  const [exceptionRefreshToken, setExceptionRefreshToken] = useState(0);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [prescribers, setPrescribers] = useState<Prescriber[]>([]);
   const [view, setView] = useState<View>("dashboard");
@@ -57,15 +69,18 @@ export function App() {
 
     setLoading(true);
     try {
-      const [nextQueue, nextWillCall, nextPatients, nextPrescribers] =
+      const [nextQueue, nextWillCall, nextExceptions, nextPatients, nextPrescribers] =
         await Promise.all([
           getPrescriptionQueue(devUser),
           getWillCall(devUser),
+          getExceptions(devUser),
           getPatients(devUser),
           getPrescribers(devUser),
         ]);
       setQueue(nextQueue);
       setWillCall(nextWillCall);
+      setExceptionSummary(nextExceptions.summary);
+      setExceptionRefreshToken((value) => value + 1);
       setPatients(nextPatients);
       setPrescribers(nextPrescribers);
     } catch (error) {
@@ -120,6 +135,7 @@ export function App() {
       if (editing || event.metaKey || event.ctrlKey || event.altKey) return;
 
       if (event.key.toLowerCase() === "q") navigate("dashboard");
+      if (event.key.toLowerCase() === "e") navigate("exceptions");
       if (event.key.toLowerCase() === "w") navigate("will-call");
       if (event.key.toLowerCase() === "n") navigate("new-rx");
       if (event.key.toLowerCase() === "p") navigate("patients");
@@ -185,6 +201,7 @@ export function App() {
 
         <nav>
           <button className={view === "dashboard" ? "nav-item active" : "nav-item"} onClick={() => navigate("dashboard")}>Dashboard</button>
+          <button className={view === "exceptions" ? "nav-item active" : "nav-item"} onClick={() => navigate("exceptions")}>Exceptions <span className="nav-count">{exceptionSummary.total}</span></button>
           <button className={view === "will-call" ? "nav-item active" : "nav-item"} onClick={() => navigate("will-call")}>Will Call <span className="nav-count">{willCall.length}</span></button>
           <button className={view === "new-rx" ? "nav-item active" : "nav-item"} onClick={() => navigate("new-rx")}>New Prescription</button>
           <button className={view === "patients" ? "nav-item active" : "nav-item"} onClick={() => navigate("patients")}>Patients</button>
@@ -207,6 +224,7 @@ export function App() {
             <span><kbd>/</kbd> Search</span>
             <span><kbd>Q</kbd> Queue</span>
             <span><kbd>N</kbd> New Rx</span>
+            <span><kbd>E</kbd> Exceptions</span>
             <span><kbd>W</kbd> Will Call</span>
           </div>
         </div>
@@ -234,6 +252,16 @@ export function App() {
         </section>
 
         {message && <section className="message">{message}</section>}
+
+        {view === "exceptions" && (
+          <Exceptions
+            devUser={selectedExternalId}
+            refreshToken={exceptionRefreshToken}
+            onOpen={openPrescription}
+            onCountChanged={setExceptionSummary}
+            onError={setMessage}
+          />
+        )}
 
         {view === "dashboard" && (
           <Dashboard

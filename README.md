@@ -131,3 +131,11 @@ Current keyboard shortcuts (when not typing in a form):
 - `P` — patients
 - `R` — prescribers
 - `Enter` in queue search — open the first result
+
+## Exception queue and directories
+
+The workstation now includes an **Exceptions** queue derived directly from live pharmacy state. It currently surfaces open synthetic DUR issues, prescriptions on hold, prescriptions waiting for pharmacist verification, and scheduled fills.
+
+There is no separate completion checkbox for these derived exceptions. When the underlying issue is resolved—for example, a DUR issue is resolved or an On Hold prescription is resumed—the corresponding exception disappears automatically.
+
+Patient and prescriber directory searches are now server-backed, so searching is no longer limited to the initial records loaded into the workstation.

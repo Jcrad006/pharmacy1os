@@ -129,3 +129,31 @@ export type InterventionNote = {
     role: UserRole;
   };
 };
+
+export type ExceptionKind =
+  | "CLINICAL_ISSUE"
+  | "ON_HOLD"
+  | "PHARMACIST_REVIEW"
+  | "SCHEDULED_FILL";
+
+export type ExceptionItem = {
+  id: string;
+  kind: ExceptionKind;
+  prescriptionId: string;
+  rxNumber: string | null;
+  patientName: string;
+  medicationName: string;
+  title: string;
+  detail: string | null;
+  severity: DurSeverity;
+  dueAt: string | null;
+  createdAt: string;
+};
+
+export type ExceptionSummary = {
+  total: number;
+  clinical: number;
+  onHold: number;
+  pharmacistReview: number;
+  scheduled: number;
+};
