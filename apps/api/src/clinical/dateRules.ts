@@ -8,14 +8,16 @@ type RulePrescription = {
   expirationDate: Date | null;
   doNotFillBefore: Date | null;
   minimumDaysBetweenFills: number | null;
-  fills: Array<{
-    status: FillStatus;
-    soldAt: Date | null;
-  }>;
+  fills: Array<{ status: FillStatus; soldAt: Date | null }>;
 };
 
+export type DispensingRuleCode =
+  | "RX_EXPIRED"
+  | "DO_NOT_FILL_BEFORE"
+  | "REFILL_TOO_SOON";
+
 export type DispensingRuleBlock = {
-  code: "RX_EXPIRED" | "DO_NOT_FILL_BEFORE" | "REFILL_TOO_SOON";
+  code: DispensingRuleCode;
   title: string;
   message: string;
   eligibleAt?: Date;
@@ -27,31 +29,33 @@ function endOfUtcDay(value: Date) {
   return result;
 }
 
-export function evaluateDispensingDateRules(
+export function evaluateDispensingDateRuleBlocks(
   prescription: RulePrescription,
   targetDate: Date,
-): DispensingRuleBlock | null {
+): DispensingRuleBlock[] {
+  const blocks: DispensingRuleBlock[] = [];
+
   if (
     prescription.expirationDate &&
     targetDate.getTime() > endOfUtcDay(prescription.expirationDate).getTime()
   ) {
-    return {
+    blocks.push({
       code: "RX_EXPIRED",
       title: "Prescription expired",
       message: "This prescription is past its configured expiration date.",
-    };
+    });
   }
 
   if (
     prescription.doNotFillBefore &&
     targetDate.getTime() < prescription.doNotFillBefore.getTime()
   ) {
-    return {
+    blocks.push({
       code: "DO_NOT_FILL_BEFORE",
       title: "Do-not-fill-before date",
       message: "This fill is earlier than the prescription's do-not-fill-before date.",
       eligibleAt: prescription.doNotFillBefore,
-    };
+    });
   }
 
   const minimumDays = prescription.minimumDaysBetweenFills ?? 0;
@@ -67,17 +71,87 @@ export function evaluateDispensingDateRules(
       );
 
       if (targetDate.getTime() < eligibleAt.getTime()) {
-        return {
+        blocks.push({
           code: "REFILL_TOO_SOON",
           title: "Refill too soon",
           message: `This synthetic date rule requires at least ${minimumDays} day(s) between sold fills.`,
           eligibleAt,
-        };
+        });
       }
     }
   }
 
-  return null;
+  return blocks;
+}
+
+export function evaluateDispensingDateRules(
+  prescription: RulePrescription,
+  targetDate: Date,
+): DispensingRuleBlock | null {
+  return evaluateDispensingDateRuleBlocks(prescription, targetDate)[0] ?? null;
+}
+
+export async function reconcileDateRuleIssues(input: {
+  prescription: RulePrescription;
+  targetDate: Date;
+  actorId: string;
+  requestId?: string;
+}) {
+  const activeCodes = new Set(
+    evaluateDispensingDateRuleBlocks(input.prescription, input.targetDate).map(
+      (block) => block.code,
+    ),
+  );
+
+  const openDateIssues = await db.durIssue.findMany({
+    where: {
+      prescriptionId: input.prescription.id,
+      source: "SYNTHETIC_DATE_RULE",
+      status: "OPEN",
+    },
+  });
+
+  const staleIssues = openDateIssues.filter(
+    (issue) => !activeCodes.has(issue.code as DispensingRuleCode),
+  );
+
+  if (staleIssues.length === 0) return [];
+
+  return db.$transaction(async (tx) => {
+    const resolved = [];
+
+    for (const issue of staleIssues) {
+      const updated = await tx.durIssue.update({
+        where: { id: issue.id },
+        data: {
+          status: "RESOLVED",
+          resolvedAt: new Date(),
+          resolutionNote:
+            "Automatically resolved because the synthetic dispensing date rule no longer blocks the intended fill date.",
+          resolvedAutomatically: true,
+          resolvedById: null,
+        },
+      });
+
+      await writeAuditEvent(tx, {
+        siteId: input.prescription.siteId,
+        actorId: input.actorId,
+        action: "DUR_ISSUE_AUTO_RESOLVED",
+        entityType: "DurIssue",
+        entityId: issue.id,
+        requestId: input.requestId,
+        metadata: {
+          prescriptionId: input.prescription.id,
+          code: issue.code,
+          targetDate: input.targetDate.toISOString(),
+        },
+      });
+
+      resolved.push(updated);
+    }
+
+    return resolved;
+  });
 }
 
 export async function recordDateRuleIssue(input: {
@@ -90,11 +164,30 @@ export async function recordDateRuleIssue(input: {
     where: {
       prescriptionId: input.prescription.id,
       code: input.block.code,
+      source: "SYNTHETIC_DATE_RULE",
       status: "OPEN",
     },
   });
 
-  if (existing) return existing;
+  const description = input.block.eligibleAt
+    ? `${input.block.message} Eligible at: ${input.block.eligibleAt.toISOString()}`
+    : input.block.message;
+
+  if (existing) {
+    if (
+      existing.eligibleAt?.getTime() !== input.block.eligibleAt?.getTime() ||
+      existing.description !== description
+    ) {
+      return db.durIssue.update({
+        where: { id: existing.id },
+        data: {
+          eligibleAt: input.block.eligibleAt ?? null,
+          description,
+        },
+      });
+    }
+    return existing;
+  }
 
   return db.$transaction(async (tx) => {
     const issue = await tx.durIssue.create({
@@ -102,11 +195,10 @@ export async function recordDateRuleIssue(input: {
         prescriptionId: input.prescription.id,
         code: input.block.code,
         title: input.block.title,
-        description: input.block.eligibleAt
-          ? `${input.block.message} Eligible at: ${input.block.eligibleAt.toISOString()}`
-          : input.block.message,
+        description,
         severity: input.block.code === "RX_EXPIRED" ? "HIGH" : "WARNING",
         source: "SYNTHETIC_DATE_RULE",
+        eligibleAt: input.block.eligibleAt,
       },
     });
 

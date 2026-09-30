@@ -240,14 +240,17 @@ model DurIssue {
   prescription   Prescription   @relation(fields: [prescriptionId], references: [id])
   code           String
   title          String
-  description    String?
-  severity       DurSeverity    @default(WARNING)
-  status         DurIssueStatus @default(OPEN)
-  source         String         @default("SYNTHETIC_RULE")
-  createdAt      DateTime       @default(now())
-  resolvedAt     DateTime?
-  resolvedById   String?
-  resolvedBy     User?          @relation("ResolvedDurIssues", fields: [resolvedById], references: [id])
+  description           String?
+  severity              DurSeverity    @default(WARNING)
+  status                DurIssueStatus @default(OPEN)
+  source                String         @default("SYNTHETIC_RULE")
+  eligibleAt            DateTime?
+  createdAt             DateTime       @default(now())
+  resolvedAt            DateTime?
+  resolutionNote        String?
+  resolvedAutomatically Boolean        @default(false)
+  resolvedById          String?
+  resolvedBy            User?          @relation("ResolvedDurIssues", fields: [resolvedById], references: [id])
 
   @@index([prescriptionId, status])
   @@index([code, status])
