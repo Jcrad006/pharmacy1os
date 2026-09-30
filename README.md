@@ -36,6 +36,8 @@ The current prototype includes:
 - Database-backed dispensing, clinical, and queue-search integration tests
 - Automated migration, seed, typecheck, test, and production-build validation in CI
 
+Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
+
 ## Dispensing model
 
 The standard synthetic processing path is:

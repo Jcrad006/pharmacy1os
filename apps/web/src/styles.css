@@ -721,3 +721,52 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+.clinical-blocker-banner,
+.clinical-gate-warning {
+  border: 1px solid #d49a9a;
+  background: #fff1f1;
+  color: #762f2f;
+  border-radius: 10px;
+}
+.clinical-blocker-banner {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 13px 14px;
+}
+.clinical-blocker-banner span {
+  font-size: 13px;
+}
+.clinical-gate-warning {
+  margin-bottom: 10px;
+  padding: 9px 11px;
+}
+.verification-gate {
+  display: grid;
+  justify-items: start;
+}
+.dur-resolution {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e7ece9;
+}
+.dur-resolution label {
+  display: grid;
+  gap: 6px;
+  color: #44574f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.dur-resolution textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+  color: #1c2924;
+  font: inherit;
+}
