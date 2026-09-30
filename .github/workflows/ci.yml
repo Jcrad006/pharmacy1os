@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1e-workflow-efficiency]
+    branches: [main, phase1e-exceptions-directory-search]
   pull_request:
   workflow_dispatch:
 

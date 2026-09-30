@@ -403,3 +403,17 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+.directory-search-wrap {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+.directory-search-wrap span,
+.directory-help {
+  color: #77837e;
+  font-size: 11px;
+}
+.directory-help {
+  margin: -7px 0 14px;
+}
