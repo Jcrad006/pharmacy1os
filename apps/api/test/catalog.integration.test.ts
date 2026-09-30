@@ -7,7 +7,7 @@ process.env.ALLOW_DEV_IDENTITY = "true";
 
 const app = buildApp();
 const technicianHeaders = { "x-dev-user": "dev-technician" };
-const cashierHeaders = { "x-dev-user": "dev-cashier" };
+const cashierHeaders = { "x-dev-user": "catalog-test-cashier" };
 
 beforeAll(async () => {
   await app.ready();
@@ -163,6 +163,21 @@ describe("drug product NDC and lot catalog", () => {
   });
 
   it("prevents roles without inventory-write permission from creating catalog records", async () => {
+    await db.user.upsert({
+      where: { externalAuthId: "catalog-test-cashier" },
+      update: {
+        displayName: "Catalog Test Cashier",
+        role: "CASHIER",
+        active: true,
+      },
+      create: {
+        siteId: "site-demo-001",
+        externalAuthId: "catalog-test-cashier",
+        displayName: "Catalog Test Cashier",
+        role: "CASHIER",
+      },
+    });
+
     const response = await app.inject({
       method: "POST",
       url: "/api/medications",
