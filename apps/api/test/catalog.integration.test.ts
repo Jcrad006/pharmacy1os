@@ -21,6 +21,9 @@ afterAll(async () => {
 describe("drug product NDC and lot catalog", () => {
   it("stores one drug with multiple manufacturer/NDC products and multiple lots", async () => {
     const suffix = randomUUID().replace(/-/g, "").slice(0, 6);
+    const ndcSegment = Math.floor(Math.random() * 10_000)
+      .toString()
+      .padStart(4, "0");
     const genericName = `CatalogDrug-${suffix}`;
 
     const medication = await app.inject({
@@ -43,7 +46,7 @@ describe("drug product NDC and lot catalog", () => {
       url: `/api/medications/${medicationId}/products`,
       headers: technicianHeaders,
       payload: {
-        ndc: `98765-${suffix.slice(0, 4)}-01`,
+        ndc: `98765-${ndcSegment}-01`,
         manufacturerName: `Manufacturer A ${suffix}`,
         labelName: `${genericName} 25 mg`,
         packageDescription: "Bottle of 100 tablets",
@@ -56,7 +59,7 @@ describe("drug product NDC and lot catalog", () => {
       url: `/api/medications/${medicationId}/products`,
       headers: technicianHeaders,
       payload: {
-        ndc: `87654-${suffix.slice(0, 4)}-02`,
+        ndc: `87654-${ndcSegment}-02`,
         manufacturerName: `Manufacturer B ${suffix}`,
         labelName: `${genericName} 25 mg`,
         packageDescription: "Bottle of 500 tablets",
