@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  PHARMACIST
+  TECHNICIAN
+  INTERN
+  CASHIER
+  AUDITOR
+}
+
+enum PrescriptionStatus {
+  RECEIVED
+  DATA_ENTRY
+  DUR_REVIEW
+  PRODUCT_FILL
+  PHARMACIST_REVIEW
+  READY
+  SOLD
+  ON_HOLD
+  CANCELLED
+  TRANSFERRED
+}
+
+enum FillStatus {
+  SCHEDULED
+  IN_PROGRESS
+  READY
+  SOLD
+  RETURNED_TO_STOCK
+  CANCELLED
+}
+
+model PharmacySite {
+  id            String         @id @default(uuid())
+  name          String
+  npi           String?
+  ncpdpId       String?
+  phone         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  users         User[]
+  prescriptions Prescription[]
+  auditEvents   AuditEvent[]
+}
+
+model User {
+  id             String       @id @default(uuid())
+  siteId         String
+  site           PharmacySite @relation(fields: [siteId], references: [id])
+  externalAuthId String?      @unique
+  displayName    String
+  role           UserRole
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  auditEvents    AuditEvent[] @relation("ActorAuditEvents")
+
+  @@index([siteId, role])
+}
+
+model Patient {
+  id            String         @id @default(uuid())
+  firstName     String
+  lastName      String
+  dateOfBirth   DateTime?
+  phone         String?
+  email         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  prescriptions Prescription[]
+
+  @@index([lastName, firstName])
+}
+
+model Prescriber {
+  id            String         @id @default(uuid())
+  firstName     String
+  lastName      String
+  npi           String?        @unique
+  deaNumber     String?
+  phone         String?
+  fax           String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  prescriptions Prescription[]
+
+  @@index([lastName, firstName])
+}
+
+model Prescription {
+  id              String             @id @default(uuid())
+  siteId          String
+  site            PharmacySite       @relation(fields: [siteId], references: [id])
+  patientId       String
+  patient         Patient            @relation(fields: [patientId], references: [id])
+  prescriberId    String
+  prescriber      Prescriber         @relation(fields: [prescriberId], references: [id])
+  rxNumber        String?
+  medicationName  String
+  strength        String?
+  dosageForm      String?
+  sig             String
+  quantityWritten Decimal?           @db.Decimal(10, 3)
+  refillsAllowed  Int                @default(0)
+  refillsUsed     Int                @default(0)
+  writtenDate     DateTime?
+  expirationDate  DateTime?
+  status          PrescriptionStatus @default(RECEIVED)
+  doNotFillBefore DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  fills           PrescriptionFill[]
+
+  @@unique([siteId, rxNumber])
+  @@index([siteId, status])
+  @@index([patientId])
+}
+
+model PrescriptionFill {
+  id             String       @id @default(uuid())
+  prescriptionId String
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id])
+  fillNumber     Int
+  scheduledFor   DateTime?
+  quantity       Decimal?     @db.Decimal(10, 3)
+  status         FillStatus   @default(SCHEDULED)
+  filledAt       DateTime?
+  soldAt         DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([prescriptionId, fillNumber])
+  @@index([scheduledFor, status])
+}
+
+model AuditEvent {
+  id         String       @id @default(uuid())
+  siteId     String
+  site       PharmacySite @relation(fields: [siteId], references: [id])
+  actorId    String?
+  actor      User?        @relation("ActorAuditEvents", fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  requestId  String?
+  metadata   Json?
+  occurredAt DateTime     @default(now())
+
+  @@index([siteId, occurredAt])
+  @@index([entityType, entityId])
+}

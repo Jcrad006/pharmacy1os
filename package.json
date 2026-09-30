@@ -1,0 +1,16 @@
+{
+  "name": "pharmacy1os",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @pharmacy1os/api --filter @pharmacy1os/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @pharmacy1os/db generate",
+    "db:migrate": "pnpm --filter @pharmacy1os/db migrate",
+    "db:studio": "pnpm --filter @pharmacy1os/db studio"
+  }
+}
