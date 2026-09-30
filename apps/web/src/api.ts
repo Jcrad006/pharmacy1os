@@ -93,9 +93,32 @@ export async function getPrescriptionAudit(devUser: string, id: string) {
   return result.events;
 }
 
-export async function getPatients(devUser: string, query?: string) {
+export type DirectoryFilters = {
+  lastName?: string;
+  firstName?: string;
+  dateOfBirth?: string;
+  phone?: string;
+  query?: string;
+};
+
+function addDirectoryFilters(params: URLSearchParams, filters?: string | DirectoryFilters) {
+  if (typeof filters === "string") {
+    if (filters.trim()) params.set("query", filters.trim());
+    return;
+  }
+
+  if (!filters) return;
+  for (const [key, value] of Object.entries(filters)) {
+    if (value?.trim()) params.set(key, value.trim());
+  }
+}
+
+export async function getPatients(
+  devUser: string,
+  filters?: string | DirectoryFilters,
+) {
   const params = new URLSearchParams();
-  if (query?.trim()) params.set("query", query.trim());
+  addDirectoryFilters(params, filters);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const result = await request<{ patients: Patient[] }>(
     `/api/patients${suffix}`,
@@ -121,9 +144,12 @@ export async function createPatient(
   });
 }
 
-export async function getPrescribers(devUser: string, query?: string) {
+export async function getPrescribers(
+  devUser: string,
+  filters?: string | DirectoryFilters,
+) {
   const params = new URLSearchParams();
-  if (query?.trim()) params.set("query", query.trim());
+  addDirectoryFilters(params, filters);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const result = await request<{ prescribers: Prescriber[] }>(
     `/api/prescribers${suffix}`,
@@ -137,6 +163,7 @@ export async function createPrescriber(
   input: {
     firstName: string;
     lastName: string;
+    dateOfBirth?: string;
     npi?: string;
     deaNumber?: string;
     phone?: string;

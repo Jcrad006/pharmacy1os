@@ -48,6 +48,7 @@ export type Prescriber = {
   id: string;
   firstName: string;
   lastName: string;
+  dateOfBirth: string | null;
   npi: string | null;
   deaNumber?: string | null;
   phone?: string | null;
