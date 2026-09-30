@@ -91,3 +91,18 @@ A green check means development checks passed. It does **not** mean the product 
 ## Data rule
 
 Use synthetic data only. Never use real patient data, live prescriptions, production credentials, or pharmacy vendor accounts during development.
+
+## Derived exception queue
+
+`GET /api/exceptions` builds a work list from source-of-truth pharmacy state rather than persisting duplicate task records.
+
+Current derived categories:
+
+- `CLINICAL_ISSUE`: open `DurIssue` records
+- `ON_HOLD`: prescriptions whose workflow status is On Hold
+- `PHARMACIST_REVIEW`: prescriptions awaiting pharmacist verification
+- `SCHEDULED_FILL`: fill records in Scheduled status
+
+The API sorts higher clinical severity first, then scheduled due time, then age. Because the exceptions are derived, resolving the underlying source automatically removes the exception.
+
+Patient and prescriber screen searches use their existing server query endpoints instead of filtering only the initial local result set.
