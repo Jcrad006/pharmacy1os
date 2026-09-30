@@ -5,6 +5,7 @@ import { developmentRoutes } from "./routes/development.js";
 import { patientRoutes } from "./routes/patients.js";
 import { prescriberRoutes } from "./routes/prescribers.js";
 import { prescriptionRoutes } from "./routes/prescriptions.js";
+import { clinicalRoutes } from "./routes/clinical.js";
 
 export function buildApp() {
   const app = Fastify({
@@ -21,6 +22,7 @@ export function buildApp() {
   app.register(patientRoutes, { prefix: "/api" });
   app.register(prescriberRoutes, { prefix: "/api" });
   app.register(prescriptionRoutes, { prefix: "/api" });
+  app.register(clinicalRoutes, { prefix: "/api" });
 
   return app;
 }
