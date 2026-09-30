@@ -8,24 +8,37 @@
 - [x] Role and permission model
 - [x] Audit-event schema
 - [x] CI workflow
-- [ ] Validate full stack
-- [ ] Initial migration
-- [ ] Synthetic seed data
+- [x] Initial database migration
+- [x] Synthetic seed data
+- [x] Automated migration/seed validation against PostgreSQL
 
 ## Phase 1 — Core dispensing
-- Patient and prescriber search/registration
-- Prescription entry and queue
-- Fill creation and future-fill scheduling
-- Workflow transitions
-- Pharmacist verification
-- Refill accounting
-- Hold/cancel/transfer
-- Audit events for workflow changes
+- [x] Synthetic staff identity for development
+- [x] Patient search API
+- [x] Prescriber search API
+- [x] Patient registration API
+- [x] Prescriber registration API
+- [x] Prescription entry API
+- [x] Live workstation prescription queue
+- [x] Controlled workflow transitions
+- [x] Pharmacist-only final verification transition
+- [x] Fill creation API
+- [x] Future-fill scheduling API
+- [x] Audit events for core workflow changes
+- [ ] Patient registration workstation screen
+- [ ] Prescriber registration workstation screen
+- [ ] Prescription detail screen
+- [ ] Fill/dispensing workstation screen
+- [ ] Refill accounting updates when fills are completed
+- [ ] Hold/resume workflow controls in workstation
+- [ ] Cancel/transfer workflow controls in workstation
+- [ ] Audit-history workstation screen
+- [ ] Database-backed integration tests for API workflows
 
 ## Phase 2 — Identity/security
-- Authentication
+- Production authentication
 - Sessions
-- Server-enforced RBAC
+- Server-enforced RBAC hardening
 - MFA support
 - Admin user lifecycle
 - Structured security logging
@@ -42,7 +55,7 @@
 - Fax
 - E-prescribing
 - DUR/drug knowledge
-- Claims
+- Claims adjudication
 - PDMP where applicable
 - Notifications
 

@@ -4,32 +4,32 @@ Pharmacy1OS is an early-stage, Linux-friendly pharmacy operations platform inten
 
 > **Development status:** prototype only. Do not use real patient information, protected health information (PHI), production credentials, or this software for live pharmacy operations.
 
-## Architecture
+## Current prototype
 
-Pharmacy1OS is being built as a browser-based application that can run on Linux and be accessed by pharmacy workstations on a trusted network. This avoids reinventing Linux itself while preserving the ability to integrate with pharmacy hardware and external services later.
+The current synthetic dispensing prototype includes:
 
-## Foundation included
-
-- React + TypeScript pharmacy workstation UI
-- Fastify + TypeScript API
-- PostgreSQL data layer using Prisma
-- Role and permission model
-- Initial pharmacy domain schema
-- Audit-event data model
-- Local Docker development database
-- Automated CI checks
-- Architecture, security, and roadmap documentation
+- React + TypeScript pharmacy workstation
+- Fastify + TypeScript pharmacy API
+- PostgreSQL + Prisma database
+- Site-scoped synthetic patients and prescribers
+- Synthetic pharmacist, technician, and intern identities
+- Prescription entry and live workflow queue
+- Controlled workflow-state transitions
+- Pharmacist-only final verification transition
+- Fill creation and future-fill scheduling API
+- Automatic audit-event creation
+- Automated migration, seed, typecheck, test, and build validation in CI
 
 ## Repository layout
 
 ```text
 apps/
-  api/            Pharmacy API
+  api/            Pharmacy API and workflow rules
   web/            Pharmacy workstation UI
 packages/
-  db/             Prisma database schema and client
-docs/             Architecture, security, and roadmap
-.github/workflows Continuous integration
+  db/             Prisma schema, migrations, and synthetic seed
+docs/             Architecture, security, development, and roadmap
+.github/workflows Automated validation
 ```
 
 ## Local development
@@ -41,15 +41,19 @@ cp .env.example .env
 docker compose up -d db
 pnpm install
 pnpm db:generate
+pnpm db:deploy
+pnpm db:seed
 pnpm dev
 ```
 
-Development addresses:
+Then open:
 
-- Web: http://localhost:5173
+- Workstation: http://localhost:5173
 - API: http://localhost:3001
-- Health: http://localhost:3001/health
+- Health check: http://localhost:3001/health
+
+The workstation will offer synthetic pharmacist, technician, and intern identities for exercising role behavior. That selector is development-only and is **not production authentication**.
 
 ## Safety boundary
 
-This repository is development scaffolding. Authentication, encryption, PHI safeguards, regulated interfaces, deployment hardening, validation, disaster recovery, and compliance controls must be completed and independently reviewed before real-world pharmacy use.
+This repository remains a development prototype. Do not enter real PHI. Production authentication, encryption, regulated interfaces, deployment hardening, disaster recovery, formal validation, and applicable privacy/regulatory controls must be completed and independently reviewed before real-world pharmacy use.

@@ -1,16 +1,16 @@
 # Development Guide
 
-This guide is written for contributors who may be new to software development.
+This guide is intentionally written so a contributor does not need prior Pharmacy1OS knowledge.
 
 ## What the pieces do
 
-- `apps/web`: the screens pharmacy staff will use.
-- `apps/api`: the server that applies pharmacy rules and handles requests.
-- `packages/db`: the database definition and database client.
-- `docs`: explanations of architecture, security boundaries, and planned work.
-- `.github/workflows/ci.yml`: GitHub's automated build/test check.
+- `apps/web`: the workstation screens pharmacy staff interact with.
+- `apps/api`: the server that enforces workflow and permissions.
+- `packages/db`: the PostgreSQL/Prisma schema, migration, and synthetic data seed.
+- `docs`: architecture, security boundaries, and roadmap.
+- `.github/workflows/ci.yml`: automated validation performed by GitHub.
 
-## Basic local startup
+## First local startup
 
 1. Install Node.js 22 or newer.
 2. Install pnpm 10 or newer.
@@ -19,16 +19,40 @@ This guide is written for contributors who may be new to software development.
 5. Run `docker compose up -d db`.
 6. Run `pnpm install`.
 7. Run `pnpm db:generate`.
-8. Run `pnpm dev`.
+8. Run `pnpm db:deploy`.
+9. Run `pnpm db:seed`.
+10. Run `pnpm dev`.
+11. Open http://localhost:5173.
 
-Then open http://localhost:5173.
+The seed step creates synthetic pharmacy staff, patients, prescribers, and prescriptions. It is intentionally safe to rerun.
 
-## GitHub CI
+## Development identity
 
-Every push to `main` should run the CI workflow. The workflow installs dependencies, generates the Prisma database client, typechecks the TypeScript source, runs tests, and builds the applications.
+The workstation currently contains a synthetic staff selector. The selected value is sent to the API as an `x-dev-user` header.
 
-A green CI check does not mean Pharmacy1OS is safe for production. It only means the current source code passed the automated development checks that exist at that time.
+The API accepts that header only when:
+
+```text
+ALLOW_DEV_IDENTITY=true
+```
+
+This exists solely to exercise role behavior before production authentication is implemented. It must never be treated as a login mechanism for real pharmacy use.
+
+## Automated validation
+
+CI now creates a temporary PostgreSQL database and performs, in order:
+
+1. dependency installation
+2. Prisma client generation
+3. schema validation
+4. database migration deployment
+5. synthetic seed loading
+6. TypeScript typechecking
+7. automated tests
+8. production builds
+
+A green check means those development checks passed. It does **not** mean Pharmacy1OS is compliant, clinically validated, or production-ready.
 
 ## Data rule
 
-Use synthetic data only. Never use real patient data, real prescriptions, real credentials, or live pharmacy vendor accounts during development.
+Use synthetic data only. Never use real patient data, real prescriptions, production credentials, or live pharmacy vendor accounts during development.
