@@ -1,3 +1,4 @@
+import type { ProductUnit } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
@@ -19,8 +20,13 @@ type CreateProductBody = {
   ndc?: string;
   manufacturerName?: string;
   manufacturerLabelerCode?: string;
-  labelName?: string;
+  descriptor?: string;
   packageDescription?: string;
+  packageType?: string;
+  unitsPerPackage?: number;
+  dispensingUnit?: ProductUnit;
+  unitPrice?: number;
+  packagePrice?: number;
 };
 
 type CreateLotBody = {
@@ -44,6 +50,17 @@ function parseDate(value?: string) {
   if (!value?.trim()) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function positiveNumber(value: unknown) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function nonnegativeNumber(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 const productInclude = (siteId: string) => ({
@@ -80,7 +97,9 @@ export async function catalogRoutes(app: FastifyInstance) {
                   products: {
                     some: {
                       OR: [
-                        { labelName: { contains: raw, mode: "insensitive" } },
+                        { descriptor: { contains: raw, mode: "insensitive" } },
+                        { packageDescription: { contains: raw, mode: "insensitive" } },
+                        { packageType: { contains: raw, mode: "insensitive" } },
                         ...(ndcSearch
                           ? [{ ndcSearch: { contains: ndcSearch } }]
                           : []),
@@ -194,10 +213,34 @@ export async function catalogRoutes(app: FastifyInstance) {
 
       const ndc = body.ndc?.trim();
       const ndcSearch = normalizeNdc(ndc);
+      const descriptor = body.descriptor?.trim();
+      const packageType = body.packageType?.trim();
+      const unitsPerPackage = positiveNumber(body.unitsPerPackage);
+      const suppliedUnitPrice = nonnegativeNumber(body.unitPrice);
+      const suppliedPackagePrice = nonnegativeNumber(body.packagePrice);
 
-      if (!ndc || !body.manufacturerName?.trim()) {
+      if (
+        !ndc ||
+        !body.manufacturerName?.trim() ||
+        !descriptor ||
+        !packageType ||
+        !body.dispensingUnit
+      ) {
         return reply.code(400).send({
-          error: "NDC and manufacturer name are required.",
+          error:
+            "NDC, manufacturer, descriptor, package type, units per package, and dispensing unit are required.",
+        });
+      }
+
+      if (unitsPerPackage === null) {
+        return reply.code(400).send({
+          error: "unitsPerPackage must be a number greater than zero.",
+        });
+      }
+
+      if (suppliedUnitPrice === null || suppliedPackagePrice === null) {
+        return reply.code(400).send({
+          error: "Prices must be zero or greater when entered.",
         });
       }
 
@@ -209,7 +252,7 @@ export async function catalogRoutes(app: FastifyInstance) {
 
       const medication = await db.medication.findUnique({
         where: { id: medicationId },
-        select: { id: true },
+        select: { id: true, dosageForm: true },
       });
       if (!medication) {
         return reply.code(404).send({ error: "Medication not found." });
@@ -223,6 +266,15 @@ export async function catalogRoutes(app: FastifyInstance) {
         return reply.code(409).send({
           error: "That normalized NDC is already assigned to a product.",
         });
+      }
+
+      let unitPrice = suppliedUnitPrice;
+      let packagePrice = suppliedPackagePrice;
+
+      if (unitPrice === undefined && packagePrice !== undefined) {
+        unitPrice = packagePrice / unitsPerPackage;
+      } else if (packagePrice === undefined && unitPrice !== undefined) {
+        packagePrice = unitPrice * unitsPerPackage;
       }
 
       const product = await db.$transaction(async (tx) => {
@@ -250,8 +302,13 @@ export async function catalogRoutes(app: FastifyInstance) {
             manufacturerId: manufacturer.id,
             ndc,
             ndcSearch,
-            labelName: body.labelName?.trim() || undefined,
+            descriptor,
             packageDescription: body.packageDescription?.trim() || undefined,
+            packageType,
+            unitsPerPackage,
+            dispensingUnit: body.dispensingUnit,
+            unitPrice,
+            packagePrice,
           },
           include: productInclude(actor.siteId),
         });
@@ -265,10 +322,17 @@ export async function catalogRoutes(app: FastifyInstance) {
           requestId: request.id,
           metadata: {
             medicationId,
+            dosageForm: medication.dosageForm,
             ndc,
             ndcSearch,
+            descriptor,
             manufacturerId: manufacturer.id,
             manufacturerName: manufacturer.name,
+            packageType,
+            unitsPerPackage,
+            dispensingUnit: body.dispensingUnit,
+            unitPrice,
+            packagePrice,
           },
         });
 
