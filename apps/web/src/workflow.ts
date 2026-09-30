@@ -34,6 +34,12 @@ export function canProcess(user?: DevUser) {
   );
 }
 
+export function canEditPrescription(user?: DevUser) {
+  return Boolean(
+    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+  );
+}
+
 export function canVerify(user?: DevUser) {
   return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
 }
@@ -68,6 +74,14 @@ export function activeFill(fills: PrescriptionFill[]) {
   );
 }
 
+export function readyFill(fills: PrescriptionFill[]) {
+  return fills.find((fill) => fill.status === "READY");
+}
+
 export function remainingRefills(refillsAllowed: number, refillsUsed: number) {
   return Math.max(0, refillsAllowed - refillsUsed);
+}
+
+export function prescriptionCanBeEdited(status: PrescriptionStatus) {
+  return ["RECEIVED", "DATA_ENTRY", "DUR_REVIEW", "ON_HOLD"].includes(status);
 }

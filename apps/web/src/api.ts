@@ -48,6 +48,14 @@ export async function getPrescriptionQueue(devUser: string) {
   return result.prescriptions;
 }
 
+export async function getWillCall(devUser: string) {
+  const result = await request<{ prescriptions: PrescriptionQueueItem[] }>(
+    "/api/prescriptions/will-call",
+    { devUser },
+  );
+  return result.prescriptions;
+}
+
 export async function getPrescription(devUser: string, id: string) {
   const result = await request<{ prescription: PrescriptionQueueItem }>(
     `/api/prescriptions/${id}`,
@@ -126,6 +134,32 @@ export async function transitionPrescription(
   );
 }
 
+export async function updatePrescription(
+  devUser: string,
+  id: string,
+  input: {
+    prescriberId?: string;
+    medicationName?: string;
+    strength?: string | null;
+    dosageForm?: string | null;
+    sig?: string;
+    quantityWritten?: number;
+    refillsAllowed?: number;
+    writtenDate?: string | null;
+    expirationDate?: string | null;
+    doNotFillBefore?: string | null;
+  },
+) {
+  return request<{ prescription: PrescriptionQueueItem }>(
+    `/api/prescriptions/${id}`,
+    {
+      method: "PATCH",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
 export async function createPrescription(
   devUser: string,
   input: {
@@ -169,6 +203,16 @@ export async function startFill(devUser: string, fillId: string) {
     fill: PrescriptionFill;
     prescription: PrescriptionQueueItem;
   }>(`/api/fills/${fillId}/start`, {
+    method: "POST",
+    devUser,
+  });
+}
+
+export async function returnFillToStock(devUser: string, fillId: string) {
+  return request<{
+    fill: PrescriptionFill;
+    prescription: PrescriptionQueueItem;
+  }>(`/api/fills/${fillId}/return-to-stock`, {
     method: "POST",
     devUser,
   });

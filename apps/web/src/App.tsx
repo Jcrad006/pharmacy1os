@@ -4,19 +4,28 @@ import {
   getPatients,
   getPrescribers,
   getPrescriptionQueue,
+  getWillCall,
 } from "./api";
 import { Dashboard } from "./screens/Dashboard";
 import { NewPrescription } from "./screens/NewPrescription";
 import { Patients } from "./screens/Patients";
 import { Prescribers } from "./screens/Prescribers";
 import { PrescriptionDetail } from "./screens/PrescriptionDetail";
+import { WillCall } from "./screens/WillCall";
 import type { DevUser, Patient, Prescriber, PrescriptionQueueItem } from "./types";
 import { roleLabel } from "./workflow";
 
-type View = "dashboard" | "new-rx" | "patients" | "prescribers" | "detail";
+type View =
+  | "dashboard"
+  | "will-call"
+  | "new-rx"
+  | "patients"
+  | "prescribers"
+  | "detail";
 
 const viewTitles: Record<View, string> = {
   dashboard: "Dispensing Dashboard",
+  "will-call": "Will Call",
   "new-rx": "New Prescription",
   patients: "Patients",
   prescribers: "Prescribers",
@@ -29,6 +38,7 @@ export function App() {
     () => localStorage.getItem("pharmacy1os.devUser") ?? "",
   );
   const [queue, setQueue] = useState<PrescriptionQueueItem[]>([]);
+  const [willCall, setWillCall] = useState<PrescriptionQueueItem[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [prescribers, setPrescribers] = useState<Prescriber[]>([]);
   const [view, setView] = useState<View>("dashboard");
@@ -47,12 +57,15 @@ export function App() {
 
     setLoading(true);
     try {
-      const [nextQueue, nextPatients, nextPrescribers] = await Promise.all([
-        getPrescriptionQueue(devUser),
-        getPatients(devUser),
-        getPrescribers(devUser),
-      ]);
+      const [nextQueue, nextWillCall, nextPatients, nextPrescribers] =
+        await Promise.all([
+          getPrescriptionQueue(devUser),
+          getWillCall(devUser),
+          getPatients(devUser),
+          getPrescribers(devUser),
+        ]);
       setQueue(nextQueue);
+      setWillCall(nextWillCall);
       setPatients(nextPatients);
       setPrescribers(nextPrescribers);
     } catch (error) {
@@ -99,9 +112,10 @@ export function App() {
         count: count("PHARMACIST_REVIEW"),
         detail: "Awaiting final verification",
       },
+      { label: "Will Call", count: willCall.length, detail: "Ready for pickup" },
       { label: "Future Fills", count: scheduled, detail: "Scheduled dispensing events" },
     ];
-  }, [queue]);
+  }, [queue, willCall]);
 
   function selectUser(value: string) {
     setSelectedExternalId(value);
@@ -138,6 +152,7 @@ export function App() {
 
         <nav>
           <button className={view === "dashboard" ? "nav-item active" : "nav-item"} onClick={() => navigate("dashboard")}>Dashboard</button>
+          <button className={view === "will-call" ? "nav-item active" : "nav-item"} onClick={() => navigate("will-call")}>Will Call <span className="nav-count">{willCall.length}</span></button>
           <button className={view === "new-rx" ? "nav-item active" : "nav-item"} onClick={() => navigate("new-rx")}>New Prescription</button>
           <button className={view === "patients" ? "nav-item active" : "nav-item"} onClick={() => navigate("patients")}>Patients</button>
           <button className={view === "prescribers" ? "nav-item active" : "nav-item"} onClick={() => navigate("prescribers")}>Prescribers</button>
@@ -191,6 +206,18 @@ export function App() {
           />
         )}
 
+        {view === "will-call" && (
+          <WillCall
+            prescriptions={willCall}
+            devUser={selectedExternalId}
+            user={selectedUser}
+            loading={loading}
+            onOpen={openPrescription}
+            onMutated={afterMutation}
+            onError={setMessage}
+          />
+        )}
+
         {view === "new-rx" && (
           <NewPrescription
             patients={patients}
@@ -235,6 +262,7 @@ export function App() {
             prescriptionId={selectedPrescriptionId}
             devUser={selectedExternalId}
             user={selectedUser}
+            prescribers={prescribers}
             onBack={() => navigate("dashboard")}
             onMutated={async (text) => {
               await afterMutation(text);
