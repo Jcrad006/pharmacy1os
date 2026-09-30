@@ -149,14 +149,26 @@ describe("synthetic clinical date rules", () => {
     expect(issue.status).toBe("OPEN");
     expect(issue.severity).toBe("HIGH");
 
+    const missingDisposition = await app.inject({
+      method: "PATCH",
+      url: `/api/dur/issues/${issue.id}/resolve`,
+      headers: pharmacistHeaders,
+      payload: {},
+    });
+    expect(missingDisposition.statusCode).toBe(400);
+
     const resolved = await app.inject({
       method: "PATCH",
       url: `/api/dur/issues/${issue.id}/resolve`,
       headers: pharmacistHeaders,
+      payload: {
+        note: "Expiration issue reviewed in this synthetic integration test.",
+      },
     });
 
     expect(resolved.statusCode).toBe(200);
     expect(resolved.json().issue.status).toBe("RESOLVED");
+    expect(resolved.json().issue.resolutionNote).toContain("Expiration issue reviewed");
   });
 
   it("enforces a minimum-days-between-fills rule and reports eligibility", async () => {
@@ -234,5 +246,128 @@ describe("synthetic clinical date rules", () => {
         .json()
         .issues.some((item: { code: string }) => item.code === "SYNTHETIC_REVIEW"),
     ).toBe(true);
+  });
+});
+
+
+describe("clinical verification gates and date-rule reconciliation", () => {
+  it("blocks final verification until every HIGH DUR issue has a documented resolution", async () => {
+    const prescriptionId = await makeRx();
+
+    const fill = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${prescriptionId}/fills`,
+      headers: technicianHeaders,
+      payload: { quantity: 30 },
+    });
+    expect(fill.statusCode).toBe(201);
+
+    const review = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "PHARMACIST_REVIEW" },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const issue = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${prescriptionId}/dur/issues`,
+      headers: pharmacistHeaders,
+      payload: {
+        code: "HIGH_REVIEW",
+        title: "Synthetic high-severity review",
+        description: "Must be resolved before final verification.",
+        severity: "HIGH",
+      },
+    });
+    expect(issue.statusCode).toBe(201);
+
+    const blocked = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: pharmacistHeaders,
+      payload: { status: "READY" },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().code).toBe("OPEN_HIGH_DUR");
+    expect(blocked.json().issues).toHaveLength(1);
+
+    const resolved = await app.inject({
+      method: "PATCH",
+      url: `/api/dur/issues/${issue.json().issue.id}/resolve`,
+      headers: pharmacistHeaders,
+      payload: {
+        note: "Reviewed and resolved for synthetic verification testing.",
+      },
+    });
+    expect(resolved.statusCode).toBe(200);
+
+    const ready = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: pharmacistHeaders,
+      payload: { status: "READY" },
+    });
+    expect(ready.statusCode).toBe(200);
+  });
+
+  it("automatically resolves a stale expiration issue after the rule is corrected", async () => {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const nextMonth = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const prescriptionId = await makeRx({
+      expirationDate: yesterday.toISOString(),
+    });
+
+    const blockedFill = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${prescriptionId}/fills`,
+      headers: technicianHeaders,
+      payload: { quantity: 30 },
+    });
+    expect(blockedFill.statusCode).toBe(409);
+    expect(blockedFill.json().code).toBe("RX_EXPIRED");
+
+    const edit = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}`,
+      headers: technicianHeaders,
+      payload: {
+        expirationDate: nextMonth.toISOString(),
+      },
+    });
+    expect(edit.statusCode).toBe(200);
+    expect(edit.json().prescription.status).toBe("DATA_ENTRY");
+
+    const dur = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "DUR_REVIEW" },
+    });
+    expect(dur.statusCode).toBe(200);
+
+    const successfulFill = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${prescriptionId}/fills`,
+      headers: technicianHeaders,
+      payload: { quantity: 30 },
+    });
+    expect(successfulFill.statusCode).toBe(201);
+
+    const clinical = await app.inject({
+      method: "GET",
+      url: `/api/prescriptions/${prescriptionId}/clinical`,
+      headers: technicianHeaders,
+    });
+    expect(clinical.statusCode).toBe(200);
+
+    const expiredIssue = clinical
+      .json()
+      .issues.find((item: { code: string }) => item.code === "RX_EXPIRED");
+
+    expect(expiredIssue.status).toBe("RESOLVED");
+    expect(expiredIssue.resolvedAutomatically).toBe(true);
+    expect(expiredIssue.resolutionNote).toContain("no longer blocks");
   });
 });
