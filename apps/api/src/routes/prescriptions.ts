@@ -179,7 +179,19 @@ export async function prescriptionRoutes(app: FastifyInstance) {
   app.get("/prescriptions/queue", async (request, reply) => {
     try {
       const actor = await resolveDevelopmentActor(request, "prescription:read");
-      const requestedStatus = (request.query as { status?: PrescriptionStatus }).status;
+      const query = request.query as {
+        status?: PrescriptionStatus;
+        query?: string;
+        sort?: "oldest" | "newest";
+        limit?: string;
+      };
+      const requestedStatus = query.status;
+      const search = String(query.query ?? "").trim();
+      const sort = query.sort === "newest" ? "newest" : "oldest";
+      const parsedLimit = Number.parseInt(String(query.limit ?? "100"), 10);
+      const limit = Number.isFinite(parsedLimit)
+        ? Math.min(200, Math.max(1, parsedLimit))
+        : 100;
 
       if (requestedStatus && !validStatuses.has(requestedStatus)) {
         return reply.code(400).send({ error: "Invalid prescription status." });
@@ -189,14 +201,33 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         where: {
           siteId: actor.siteId,
           ...(requestedStatus ? { status: requestedStatus } : {}),
+          ...(search
+            ? {
+                OR: [
+                  { rxNumber: { contains: search, mode: "insensitive" } },
+                  { medicationName: { contains: search, mode: "insensitive" } },
+                  { patient: { firstName: { contains: search, mode: "insensitive" } } },
+                  { patient: { lastName: { contains: search, mode: "insensitive" } } },
+                  { prescriber: { firstName: { contains: search, mode: "insensitive" } } },
+                  { prescriber: { lastName: { contains: search, mode: "insensitive" } } },
+                ],
+              }
+            : {}),
         },
         include: prescriptionInclude,
-        orderBy: [{ updatedAt: "asc" }],
-        take: 100,
+        orderBy: [{ updatedAt: sort === "oldest" ? "asc" : "desc" }],
+        take: limit,
       });
 
       return {
         prescriptions: prescriptions.map(presentPrescription),
+        meta: {
+          query: search,
+          status: requestedStatus ?? null,
+          sort,
+          returned: prescriptions.length,
+          limit,
+        },
       };
     } catch (error) {
       if (error instanceof AccessError) {

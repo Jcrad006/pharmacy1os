@@ -29,7 +29,11 @@ The current prototype includes:
 - Configurable synthetic minimum-days-between-fills rule
 - Automatic structured DUR issue creation when a date rule blocks dispensing
 - Pharmacist/admin DUR resolution controls
-- Database-backed dispensing and clinical integration tests
+- Server-backed queue search by Rx number, drug, patient, or prescriber
+- Workflow status filters, oldest/newest sorting, and aging indicators
+- Saved workstation queue preferences
+- Keyboard-first shortcuts for queue search and primary work areas
+- Database-backed dispensing, clinical, and queue-search integration tests
 - Automated migration, seed, typecheck, test, and production-build validation in CI
 
 ## Dispensing model
@@ -111,3 +115,19 @@ The workstation offers synthetic staff identities for exercising role behavior. 
 ## Safety boundary
 
 This repository remains a development prototype. Do not enter real PHI. Production authentication, encryption, validated clinical content, regulated interfaces, deployment hardening, disaster recovery, formal validation, and applicable privacy/regulatory controls must be completed and independently reviewed before real-world pharmacy use.
+
+## Workstation efficiency
+
+The dispensing dashboard now supports a server-backed working view. Staff can search by Rx number, medication, patient name, or prescriber name; filter to a workflow status; and sort by oldest or newest activity.
+
+Queue settings are stored locally on the workstation so the last working view is restored on return.
+
+Current keyboard shortcuts (when not typing in a form):
+
+- `/` — focus queue search
+- `Q` — dispensing queue
+- `N` — new prescription
+- `W` — Will Call
+- `P` — patients
+- `R` — prescribers
+- `Enter` in queue search — open the first result

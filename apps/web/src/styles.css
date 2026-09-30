@@ -304,3 +304,102 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 900px) {
   .clinical-grid, .clinical-history { grid-template-columns: 1fr; }
 }
+
+.shortcut-hint {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  margin-top: 8px;
+  color: #9eb5aa;
+  font-size: 11px;
+}
+kbd {
+  display: inline-block;
+  min-width: 20px;
+  border: 1px solid #cbd6d0;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 5px;
+  background: #f7faf8;
+  color: #34453e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  text-align: center;
+}
+.shortcut-hint kbd {
+  border-color: #456157;
+  background: #203a31;
+  color: #dff7ea;
+}
+.queue-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.queue-toolbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 210px 210px auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid #e0e8e4;
+  border-radius: 10px;
+  background: #f8fbf9;
+}
+.queue-toolbar label {
+  display: grid;
+  gap: 5px;
+  color: #52635c;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.queue-toolbar input,
+.queue-toolbar select {
+  width: 100%;
+  border: 1px solid #cbd8d1;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+  color: #1d2b25;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+}
+.queue-search input:focus,
+.queue-toolbar select:focus {
+  outline: 2px solid #bed8cb;
+  border-color: #648f7a;
+}
+.queue-reset { white-space: nowrap; }
+.queue-help {
+  margin: 0 0 12px;
+  color: #75817b;
+  font-size: 11px;
+}
+.age-badge {
+  display: inline-block;
+  min-width: 48px;
+  border-radius: 999px;
+  padding: 5px 7px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+}
+.age-fresh { background: #e9f4ee; color: #356049; }
+.age-watch { background: #f6f0dd; color: #745d22; }
+.age-aging { background: #f8e5cf; color: #84501e; }
+.age-late { background: #f7dddd; color: #8a3434; }
+
+@media (max-width: 1100px) {
+  .queue-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 700px) {
+  .queue-toolbar {
+    grid-template-columns: 1fr;
+  }
+}

@@ -98,6 +98,39 @@ export function App() {
     }
   }, [selectedExternalId]);
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const editing =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable;
+
+      if (event.key === "/" && !editing) {
+        event.preventDefault();
+        navigate("dashboard");
+        window.setTimeout(() => {
+          window.dispatchEvent(new Event("pharmacy1os-focus-queue-search"));
+        }, 0);
+        return;
+      }
+
+      if (editing || event.metaKey || event.ctrlKey || event.altKey) return;
+
+      if (event.key.toLowerCase() === "q") navigate("dashboard");
+      if (event.key.toLowerCase() === "w") navigate("will-call");
+      if (event.key.toLowerCase() === "n") navigate("new-rx");
+      if (event.key.toLowerCase() === "p") navigate("patients");
+      if (event.key.toLowerCase() === "r") navigate("prescribers");
+      if (event.key === "Escape" && view === "detail") navigate("dashboard");
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [view]);
+
   const counts = useMemo(() => {
     const count = (status: string) => queue.filter((rx) => rx.status === status).length;
     const scheduled = queue.flatMap((rx) => rx.fills).filter(
@@ -170,6 +203,12 @@ export function App() {
             ))}
           </select>
           <small>Development only. This is not production authentication.</small>
+          <div className="shortcut-hint">
+            <span><kbd>/</kbd> Search</span>
+            <span><kbd>Q</kbd> Queue</span>
+            <span><kbd>N</kbd> New Rx</span>
+            <span><kbd>W</kbd> Will Call</span>
+          </div>
         </div>
       </aside>
 
@@ -201,6 +240,7 @@ export function App() {
             queue={queue}
             counts={counts}
             loading={loading}
+            devUser={selectedExternalId}
             onOpen={openPrescription}
             onRefresh={() => void refreshWorkspace()}
           />
