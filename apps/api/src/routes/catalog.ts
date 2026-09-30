@@ -25,8 +25,11 @@ type CreateProductBody = {
 
 type CreateLotBody = {
   lotNumber?: string;
-  expirationDate?: string;
   receivedAt?: string;
+};
+
+type CreateExpirationBody = {
+  expirationDate?: string;
 };
 
 function normalizeNdc(value?: string) {
@@ -47,7 +50,11 @@ const productInclude = (siteId: string) => ({
   manufacturer: true,
   lots: {
     where: { siteId },
-    orderBy: [{ expirationDate: "asc" as const }, { lotNumber: "asc" as const }],
+    orderBy: [{ lotNumber: "asc" as const }],
+  },
+  expirations: {
+    where: { siteId },
+    orderBy: [{ expirationDate: "asc" as const }],
   },
 });
 
@@ -285,18 +292,14 @@ export async function catalogRoutes(app: FastifyInstance) {
 
       const lotNumber = body.lotNumber?.trim();
       const lotNumberSearch = normalizeLotNumber(lotNumber);
-      const expirationDate = parseDate(body.expirationDate);
       const receivedAt = parseDate(body.receivedAt);
 
-      if (!lotNumber || !lotNumberSearch || !body.expirationDate?.trim()) {
+      if (!lotNumber || !lotNumberSearch) {
         return reply.code(400).send({
-          error: "lotNumber and expirationDate are required.",
+          error: "lotNumber is required.",
         });
       }
 
-      if (expirationDate === null) {
-        return reply.code(400).send({ error: "Invalid expiration date." });
-      }
       if (receivedAt === null) {
         return reply.code(400).send({ error: "Invalid received date." });
       }
@@ -315,13 +318,12 @@ export async function catalogRoutes(app: FastifyInstance) {
           siteId: actor.siteId,
           productId,
           lotNumberSearch,
-          expirationDate: expirationDate!,
         },
       });
 
       if (duplicate) {
         return reply.code(409).send({
-          error: "That lot and expiration date are already stored for this product at this site.",
+          error: "That lot number is already stored for this NDC at this site.",
         });
       }
 
@@ -332,7 +334,6 @@ export async function catalogRoutes(app: FastifyInstance) {
             productId,
             lotNumber,
             lotNumberSearch,
-            expirationDate: expirationDate!,
             receivedAt: receivedAt ?? undefined,
           },
         });
@@ -350,7 +351,6 @@ export async function catalogRoutes(app: FastifyInstance) {
             ndc: product.ndc,
             manufacturerName: product.manufacturer.name,
             lotNumber,
-            expirationDate: expirationDate!.toISOString(),
           },
         });
 
@@ -365,4 +365,82 @@ export async function catalogRoutes(app: FastifyInstance) {
       throw error;
     }
   });
+
+  app.post("/products/:id/expirations", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:write");
+      const productId = (request.params as { id: string }).id;
+      const body = request.body as CreateExpirationBody;
+      const expirationDate = parseDate(body.expirationDate);
+
+      if (!body.expirationDate?.trim()) {
+        return reply.code(400).send({
+          error: "expirationDate is required.",
+        });
+      }
+
+      if (expirationDate === null) {
+        return reply.code(400).send({ error: "Invalid expiration date." });
+      }
+
+      const product = await db.product.findUnique({
+        where: { id: productId },
+        include: { manufacturer: true, medication: true },
+      });
+
+      if (!product) {
+        return reply.code(404).send({ error: "Product not found." });
+      }
+
+      const duplicate = await db.productExpiration.findFirst({
+        where: {
+          siteId: actor.siteId,
+          productId,
+          expirationDate: expirationDate!,
+        },
+      });
+
+      if (duplicate) {
+        return reply.code(409).send({
+          error: "That expiration date is already stored for this NDC at this site.",
+        });
+      }
+
+      const expiration = await db.$transaction(async (tx) => {
+        const created = await tx.productExpiration.create({
+          data: {
+            siteId: actor.siteId,
+            productId,
+            expirationDate: expirationDate!,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRODUCT_EXPIRATION_RECORDED",
+          entityType: "ProductExpiration",
+          entityId: created.id,
+          requestId: request.id,
+          metadata: {
+            productId,
+            medicationId: product.medicationId,
+            ndc: product.ndc,
+            manufacturerName: product.manufacturer.name,
+            expirationDate: expirationDate!.toISOString(),
+          },
+        });
+
+        return created;
+      });
+
+      return reply.code(201).send({ expiration });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
 }

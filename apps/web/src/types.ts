@@ -199,9 +199,18 @@ export type ProductLot = {
   siteId: string;
   productId: string;
   lotNumber: string;
-  expirationDate: string;
   active: boolean;
   receivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductExpiration = {
+  id: string;
+  siteId: string;
+  productId: string;
+  expirationDate: string;
+  active: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -223,6 +232,7 @@ export type Product = {
   active: boolean;
   manufacturer: Manufacturer;
   lots: ProductLot[];
+  expirations: ProductExpiration[];
 };
 
 export type Medication = {

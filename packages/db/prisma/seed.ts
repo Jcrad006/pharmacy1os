@@ -42,6 +42,10 @@ const ids = {
   lotLisinoprilA2: "lot-demo-lisinopril-a2",
   lotLisinoprilB1: "lot-demo-lisinopril-b1",
   lotAtorvastatinA1: "lot-demo-atorvastatin-a1",
+  expirationLisinoprilA1: "expiration-demo-lisinopril-a1",
+  expirationLisinoprilA2: "expiration-demo-lisinopril-a2",
+  expirationLisinoprilB1: "expiration-demo-lisinopril-b1",
+  expirationAtorvastatinA1: "expiration-demo-atorvastatin-a1",
   rx1: "rx-demo-001",
   rx2: "rx-demo-002",
 };
@@ -395,25 +399,21 @@ async function main() {
       id: ids.lotLisinoprilA1,
       productId: ids.productLisinoprilA,
       lotNumber: "LIS-A1001",
-      expirationDate: new Date("2027-06-30T00:00:00Z"),
     },
     {
       id: ids.lotLisinoprilA2,
       productId: ids.productLisinoprilA,
       lotNumber: "LIS-A1002",
-      expirationDate: new Date("2027-12-31T00:00:00Z"),
     },
     {
       id: ids.lotLisinoprilB1,
       productId: ids.productLisinoprilB,
       lotNumber: "LIS-B2001",
-      expirationDate: new Date("2028-03-31T00:00:00Z"),
     },
     {
       id: ids.lotAtorvastatinA1,
       productId: ids.productAtorvastatinA,
       lotNumber: "ATOR-A3001",
-      expirationDate: new Date("2027-09-30T00:00:00Z"),
     },
   ];
 
@@ -425,7 +425,6 @@ async function main() {
         productId: lot.productId,
         lotNumber: lot.lotNumber,
         lotNumberSearch: lot.lotNumber.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
-        expirationDate: lot.expirationDate,
         active: true,
       },
       create: {
@@ -434,7 +433,47 @@ async function main() {
         productId: lot.productId,
         lotNumber: lot.lotNumber,
         lotNumberSearch: lot.lotNumber.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
-        expirationDate: lot.expirationDate,
+      },
+    });
+  }
+
+  const productExpirations = [
+    {
+      id: ids.expirationLisinoprilA1,
+      productId: ids.productLisinoprilA,
+      expirationDate: new Date("2027-06-30T00:00:00Z"),
+    },
+    {
+      id: ids.expirationLisinoprilA2,
+      productId: ids.productLisinoprilA,
+      expirationDate: new Date("2027-12-31T00:00:00Z"),
+    },
+    {
+      id: ids.expirationLisinoprilB1,
+      productId: ids.productLisinoprilB,
+      expirationDate: new Date("2028-03-31T00:00:00Z"),
+    },
+    {
+      id: ids.expirationAtorvastatinA1,
+      productId: ids.productAtorvastatinA,
+      expirationDate: new Date("2027-09-30T00:00:00Z"),
+    },
+  ];
+
+  for (const expiration of productExpirations) {
+    await db.productExpiration.upsert({
+      where: { id: expiration.id },
+      update: {
+        siteId: ids.site,
+        productId: expiration.productId,
+        expirationDate: expiration.expirationDate,
+        active: true,
+      },
+      create: {
+        id: expiration.id,
+        siteId: ids.site,
+        productId: expiration.productId,
+        expirationDate: expiration.expirationDate,
       },
     });
   }

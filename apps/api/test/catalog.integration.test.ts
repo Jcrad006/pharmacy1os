@@ -19,7 +19,7 @@ afterAll(async () => {
 });
 
 describe("drug product NDC and lot catalog", () => {
-  it("stores one drug with multiple manufacturer/NDC products and multiple lots", async () => {
+  it("stores Drug > NDC > independent Lots AND Expirations", async () => {
     const suffix = randomUUID().replace(/-/g, "").slice(0, 6);
     const ndcSegment = Math.floor(Math.random() * 10_000)
       .toString()
@@ -70,29 +70,48 @@ describe("drug product NDC and lot catalog", () => {
     const productAId = productA.json().product.id as string;
     const productBId = productB.json().product.id as string;
 
-    for (const [lotNumber, expirationDate] of [
-      [`LOT-A-${suffix}`, "2028-01-31T00:00:00.000Z"],
-      [`LOT-B-${suffix}`, "2028-07-31T00:00:00.000Z"],
+    for (const lotNumber of [
+      `LOT-A-${suffix}`,
+      `LOT-B-${suffix}`,
+      `LOT-C-${suffix}`,
     ]) {
       const lot = await app.inject({
         method: "POST",
         url: `/api/products/${productAId}/lots`,
         headers: technicianHeaders,
-        payload: { lotNumber, expirationDate },
+        payload: { lotNumber },
       });
       expect(lot.statusCode).toBe(201);
+    }
+
+    for (const expirationDate of [
+      "2028-01-31T00:00:00.000Z",
+      "2028-07-31T00:00:00.000Z",
+    ]) {
+      const expiration = await app.inject({
+        method: "POST",
+        url: `/api/products/${productAId}/expirations`,
+        headers: technicianHeaders,
+        payload: { expirationDate },
+      });
+      expect(expiration.statusCode).toBe(201);
     }
 
     const productBLot = await app.inject({
       method: "POST",
       url: `/api/products/${productBId}/lots`,
       headers: technicianHeaders,
-      payload: {
-        lotNumber: `LOT-C-${suffix}`,
-        expirationDate: "2029-02-28T00:00:00.000Z",
-      },
+      payload: { lotNumber: `LOT-D-${suffix}` },
     });
     expect(productBLot.statusCode).toBe(201);
+
+    const productBExpiration = await app.inject({
+      method: "POST",
+      url: `/api/products/${productBId}/expirations`,
+      headers: technicianHeaders,
+      payload: { expirationDate: "2029-02-28T00:00:00.000Z" },
+    });
+    expect(productBExpiration.statusCode).toBe(201);
 
     const catalog = await app.inject({
       method: "GET",
@@ -107,12 +126,36 @@ describe("drug product NDC and lot catalog", () => {
 
     expect(stored).toBeTruthy();
     expect(stored.products).toHaveLength(2);
+
+    const storedA = stored.products.find(
+      (item: { id: string }) => item.id === productAId,
+    );
+    const storedB = stored.products.find(
+      (item: { id: string }) => item.id === productBId,
+    );
+
+    expect(storedA.lots).toHaveLength(3);
+    expect(storedA.expirations).toHaveLength(2);
+    expect(storedB.lots).toHaveLength(1);
+    expect(storedB.expirations).toHaveLength(1);
+
+    expect(storedA.lots.map((lot: { lotNumber: string }) => lot.lotNumber)).toEqual(
+      expect.arrayContaining([
+        `LOT-A-${suffix}`,
+        `LOT-B-${suffix}`,
+        `LOT-C-${suffix}`,
+      ]),
+    );
     expect(
-      stored.products.find((item: { id: string }) => item.id === productAId).lots,
-    ).toHaveLength(2);
-    expect(
-      stored.products.find((item: { id: string }) => item.id === productBId).lots,
-    ).toHaveLength(1);
+      storedA.expirations.map(
+        (expiration: { expirationDate: string }) => expiration.expirationDate,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "2028-01-31T00:00:00.000Z",
+        "2028-07-31T00:00:00.000Z",
+      ]),
+    );
   });
 
   it("retrieves catalog entries by normalized NDC, manufacturer, and lot number", async () => {
