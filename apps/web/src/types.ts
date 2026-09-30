@@ -44,6 +44,26 @@ export type Patient = {
   email?: string | null;
 };
 
+export type PrescriberIdentifierType = "NPI" | "DEA" | "STATE_ID";
+export type PrescriberContactType = "PHONE" | "FAX";
+
+export type PrescriberIdentifier = {
+  id: string;
+  type: PrescriberIdentifierType;
+  number: string;
+  jurisdiction: string;
+  isPrimary: boolean;
+};
+
+export type PrescriberContact = {
+  id: string;
+  type: PrescriberContactType;
+  label: string | null;
+  value: string;
+  extension: string | null;
+  isPrimary: boolean;
+};
+
 export type PrescriberAddress = {
   id: string;
   label: string | null;
@@ -59,14 +79,11 @@ export type Prescriber = {
   id: string;
   firstName: string;
   lastName: string;
+  practiceLevel: string;
   dateOfBirth: string | null;
-  npi: string | null;
-  deaNumber?: string | null;
-  stateProviderId?: string | null;
-  stateProviderIdState?: string | null;
-  phone?: string | null;
-  fax?: string | null;
-  addresses?: PrescriberAddress[];
+  identifiers: PrescriberIdentifier[];
+  contacts: PrescriberContact[];
+  addresses: PrescriberAddress[];
 };
 
 export type PrescriptionFill = {

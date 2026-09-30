@@ -47,7 +47,7 @@ describe("structured patient and provider directory search", () => {
     }
   });
 
-  it("finds a provider by last/first prefix, DOB, and normalized phone", async () => {
+  it("stores provider identity separately from multiple identifiers, contacts, and locations", async () => {
     const suffix = randomUUID().slice(0, 6);
     const lastName = `Provider${suffix}`;
 
@@ -58,12 +58,21 @@ describe("structured patient and provider directory search", () => {
       payload: {
         firstName: "Morgan",
         lastName,
+        practiceLevel: "NP",
         dateOfBirth: "1975-11-09",
-        phone: "336.555.3434",
-        fax: "336-555-3435",
-        deaNumber: "AB1234567",
-        stateProviderId: "NC-STATE-9988",
-        stateProviderIdState: "NC",
+        identifiers: [
+          { type: "NPI", number: `7${Math.floor(Math.random() * 1_000_000_000).toString().padStart(9, "0")}`, isPrimary: true },
+          { type: "DEA", number: "AB1234567", jurisdiction: "NC", isPrimary: true },
+          { type: "DEA", number: "AB7654321", jurisdiction: "VA" },
+          { type: "STATE_ID", number: "NC-STATE-9988", jurisdiction: "NC", isPrimary: true },
+          { type: "STATE_ID", number: "VA-STATE-1122", jurisdiction: "VA" },
+        ],
+        contacts: [
+          { type: "PHONE", label: "Main office", value: "(336) 555-3434", isPrimary: true },
+          { type: "PHONE", label: "Direct", value: "336-555-7777", extension: "42" },
+          { type: "FAX", label: "Main fax", value: "336-555-3435", isPrimary: true },
+          { type: "FAX", label: "Satellite fax", value: "276-555-1000" },
+        ],
         addresses: [
           {
             label: "Main office",
@@ -82,29 +91,29 @@ describe("structured patient and provider directory search", () => {
             postalCode: "27320",
           },
         ],
-        npi: `7${Math.floor(Math.random() * 1_000_000_000).toString().padStart(9, "0")}`,
       },
     });
+
     expect(created.statusCode).toBe(201);
-    expect(created.json().prescriber.deaNumber).toBe("AB1234567");
-    expect(created.json().prescriber.fax).toBe("336-555-3435");
-    expect(created.json().prescriber.stateProviderId).toBe("NC-STATE-9988");
-    expect(created.json().prescriber.stateProviderIdState).toBe("NC");
-    expect(created.json().prescriber.addresses).toHaveLength(2);
-    expect(created.json().prescriber.addresses[0]).toMatchObject({
-      label: "Main office",
-      addressLine1: "123 Clinical Way",
-      city: "Greensboro",
-      state: "NC",
-      postalCode: "27401",
-      isPrimary: true,
-    });
-    const id = created.json().prescriber.id as string;
+    const provider = created.json().prescriber;
+    expect(provider.practiceLevel).toBe("NP");
+    expect(provider.identifiers).toHaveLength(5);
+    expect(provider.contacts).toHaveLength(4);
+    expect(provider.addresses).toHaveLength(2);
+    expect(provider.identifiers.some((item: { type: string; number: string }) => item.type === "NPI")).toBe(true);
+    expect(provider.identifiers.filter((item: { type: string }) => item.type === "DEA")).toHaveLength(2);
+    expect(provider.identifiers.filter((item: { type: string }) => item.type === "STATE_ID")).toHaveLength(2);
+    expect(provider.contacts.filter((item: { type: string }) => item.type === "PHONE")).toHaveLength(2);
+    expect(provider.contacts.filter((item: { type: string }) => item.type === "FAX")).toHaveLength(2);
+
+    const id = provider.id as string;
 
     for (const url of [
       `/api/prescribers?lastName=${encodeURIComponent(lastName.slice(0, 8))}&firstName=Mor`,
       "/api/prescribers?dateOfBirth=1975-11-09",
-      "/api/prescribers?phone=3365553434",
+      "/api/prescribers?phone=3365557777",
+      "/api/prescribers?query=AB7654321",
+      "/api/prescribers?query=VA-STATE-1122",
     ]) {
       const response = await app.inject({ method: "GET", url, headers });
       expect(response.statusCode).toBe(200);

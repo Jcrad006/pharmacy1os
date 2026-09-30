@@ -163,13 +163,21 @@ export async function createPrescriber(
   input: {
     firstName: string;
     lastName: string;
+    practiceLevel: string;
     dateOfBirth?: string;
-    npi?: string;
-    deaNumber?: string;
-    stateProviderId?: string;
-    stateProviderIdState?: string;
-    phone?: string;
-    fax?: string;
+    identifiers?: Array<{
+      type: "NPI" | "DEA" | "STATE_ID";
+      number: string;
+      jurisdiction?: string;
+      isPrimary?: boolean;
+    }>;
+    contacts?: Array<{
+      type: "PHONE" | "FAX";
+      label?: string;
+      value: string;
+      extension?: string;
+      isPrimary?: boolean;
+    }>;
     addresses?: Array<{
       label?: string;
       addressLine1: string;

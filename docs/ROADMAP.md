@@ -69,7 +69,9 @@
 - [x] Database-backed queue search/filter tests
 - [x] Server-backed patient search by Last name, First name, DOB, and normalized phone
 - [x] Server-backed provider search by Last name, First name, DOB, and normalized phone
-- [x] Provider DEA, state provider ID, phone/fax, and multiple structured practice addresses
+- [x] Provider identity model with practice level/credential (MD, DO, NP, PA, etc.)
+- [x] Attached NPI, multiple DEA registrations, and multiple state provider IDs
+- [x] Multiple provider phone numbers, fax numbers, and structured practice addresses
 - [x] Derived synthetic exception queue
 - [x] Clinical/DUR exception category
 - [x] On-hold exception category

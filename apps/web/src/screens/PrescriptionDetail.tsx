@@ -25,6 +25,8 @@ import {
   canVerify,
   formatPatientName,
   formatPrescriberName,
+  primaryProviderContact,
+  primaryProviderIdentifier,
   prescriptionCanBeEdited,
   readyFill,
   remainingRefills,
@@ -355,8 +357,9 @@ export function PrescriptionDetail({
           <p className="eyebrow">Prescriber</p>
           <h3>{formatPrescriberName(rx.prescriber)}</h3>
           <dl className="detail-list">
-            <div><dt>NPI</dt><dd>{rx.prescriber.npi ?? "—"}</dd></div>
-            <div><dt>Phone</dt><dd>{rx.prescriber.phone ?? "—"}</dd></div>
+            <div><dt>Practice level</dt><dd>{rx.prescriber.practiceLevel}</dd></div>
+            <div><dt>NPI</dt><dd>{primaryProviderIdentifier(rx.prescriber, "NPI")?.number ?? "—"}</dd></div>
+            <div><dt>Phone</dt><dd>{primaryProviderContact(rx.prescriber, "PHONE")?.value ?? "—"}</dd></div>
           </dl>
         </section>
 

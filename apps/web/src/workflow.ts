@@ -25,7 +25,28 @@ export function formatPatientName(patient: Patient) {
 }
 
 export function formatPrescriberName(prescriber: Prescriber) {
-  return `${prescriber.lastName}, ${prescriber.firstName}`;
+  const credential = prescriber.practiceLevel?.trim();
+  return `${prescriber.lastName}, ${prescriber.firstName}${credential ? `, ${credential}` : ""}`;
+}
+
+export function primaryProviderIdentifier(
+  prescriber: Prescriber,
+  type: "NPI" | "DEA" | "STATE_ID",
+) {
+  return (
+    prescriber.identifiers.find((item) => item.type === type && item.isPrimary) ??
+    prescriber.identifiers.find((item) => item.type === type)
+  );
+}
+
+export function primaryProviderContact(
+  prescriber: Prescriber,
+  type: "PHONE" | "FAX",
+) {
+  return (
+    prescriber.contacts.find((item) => item.type === type && item.isPrimary) ??
+    prescriber.contacts.find((item) => item.type === type)
+  );
 }
 
 export function canProcess(user?: DevUser) {

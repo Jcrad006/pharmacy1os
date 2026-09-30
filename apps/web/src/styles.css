@@ -658,3 +658,66 @@ kbd {
     flex-direction: column;
   }
 }
+
+.provider-directory-layout {
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, .9fr);
+}
+.provider-record-list {
+  grid-template-columns: 1fr;
+}
+.provider-card {
+  gap: 6px;
+}
+.provider-section-heading,
+.provider-add-row,
+.provider-subrecord-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.provider-section-heading {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid #dfe8e3;
+}
+.provider-section-heading span {
+  color: #728079;
+  font-size: 12px;
+}
+.provider-subrecord {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  border: 1px solid #d9e5df;
+  border-radius: 10px;
+  padding: 14px;
+  background: #f9fbfa;
+}
+.provider-subrecord legend {
+  padding: 0 6px;
+  color: #4a5d54;
+  font-size: 12px;
+  font-weight: 800;
+}
+.provider-address-city-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) 90px minmax(120px, .8fr);
+  gap: 10px;
+}
+@media (max-width: 1000px) {
+  .provider-directory-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 650px) {
+  .provider-section-heading,
+  .provider-add-row,
+  .provider-subrecord-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .provider-address-city-row {
+    grid-template-columns: 1fr;
+  }
+}

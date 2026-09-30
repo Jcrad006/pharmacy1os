@@ -49,6 +49,17 @@ enum DurIssueStatus {
   RESOLVED
 }
 
+enum PrescriberIdentifierType {
+  NPI
+  DEA
+  STATE_ID
+}
+
+enum PrescriberContactType {
+  PHONE
+  FAX
+}
+
 model PharmacySite {
   id            String         @id @default(uuid())
   name          String
@@ -101,30 +112,58 @@ model Patient {
 }
 
 model Prescriber {
-  id            String         @id @default(uuid())
-  siteId        String
-  site          PharmacySite   @relation(fields: [siteId], references: [id])
-  firstName     String
-  lastName      String
-  dateOfBirth   DateTime?
-  npi           String?
-  deaNumber             String?
-  stateProviderId        String?
-  stateProviderIdState   String?
-  phone                 String?
-  phoneSearch           String?
-  fax                   String?
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
-  prescriptions         Prescription[]
-  addresses             PrescriberAddress[]
+  id                String                 @id @default(uuid())
+  siteId            String
+  site              PharmacySite           @relation(fields: [siteId], references: [id])
+  firstName         String
+  lastName          String
+  practiceLevel     String
+  dateOfBirth       DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  prescriptions     Prescription[]
+  identifiers       PrescriberIdentifier[]
+  contacts          PrescriberContact[]
+  addresses         PrescriberAddress[]
 
-  @@unique([siteId, npi])
   @@index([siteId, lastName, firstName])
   @@index([siteId, dateOfBirth])
-  @@index([siteId, phoneSearch])
-  @@index([siteId, deaNumber])
-  @@index([siteId, stateProviderId])
+  @@index([siteId, practiceLevel])
+}
+
+model PrescriberIdentifier {
+  id             String                   @id @default(uuid())
+  siteId         String
+  prescriberId   String
+  prescriber     Prescriber               @relation(fields: [prescriberId], references: [id], onDelete: Cascade)
+  type           PrescriberIdentifierType
+  number         String
+  numberSearch   String
+  jurisdiction   String                   @default("")
+  isPrimary      Boolean                  @default(false)
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  @@unique([prescriberId, type, numberSearch, jurisdiction])
+  @@index([siteId, type, numberSearch])
+  @@index([prescriberId, type, isPrimary])
+}
+
+model PrescriberContact {
+  id             String                 @id @default(uuid())
+  prescriberId   String
+  prescriber     Prescriber             @relation(fields: [prescriberId], references: [id], onDelete: Cascade)
+  type           PrescriberContactType
+  label          String?
+  value          String
+  valueSearch    String
+  extension      String?
+  isPrimary      Boolean                @default(false)
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@index([prescriberId, type, isPrimary])
+  @@index([type, valueSearch])
 }
 
 model PrescriberAddress {
