@@ -770,3 +770,96 @@ kbd {
   color: #1c2924;
   font: inherit;
 }
+
+.catalog-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(340px, .8fr);
+  gap: 20px;
+  align-items: start;
+}
+.catalog-entry-stack,
+.catalog-medication-list,
+.catalog-product-list {
+  display: grid;
+  gap: 16px;
+}
+.catalog-search {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.catalog-search .search-input {
+  max-width: none;
+  flex: 1;
+}
+.catalog-help {
+  margin-bottom: 16px;
+  color: #718079;
+  font-size: 12px;
+}
+.catalog-medication-card,
+.catalog-product-card {
+  border: 1px solid #dfe8e3;
+  border-radius: 12px;
+  background: #fbfdfc;
+}
+.catalog-medication-card {
+  padding: 16px;
+}
+.catalog-product-card {
+  padding: 14px;
+  background: white;
+}
+.catalog-medication-heading,
+.catalog-product-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+.catalog-medication-heading > div,
+.catalog-product-heading > div {
+  display: grid;
+  gap: 4px;
+}
+.catalog-medication-heading span,
+.catalog-product-heading span {
+  color: #67766f;
+  font-size: 12px;
+}
+.catalog-product-list {
+  margin-top: 14px;
+}
+.catalog-lot-table {
+  margin-top: 12px;
+}
+.catalog-lot-table table {
+  min-width: 560px;
+}
+.catalog-lot-status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: #e4f3ea;
+  color: #245e3f;
+  font-size: 11px;
+  font-weight: 800;
+}
+.catalog-lot-status.expired {
+  background: #fbe3e3;
+  color: #7b3333;
+}
+@media (max-width: 1100px) {
+  .catalog-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 650px) {
+  .catalog-search,
+  .catalog-medication-heading,
+  .catalog-product-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

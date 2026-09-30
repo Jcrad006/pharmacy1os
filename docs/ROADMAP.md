@@ -102,8 +102,18 @@
 - Structured security logging
 - Secrets-management strategy
 
+## Phase 3A — Drug / product / lot master
+- [x] Drug concept records
+- [x] Multiple manufacturer/NDC products per drug
+- [x] NDC normalization and lookup
+- [x] Multiple lot numbers and expiration dates per manufacturer/NDC product
+- [x] Site-specific lot records
+- [x] Search by drug, brand, manufacturer, NDC, or lot number
+- [x] Drug/Product workstation with F7 navigation
+- [x] Database-backed catalog hierarchy/retrieval tests
+- [ ] Associate scanned lot/expiration information with a specific prescription fill
+
 ## Phase 3 — Pharmacy utilities
-- Drug/product/NDC master
 - Inventory
 - Barcode scanning
 - Label generation and printing
