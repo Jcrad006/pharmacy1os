@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1c-edit-rts-willcall]
+    branches: [main, phase1d-clinical-date-rules]
   pull_request:
   workflow_dispatch:
 
