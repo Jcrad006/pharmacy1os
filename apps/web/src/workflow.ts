@@ -90,8 +90,3 @@ export function canDocumentClinical(user?: DevUser) {
   return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
 }
 
-export function canEditPrescription(user?: DevUser) {
-  return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
-  );
-}
