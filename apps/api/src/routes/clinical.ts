@@ -15,6 +15,10 @@ type CreateInterventionBody = {
   note?: string;
 };
 
+type ResolveIssueBody = {
+  note?: string;
+};
+
 const severities = new Set<DurSeverity>(["INFO", "WARNING", "HIGH"]);
 
 export async function clinicalRoutes(app: FastifyInstance) {
@@ -128,6 +132,18 @@ export async function clinicalRoutes(app: FastifyInstance) {
     try {
       const actor = await resolveDevelopmentActor(request, "clinical:document");
       const id = (request.params as { id: string }).id;
+      const body = request.body as ResolveIssueBody;
+      const resolutionNote = body.note?.trim();
+
+      if (!resolutionNote) {
+        return reply.code(400).send({
+          error: "A resolution note is required to close a DUR issue.",
+        });
+      }
+
+      if (resolutionNote.length > 4000) {
+        return reply.code(400).send({ error: "Resolution note is too long." });
+      }
 
       const issue = await db.durIssue.findUnique({
         where: { id },
@@ -150,6 +166,8 @@ export async function clinicalRoutes(app: FastifyInstance) {
           data: {
             status: "RESOLVED",
             resolvedAt: new Date(),
+            resolutionNote,
+            resolvedAutomatically: false,
             resolvedById: actor.id,
           },
         });
@@ -164,6 +182,7 @@ export async function clinicalRoutes(app: FastifyInstance) {
           metadata: {
             prescriptionId: issue.prescription.id,
             code: issue.code,
+            resolutionNote,
           },
         });
 

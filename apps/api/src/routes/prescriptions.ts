@@ -14,6 +14,7 @@ import {
 } from "../workflow/prescriptionWorkflow.js";
 import {
   evaluateDispensingDateRules,
+  reconcileDateRuleIssues,
   recordDateRuleIssue,
 } from "../clinical/dateRules.js";
 
@@ -670,6 +671,34 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       const currentActiveFill = activeFill(current.fills);
 
       if (
+        current.status === "PHARMACIST_REVIEW" &&
+        body.status === "READY"
+      ) {
+        const openHighIssues = await db.durIssue.findMany({
+          where: {
+            prescriptionId: id,
+            status: "OPEN",
+            severity: "HIGH",
+          },
+          select: {
+            id: true,
+            code: true,
+            title: true,
+          },
+          orderBy: { createdAt: "asc" },
+        });
+
+        if (openHighIssues.length > 0) {
+          return reply.code(409).send({
+            error:
+              "Resolve all HIGH DUR issues before final pharmacist verification.",
+            code: "OPEN_HIGH_DUR",
+            issues: openHighIssues,
+          });
+        }
+      }
+
+      if (
         current.status === "PRODUCT_FILL" &&
         body.status === "PHARMACIST_REVIEW" &&
         currentActiveFill?.status !== "IN_PROGRESS"
@@ -828,6 +857,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       );
 
       const targetDate = scheduledFor instanceof Date ? scheduledFor : now;
+
+      await reconcileDateRuleIssues({
+        prescription,
+        targetDate,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+
       const dateRuleBlock = evaluateDispensingDateRules(prescription, targetDate);
 
       if (dateRuleBlock) {
@@ -978,9 +1015,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      const startTime = new Date();
+
+      await reconcileDateRuleIssues({
+        prescription: fill.prescription,
+        targetDate: startTime,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+
       const dateRuleBlock = evaluateDispensingDateRules(
         fill.prescription,
-        new Date(),
+        startTime,
       );
 
       if (dateRuleBlock) {
