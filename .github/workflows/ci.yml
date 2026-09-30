@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1e-exceptions-directory-search]
+    branches: [main, phase1e-priority-keyboard]
   pull_request:
   workflow_dispatch:
 

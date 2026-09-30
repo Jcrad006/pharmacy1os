@@ -139,3 +139,17 @@ The workstation now includes an **Exceptions** queue derived directly from live 
 There is no separate completion checkbox for these derived exceptions. When the underlying issue is resolved—for example, a DUR issue is resolved or an On Hold prescription is resumed—the corresponding exception disappears automatically.
 
 Patient and prescriber directory searches are now server-backed, so searching is no longer limited to the initial records loaded into the workstation.
+
+## Queue priority and keyboard navigation
+
+A workstation can save a preferred workflow status to **Prioritize**. Matching prescriptions are pinned to the top of the current search/filter results while preserving the server-provided oldest/newest order within the priority group and the remaining group.
+
+When the queue is active and the user is not typing in a form:
+
+- `J` or Down Arrow — highlight next prescription
+- `K` or Up Arrow — highlight previous prescription
+- `Home` — highlight first result
+- `End` — highlight last result
+- `Enter` — open highlighted prescription
+
+This preference is local to the workstation prototype and is not yet a production user-profile setting.
