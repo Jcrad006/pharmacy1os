@@ -31,6 +31,17 @@ const ids = {
   providerFax2: "provider-fax-demo-002",
   prescriberAddress1: "prescriber-address-demo-001",
   prescriberAddress2: "prescriber-address-demo-002",
+  medicationLisinopril: "medication-demo-lisinopril-10",
+  medicationAtorvastatin: "medication-demo-atorvastatin-20",
+  manufacturerDemoGenerics: "manufacturer-demo-generics",
+  manufacturerSamplePharma: "manufacturer-sample-pharma",
+  productLisinoprilA: "product-demo-lisinopril-a",
+  productLisinoprilB: "product-demo-lisinopril-b",
+  productAtorvastatinA: "product-demo-atorvastatin-a",
+  lotLisinoprilA1: "lot-demo-lisinopril-a1",
+  lotLisinoprilA2: "lot-demo-lisinopril-a2",
+  lotLisinoprilB1: "lot-demo-lisinopril-b1",
+  lotAtorvastatinA1: "lot-demo-atorvastatin-a1",
   rx1: "rx-demo-001",
   rx2: "rx-demo-002",
 };
@@ -244,6 +255,189 @@ async function main() {
       isPrimary: true,
     },
   });
+
+  await db.medication.upsert({
+    where: { id: ids.medicationLisinopril },
+    update: {
+      genericName: "Lisinopril",
+      brandName: "Synthetic Zestril",
+      strength: "10 mg",
+      dosageForm: "tablet",
+      route: "oral",
+      active: true,
+    },
+    create: {
+      id: ids.medicationLisinopril,
+      genericName: "Lisinopril",
+      brandName: "Synthetic Zestril",
+      strength: "10 mg",
+      dosageForm: "tablet",
+      route: "oral",
+    },
+  });
+
+  await db.medication.upsert({
+    where: { id: ids.medicationAtorvastatin },
+    update: {
+      genericName: "Atorvastatin",
+      brandName: "Synthetic Lipitor",
+      strength: "20 mg",
+      dosageForm: "tablet",
+      route: "oral",
+      active: true,
+    },
+    create: {
+      id: ids.medicationAtorvastatin,
+      genericName: "Atorvastatin",
+      brandName: "Synthetic Lipitor",
+      strength: "20 mg",
+      dosageForm: "tablet",
+      route: "oral",
+    },
+  });
+
+  await db.manufacturer.upsert({
+    where: { id: ids.manufacturerDemoGenerics },
+    update: {
+      name: "Demo Generics, Inc.",
+      labelerCode: "99999",
+      active: true,
+    },
+    create: {
+      id: ids.manufacturerDemoGenerics,
+      name: "Demo Generics, Inc.",
+      labelerCode: "99999",
+    },
+  });
+
+  await db.manufacturer.upsert({
+    where: { id: ids.manufacturerSamplePharma },
+    update: {
+      name: "Sample Pharma LLC",
+      labelerCode: "99998",
+      active: true,
+    },
+    create: {
+      id: ids.manufacturerSamplePharma,
+      name: "Sample Pharma LLC",
+      labelerCode: "99998",
+    },
+  });
+
+  await db.product.upsert({
+    where: { id: ids.productLisinoprilA },
+    update: {
+      medicationId: ids.medicationLisinopril,
+      manufacturerId: ids.manufacturerDemoGenerics,
+      ndc: "99999-0001-01",
+      ndcSearch: "99999000101",
+      labelName: "Lisinopril 10 mg tablet",
+      packageDescription: "Bottle of 100 tablets",
+      active: true,
+    },
+    create: {
+      id: ids.productLisinoprilA,
+      medicationId: ids.medicationLisinopril,
+      manufacturerId: ids.manufacturerDemoGenerics,
+      ndc: "99999-0001-01",
+      ndcSearch: "99999000101",
+      labelName: "Lisinopril 10 mg tablet",
+      packageDescription: "Bottle of 100 tablets",
+    },
+  });
+
+  await db.product.upsert({
+    where: { id: ids.productLisinoprilB },
+    update: {
+      medicationId: ids.medicationLisinopril,
+      manufacturerId: ids.manufacturerSamplePharma,
+      ndc: "99998-0101-01",
+      ndcSearch: "99998010101",
+      labelName: "Lisinopril 10 mg tablet",
+      packageDescription: "Bottle of 500 tablets",
+      active: true,
+    },
+    create: {
+      id: ids.productLisinoprilB,
+      medicationId: ids.medicationLisinopril,
+      manufacturerId: ids.manufacturerSamplePharma,
+      ndc: "99998-0101-01",
+      ndcSearch: "99998010101",
+      labelName: "Lisinopril 10 mg tablet",
+      packageDescription: "Bottle of 500 tablets",
+    },
+  });
+
+  await db.product.upsert({
+    where: { id: ids.productAtorvastatinA },
+    update: {
+      medicationId: ids.medicationAtorvastatin,
+      manufacturerId: ids.manufacturerDemoGenerics,
+      ndc: "99999-0020-01",
+      ndcSearch: "99999002001",
+      labelName: "Atorvastatin 20 mg tablet",
+      packageDescription: "Bottle of 90 tablets",
+      active: true,
+    },
+    create: {
+      id: ids.productAtorvastatinA,
+      medicationId: ids.medicationAtorvastatin,
+      manufacturerId: ids.manufacturerDemoGenerics,
+      ndc: "99999-0020-01",
+      ndcSearch: "99999002001",
+      labelName: "Atorvastatin 20 mg tablet",
+      packageDescription: "Bottle of 90 tablets",
+    },
+  });
+
+  const productLots = [
+    {
+      id: ids.lotLisinoprilA1,
+      productId: ids.productLisinoprilA,
+      lotNumber: "LIS-A1001",
+      expirationDate: new Date("2027-06-30T00:00:00Z"),
+    },
+    {
+      id: ids.lotLisinoprilA2,
+      productId: ids.productLisinoprilA,
+      lotNumber: "LIS-A1002",
+      expirationDate: new Date("2027-12-31T00:00:00Z"),
+    },
+    {
+      id: ids.lotLisinoprilB1,
+      productId: ids.productLisinoprilB,
+      lotNumber: "LIS-B2001",
+      expirationDate: new Date("2028-03-31T00:00:00Z"),
+    },
+    {
+      id: ids.lotAtorvastatinA1,
+      productId: ids.productAtorvastatinA,
+      lotNumber: "ATOR-A3001",
+      expirationDate: new Date("2027-09-30T00:00:00Z"),
+    },
+  ];
+
+  for (const lot of productLots) {
+    await db.productLot.upsert({
+      where: { id: lot.id },
+      update: {
+        siteId: ids.site,
+        productId: lot.productId,
+        lotNumber: lot.lotNumber,
+        lotNumberSearch: lot.lotNumber.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+        expirationDate: lot.expirationDate,
+        active: true,
+      },
+      create: {
+        id: lot.id,
+        siteId: ids.site,
+        productId: lot.productId,
+        lotNumber: lot.lotNumber,
+        lotNumberSearch: lot.lotNumber.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+        expirationDate: lot.expirationDate,
+      },
+    });
+  }
 
   await db.prescription.upsert({
     where: { id: ids.rx1 },
