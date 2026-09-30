@@ -132,7 +132,7 @@ export async function clinicalRoutes(app: FastifyInstance) {
     try {
       const actor = await resolveDevelopmentActor(request, "clinical:document");
       const id = (request.params as { id: string }).id;
-      const body = request.body as ResolveIssueBody;
+      const body = (request.body ?? {}) as ResolveIssueBody;
       const resolutionNote = body.note?.trim();
 
       if (!resolutionNote) {
