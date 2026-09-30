@@ -1,6 +1,9 @@
 import type {
   AuditEvent,
   DevUser,
+  DurIssue,
+  DurSeverity,
+  InterventionNote,
   Patient,
   Prescriber,
   PrescriptionFill,
@@ -148,6 +151,7 @@ export async function updatePrescription(
     writtenDate?: string | null;
     expirationDate?: string | null;
     doNotFillBefore?: string | null;
+    minimumDaysBetweenFills?: number | null;
   },
 ) {
   return request<{ prescription: PrescriptionQueueItem }>(
@@ -216,4 +220,56 @@ export async function returnFillToStock(devUser: string, fillId: string) {
     method: "POST",
     devUser,
   });
+}
+
+export async function getClinicalRecord(devUser: string, prescriptionId: string) {
+  return request<{ issues: DurIssue[]; interventions: InterventionNote[] }>(
+    `/api/prescriptions/${prescriptionId}/clinical`,
+    { devUser },
+  );
+}
+
+export async function createDurIssue(
+  devUser: string,
+  prescriptionId: string,
+  input: {
+    code: string;
+    title: string;
+    description?: string;
+    severity?: DurSeverity;
+  },
+) {
+  return request<{ issue: DurIssue }>(
+    `/api/prescriptions/${prescriptionId}/dur/issues`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function resolveDurIssue(devUser: string, issueId: string) {
+  return request<{ issue: DurIssue }>(
+    `/api/dur/issues/${issueId}/resolve`,
+    {
+      method: "PATCH",
+      devUser,
+    },
+  );
+}
+
+export async function createIntervention(
+  devUser: string,
+  prescriptionId: string,
+  note: string,
+) {
+  return request<{ intervention: InterventionNote }>(
+    `/api/prescriptions/${prescriptionId}/interventions`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ note }),
+    },
+  );
 }

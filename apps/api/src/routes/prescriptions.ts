@@ -12,6 +12,10 @@ import {
   canTransitionPrescription,
   permissionForTransition,
 } from "../workflow/prescriptionWorkflow.js";
+import {
+  evaluateDispensingDateRules,
+  recordDateRuleIssue,
+} from "../clinical/dateRules.js";
 
 type CreatePrescriptionBody = {
   patientId?: string;
@@ -24,7 +28,9 @@ type CreatePrescriptionBody = {
   quantityWritten?: number;
   refillsAllowed?: number;
   writtenDate?: string;
+  expirationDate?: string;
   doNotFillBefore?: string;
+  minimumDaysBetweenFills?: number;
 };
 
 type UpdatePrescriptionBody = {
@@ -38,6 +44,7 @@ type UpdatePrescriptionBody = {
   writtenDate?: string | null;
   expirationDate?: string | null;
   doNotFillBefore?: string | null;
+  minimumDaysBetweenFills?: number | null;
 };
 
 type TransitionBody = {
@@ -133,6 +140,7 @@ function prescriptionSnapshot(rx: {
   writtenDate: Date | null;
   expirationDate: Date | null;
   doNotFillBefore: Date | null;
+  minimumDaysBetweenFills: number | null;
 }) {
   return {
     prescriberId: auditValue(rx.prescriberId),
@@ -145,6 +153,7 @@ function prescriptionSnapshot(rx: {
     writtenDate: auditValue(rx.writtenDate),
     expirationDate: auditValue(rx.expirationDate),
     doNotFillBefore: auditValue(rx.doNotFillBefore),
+    minimumDaysBetweenFills: auditValue(rx.minimumDaysBetweenFills),
   };
 }
 
@@ -313,9 +322,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const writtenDate = parseDate(body.writtenDate);
+      const expirationDate = parseDate(body.expirationDate);
       const doNotFillBefore = parseDate(body.doNotFillBefore);
 
-      if (writtenDate === "invalid" || doNotFillBefore === "invalid") {
+      if (
+        writtenDate === "invalid" ||
+        expirationDate === "invalid" ||
+        doNotFillBefore === "invalid"
+      ) {
         return reply.code(400).send({ error: "Invalid date value." });
       }
 
@@ -344,7 +358,12 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             quantityWritten: body.quantityWritten,
             refillsAllowed: Math.max(0, body.refillsAllowed ?? 0),
             writtenDate: writtenDate instanceof Date ? writtenDate : undefined,
+            expirationDate: expirationDate instanceof Date ? expirationDate : undefined,
             doNotFillBefore: doNotFillBefore instanceof Date ? doNotFillBefore : undefined,
+            minimumDaysBetweenFills:
+              body.minimumDaysBetweenFills !== undefined
+                ? Math.max(0, Math.trunc(body.minimumDaysBetweenFills))
+                : undefined,
             status: "DATA_ENTRY",
           },
           include: prescriptionInclude,
@@ -413,6 +432,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           "writtenDate",
           "expirationDate",
           "doNotFillBefore",
+          "minimumDaysBetweenFills",
         ].includes(key),
       );
 
@@ -442,6 +462,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       ) {
         return reply.code(400).send({
           error: "Refills allowed cannot be less than refills already used.",
+        });
+      }
+
+      if (
+        body.minimumDaysBetweenFills !== undefined &&
+        body.minimumDaysBetweenFills !== null &&
+        (!Number.isInteger(body.minimumDaysBetweenFills) ||
+          body.minimumDaysBetweenFills < 0 ||
+          body.minimumDaysBetweenFills > 365)
+      ) {
+        return reply.code(400).send({
+          error: "minimumDaysBetweenFills must be an integer from 0 to 365.",
         });
       }
 
@@ -484,6 +516,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (body.writtenDate !== undefined) data.writtenDate = writtenDate instanceof Date ? writtenDate : null;
       if (body.expirationDate !== undefined) data.expirationDate = expirationDate instanceof Date ? expirationDate : null;
       if (body.doNotFillBefore !== undefined) data.doNotFillBefore = doNotFillBefore instanceof Date ? doNotFillBefore : null;
+      if (body.minimumDaysBetweenFills !== undefined) {
+        data.minimumDaysBetweenFills = body.minimumDaysBetweenFills;
+      }
 
       let workflowReset: { from: PrescriptionStatus; to: PrescriptionStatus } | null = null;
 
@@ -749,13 +784,21 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         scheduledFor instanceof Date && scheduledFor.getTime() > now.getTime(),
       );
 
-      if (
-        prescription.doNotFillBefore &&
-        (!(scheduledFor instanceof Date) ||
-          scheduledFor.getTime() < prescription.doNotFillBefore.getTime())
-      ) {
+      const targetDate = scheduledFor instanceof Date ? scheduledFor : now;
+      const dateRuleBlock = evaluateDispensingDateRules(prescription, targetDate);
+
+      if (dateRuleBlock) {
+        await recordDateRuleIssue({
+          prescription,
+          block: dateRuleBlock,
+          actorId: actor.id,
+          requestId: request.id,
+        });
+
         return reply.code(409).send({
-          error: "This fill is earlier than the prescription's do-not-fill-before date.",
+          error: dateRuleBlock.message,
+          code: dateRuleBlock.code,
+          eligibleAt: dateRuleBlock.eligibleAt?.toISOString() ?? null,
         });
       }
 
@@ -889,6 +932,26 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (fill.prescription.status !== "DUR_REVIEW") {
         return reply.code(409).send({
           error: "The prescription must be in DUR Review before starting the fill.",
+        });
+      }
+
+      const dateRuleBlock = evaluateDispensingDateRules(
+        fill.prescription,
+        new Date(),
+      );
+
+      if (dateRuleBlock) {
+        await recordDateRuleIssue({
+          prescription: fill.prescription,
+          block: dateRuleBlock,
+          actorId: actor.id,
+          requestId: request.id,
+        });
+
+        return reply.code(409).send({
+          error: dateRuleBlock.message,
+          code: dateRuleBlock.code,
+          eligibleAt: dateRuleBlock.eligibleAt?.toISOString() ?? null,
         });
       }
 

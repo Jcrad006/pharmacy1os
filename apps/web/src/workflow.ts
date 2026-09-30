@@ -85,3 +85,8 @@ export function remainingRefills(refillsAllowed: number, refillsUsed: number) {
 export function prescriptionCanBeEdited(status: PrescriptionStatus) {
   return ["RECEIVED", "DATA_ENTRY", "DUR_REVIEW", "ON_HOLD"].includes(status);
 }
+
+export function canDocumentClinical(user?: DevUser) {
+  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+}
+
