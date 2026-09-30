@@ -20,6 +20,25 @@ function medicationLabel(medication: Medication) {
     .join(" · ");
 }
 
+function money(value: string | number | null, fractionDigits = 2) {
+  if (value === null) return "Not entered";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "Not entered";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(number);
+}
+
+function unitLabel(unit: Product["dispensingUnit"]) {
+  if (unit === "EACH") return "each";
+  if (unit === "GRAM") return "gram";
+  if (unit === "MILLILITER") return "mL";
+  return "unit";
+}
+
 function productLabel(product: Product, medication?: Medication) {
   const medicationPart = medication
     ? `${medication.genericName} ${medication.strength}`
@@ -50,8 +69,14 @@ export function DrugCatalog({
   const [ndc, setNdc] = useState("");
   const [manufacturerName, setManufacturerName] = useState("");
   const [manufacturerLabelerCode, setManufacturerLabelerCode] = useState("");
-  const [labelName, setLabelName] = useState("");
+  const [descriptor, setDescriptor] = useState("");
   const [packageDescription, setPackageDescription] = useState("");
+  const [packageType, setPackageType] = useState("");
+  const [unitsPerPackage, setUnitsPerPackage] = useState("");
+  const [dispensingUnit, setDispensingUnit] =
+    useState<Product["dispensingUnit"]>("EACH");
+  const [unitPrice, setUnitPrice] = useState("");
+  const [packagePrice, setPackagePrice] = useState("");
 
   const [selectedLotProductId, setSelectedLotProductId] = useState("");
   const [lotNumber, setLotNumber] = useState("");
@@ -157,15 +182,25 @@ export function DrugCatalog({
         ndc,
         manufacturerName,
         manufacturerLabelerCode: manufacturerLabelerCode || undefined,
-        labelName: labelName || undefined,
+        descriptor,
         packageDescription: packageDescription || undefined,
+        packageType,
+        unitsPerPackage: Number(unitsPerPackage),
+        dispensingUnit: dispensingUnit ?? "EACH",
+        unitPrice: unitPrice === "" ? undefined : Number(unitPrice),
+        packagePrice: packagePrice === "" ? undefined : Number(packagePrice),
       });
 
       setNdc("");
       setManufacturerName("");
       setManufacturerLabelerCode("");
-      setLabelName("");
+      setDescriptor("");
       setPackageDescription("");
+      setPackageType("");
+      setUnitsPerPackage("");
+      setDispensingUnit("EACH");
+      setUnitPrice("");
+      setPackagePrice("");
       setSelectedLotProductId(result.product.id);
       setSelectedExpirationProductId(result.product.id);
       setQuery("");
@@ -306,7 +341,18 @@ export function DrugCatalog({
                         <div>
                           <strong>{product.manufacturer.name}</strong>
                           <span className="mono">NDC {product.ndc}</span>
-                          {product.labelName && <span>{product.labelName}</span>}
+                          <span>{product.descriptor}</span>
+                          <span>Dosage form: {medication.dosageForm}</span>
+                          <span>
+                            Stock package: {product.unitsPerPackage ?? "—"}{" "}
+                            {unitLabel(product.dispensingUnit)}
+                            {product.packageType ? ` per ${product.packageType}` : ""}
+                          </span>
+                          <span>
+                            Unit price: {money(product.unitPrice, 4)} /{" "}
+                            {unitLabel(product.dispensingUnit)}
+                          </span>
+                          <span>Package price: {money(product.packagePrice)}</span>
                           {product.packageDescription && (
                             <span>{product.packageDescription}</span>
                           )}
@@ -513,10 +559,76 @@ export function DrugCatalog({
               />
             </label>
             <label>
-              Label/product name (optional)
+              NDC descriptor
               <input
-                value={labelName}
-                onChange={(e) => setLabelName(e.target.value)}
+                value={descriptor}
+                onChange={(e) => setDescriptor(e.target.value)}
+                placeholder="Lisinopril 10 mg tablet — 100 count bottle"
+                required
+                disabled={!writable}
+              />
+            </label>
+            <label>
+              Package type
+              <input
+                value={packageType}
+                onChange={(e) => setPackageType(e.target.value)}
+                placeholder="bottle, tube, box, vial..."
+                required
+                disabled={!writable}
+              />
+            </label>
+            <label>
+              Units per stock package
+              <input
+                type="number"
+                min="0.001"
+                step="0.001"
+                value={unitsPerPackage}
+                onChange={(e) => setUnitsPerPackage(e.target.value)}
+                placeholder="100"
+                required
+                disabled={!writable}
+              />
+            </label>
+            <label>
+              Dispensing unit
+              <select
+                value={dispensingUnit ?? "EACH"}
+                onChange={(e) =>
+                  setDispensingUnit(
+                    e.target.value as Product["dispensingUnit"],
+                  )
+                }
+                required
+                disabled={!writable}
+              >
+                <option value="EACH">Each — tablet, capsule, unit-dose item</option>
+                <option value="GRAM">Gram — cream, ointment, paste</option>
+                <option value="MILLILITER">Milliliter — solution, suspension</option>
+              </select>
+            </label>
+            <label>
+              Price per unit (optional)
+              <input
+                type="number"
+                min="0"
+                step="0.000001"
+                value={unitPrice}
+                onChange={(e) => setUnitPrice(e.target.value)}
+                placeholder="0.03"
+                disabled={!writable}
+              />
+            </label>
+            <label>
+              Price per stock package (optional)
+              <input
+                type="number"
+                min="0"
+                step="0.0001"
+                value={packagePrice}
+                onChange={(e) => setPackagePrice(e.target.value)}
+                placeholder="3.00"
                 disabled={!writable}
               />
             </label>
