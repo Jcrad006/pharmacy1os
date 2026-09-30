@@ -21,12 +21,14 @@ export function ClinicalPanel({
   user,
   onChanged,
   onError,
+  onBlockersChanged,
 }: {
   prescription: PrescriptionQueueItem;
   devUser: string;
   user?: DevUser;
   onChanged: (message: string) => Promise<void>;
   onError: (message: string | null) => void;
+  onBlockersChanged?: (count: number) => void;
 }) {
   const [issues, setIssues] = useState<DurIssue[]>([]);
   const [interventions, setInterventions] = useState<InterventionNote[]>([]);
@@ -37,6 +39,7 @@ export function ClinicalPanel({
   const [issueDescription, setIssueDescription] = useState("");
   const [severity, setSeverity] = useState<DurSeverity>("WARNING");
   const [note, setNote] = useState("");
+  const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
   const documentAllowed = canDocumentClinical(user);
@@ -48,6 +51,11 @@ export function ClinicalPanel({
       const result = await getClinicalRecord(devUser, prescription.id);
       setIssues(result.issues);
       setInterventions(result.interventions);
+      onBlockersChanged?.(
+        result.issues.filter(
+          (issue) => issue.status === "OPEN" && issue.severity === "HIGH",
+        ).length,
+      );
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to load clinical record.");
     }
@@ -112,11 +120,22 @@ export function ClinicalPanel({
   }
 
   async function resolve(issueId: string) {
+    const resolutionNote = resolutionNotes[issueId]?.trim();
+    if (!resolutionNote) {
+      onError("A resolution note is required before closing a DUR issue.");
+      return;
+    }
+
     setBusy(true);
     onError(null);
     try {
-      await resolveDurIssue(devUser, issueId);
-      await onChanged("DUR issue resolved.");
+      await resolveDurIssue(devUser, issueId, resolutionNote);
+      setResolutionNotes((current) => {
+        const next = { ...current };
+        delete next[issueId];
+        return next;
+      });
+      await onChanged("DUR issue resolved with documented disposition.");
       await load();
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to resolve DUR issue.");
@@ -143,6 +162,7 @@ export function ClinicalPanel({
 
   const openIssues = issues.filter((issue) => issue.status === "OPEN");
   const resolvedIssues = issues.filter((issue) => issue.status === "RESOLVED");
+  const highBlockers = openIssues.filter((issue) => issue.severity === "HIGH");
 
   return (
     <section className="panel clinical-panel">
@@ -155,6 +175,17 @@ export function ClinicalPanel({
           Development rules only — not a validated drug-knowledge system
         </span>
       </div>
+
+      {highBlockers.length > 0 && (
+        <div className="clinical-blocker-banner">
+          <strong>
+            {highBlockers.length} HIGH DUR issue{highBlockers.length === 1 ? "" : "s"} block final pharmacist verification.
+          </strong>
+          <span>
+            Resolve the HIGH issue(s) with a documented resolution note before the prescription can move to Ready.
+          </span>
+        </div>
+      )}
 
       <div className="clinical-grid">
         <div>
@@ -206,14 +237,36 @@ export function ClinicalPanel({
                   <span className="severity-badge">{issue.severity}</span>
                 </div>
                 {issue.description && <p>{issue.description}</p>}
+                {issue.eligibleAt && (
+                  <p className="clinical-caption">
+                    Eligible at: {new Date(issue.eligibleAt).toLocaleString()}
+                  </p>
+                )}
                 {documentAllowed && (
-                  <button
-                    className="secondary-button"
-                    disabled={busy}
-                    onClick={() => void resolve(issue.id)}
-                  >
-                    Resolve issue
-                  </button>
+                  <div className="dur-resolution">
+                    <label>
+                      Resolution note
+                      <textarea
+                        rows={2}
+                        maxLength={4000}
+                        value={resolutionNotes[issue.id] ?? ""}
+                        onChange={(event) =>
+                          setResolutionNotes((current) => ({
+                            ...current,
+                            [issue.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Document why this issue is being resolved."
+                      />
+                    </label>
+                    <button
+                      className="secondary-button"
+                      disabled={busy || !(resolutionNotes[issue.id]?.trim())}
+                      onClick={() => void resolve(issue.id)}
+                    >
+                      Resolve issue
+                    </button>
+                  </div>
                 )}
               </article>
             ))}
@@ -283,9 +336,16 @@ export function ClinicalPanel({
               <article className="clinical-note" key={issue.id}>
                 <strong>{issue.title}</strong>
                 <p>{issue.description ?? issue.code}</p>
+                {issue.resolutionNote && (
+                  <p><strong>Resolution:</strong> {issue.resolutionNote}</p>
+                )}
                 <span>
                   Resolved {issue.resolvedAt ? new Date(issue.resolvedAt).toLocaleString() : ""}
-                  {issue.resolvedBy ? ` by ${issue.resolvedBy.displayName}` : ""}
+                  {issue.resolvedAutomatically
+                    ? " automatically by date-rule reconciliation"
+                    : issue.resolvedBy
+                      ? ` by ${issue.resolvedBy.displayName}`
+                      : ""}
                 </span>
               </article>
             ))}
