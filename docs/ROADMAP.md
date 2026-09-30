@@ -106,7 +106,8 @@
 - [x] Drug concept records
 - [x] Multiple manufacturer/NDC products per drug
 - [x] NDC normalization and lookup
-- [x] Multiple lot numbers and expiration dates per manufacturer/NDC product
+- [x] Independent lot-number collection under each NDC
+- [x] Independent expiration-date collection under each NDC
 - [x] Site-specific lot records
 - [x] Search by drug, brand, manufacturer, NDC, or lot number
 - [x] Drug/Product workstation with F7 navigation
