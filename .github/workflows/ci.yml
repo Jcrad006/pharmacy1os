@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1-synthetic-dispensing]
+    branches: [main, phase1b-dispensing-workstation]
   pull_request:
   workflow_dispatch:
 

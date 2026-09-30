@@ -1,24 +1,40 @@
 import type { PrescriptionStatus } from "@prisma/client";
 import type { Permission } from "../security/roles.js";
 
-const transitions: Record<PrescriptionStatus, readonly PrescriptionStatus[]> = {
+const transitions: Record<
+  Exclude<PrescriptionStatus, "ON_HOLD">,
+  readonly PrescriptionStatus[]
+> = {
   RECEIVED: ["DATA_ENTRY", "ON_HOLD", "CANCELLED", "TRANSFERRED"],
   DATA_ENTRY: ["DUR_REVIEW", "ON_HOLD", "CANCELLED", "TRANSFERRED"],
-  DUR_REVIEW: ["PRODUCT_FILL", "ON_HOLD", "CANCELLED", "TRANSFERRED"],
+  DUR_REVIEW: ["ON_HOLD", "CANCELLED", "TRANSFERRED"],
   PRODUCT_FILL: ["PHARMACIST_REVIEW", "ON_HOLD", "CANCELLED"],
   PHARMACIST_REVIEW: ["READY", "PRODUCT_FILL", "ON_HOLD", "CANCELLED"],
   READY: ["SOLD", "ON_HOLD", "CANCELLED"],
-  SOLD: [],
-  ON_HOLD: ["DATA_ENTRY", "DUR_REVIEW", "PRODUCT_FILL", "PHARMACIST_REVIEW", "CANCELLED", "TRANSFERRED"],
+  SOLD: ["DUR_REVIEW", "ON_HOLD", "CANCELLED", "TRANSFERRED"],
   CANCELLED: [],
   TRANSFERRED: [],
 };
 
+export function allowedTransitions(
+  from: PrescriptionStatus,
+  heldFromStatus?: PrescriptionStatus | null,
+): readonly PrescriptionStatus[] {
+  if (from === "ON_HOLD") {
+    return heldFromStatus
+      ? [heldFromStatus, "CANCELLED", "TRANSFERRED"]
+      : ["CANCELLED", "TRANSFERRED"];
+  }
+
+  return transitions[from];
+}
+
 export function canTransitionPrescription(
   from: PrescriptionStatus,
   to: PrescriptionStatus,
+  heldFromStatus?: PrescriptionStatus | null,
 ) {
-  return transitions[from].includes(to);
+  return allowedTransitions(from, heldFromStatus).includes(to);
 }
 
 export function permissionForTransition(
@@ -28,9 +44,10 @@ export function permissionForTransition(
   if (from === "PHARMACIST_REVIEW" && to === "READY") {
     return "prescription:verify";
   }
-  return "prescription:process";
-}
 
-export function allowedTransitions(from: PrescriptionStatus) {
-  return transitions[from];
+  if (from === "READY" && to === "SOLD") {
+    return "prescription:sell";
+  }
+
+  return "prescription:process";
 }
