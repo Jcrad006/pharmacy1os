@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1d-clinical-date-rules]
+    branches: [main, phase1e-workflow-efficiency]
   pull_request:
   workflow_dispatch:
 

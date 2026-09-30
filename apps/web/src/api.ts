@@ -43,9 +43,24 @@ export async function getDevelopmentUsers() {
   );
 }
 
-export async function getPrescriptionQueue(devUser: string) {
+export async function getPrescriptionQueue(
+  devUser: string,
+  options?: {
+    query?: string;
+    status?: PrescriptionStatus | "";
+    sort?: "oldest" | "newest";
+    limit?: number;
+  },
+) {
+  const params = new URLSearchParams();
+  if (options?.query?.trim()) params.set("query", options.query.trim());
+  if (options?.status) params.set("status", options.status);
+  if (options?.sort) params.set("sort", options.sort);
+  if (options?.limit) params.set("limit", String(options.limit));
+
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   const result = await request<{ prescriptions: PrescriptionQueueItem[] }>(
-    "/api/prescriptions/queue",
+    `/api/prescriptions/queue${suffix}`,
     { devUser },
   );
   return result.prescriptions;
