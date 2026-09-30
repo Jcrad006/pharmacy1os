@@ -60,10 +60,45 @@ describe("structured patient and provider directory search", () => {
         lastName,
         dateOfBirth: "1975-11-09",
         phone: "336.555.3434",
+        fax: "336-555-3435",
+        deaNumber: "AB1234567",
+        stateProviderId: "NC-STATE-9988",
+        stateProviderIdState: "NC",
+        addresses: [
+          {
+            label: "Main office",
+            addressLine1: "123 Clinical Way",
+            addressLine2: "Suite 400",
+            city: "Greensboro",
+            state: "NC",
+            postalCode: "27401",
+            isPrimary: true,
+          },
+          {
+            label: "Satellite",
+            addressLine1: "456 Pharmacy Road",
+            city: "Reidsville",
+            state: "NC",
+            postalCode: "27320",
+          },
+        ],
         npi: `7${Math.floor(Math.random() * 1_000_000_000).toString().padStart(9, "0")}`,
       },
     });
     expect(created.statusCode).toBe(201);
+    expect(created.json().prescriber.deaNumber).toBe("AB1234567");
+    expect(created.json().prescriber.fax).toBe("336-555-3435");
+    expect(created.json().prescriber.stateProviderId).toBe("NC-STATE-9988");
+    expect(created.json().prescriber.stateProviderIdState).toBe("NC");
+    expect(created.json().prescriber.addresses).toHaveLength(2);
+    expect(created.json().prescriber.addresses[0]).toMatchObject({
+      label: "Main office",
+      addressLine1: "123 Clinical Way",
+      city: "Greensboro",
+      state: "NC",
+      postalCode: "27401",
+      isPrimary: true,
+    });
     const id = created.json().prescriber.id as string;
 
     for (const url of [

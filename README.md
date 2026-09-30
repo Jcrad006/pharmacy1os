@@ -11,7 +11,7 @@ The current prototype includes:
 - React + TypeScript pharmacy workstation
 - Fastify + TypeScript pharmacy API
 - PostgreSQL + Prisma database with versioned migrations
-- Site-scoped patient and prescriber records
+- Site-scoped patient and provider records with NPI, DEA, state provider identifiers, phone/fax, and multiple practice addresses
 - Patient and prescriber registration screens
 - Synthetic role/permission architecture
 - Prescription entry and live dispensing queue

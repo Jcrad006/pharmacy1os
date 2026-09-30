@@ -3,14 +3,27 @@ import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
 
+type ProviderAddressInput = {
+  label?: string;
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  isPrimary?: boolean;
+};
+
 type CreatePrescriberBody = {
   firstName?: string;
   lastName?: string;
   dateOfBirth?: string;
   npi?: string;
   deaNumber?: string;
+  stateProviderId?: string;
+  stateProviderIdState?: string;
   phone?: string;
   fax?: string;
+  addresses?: ProviderAddressInput[];
 };
 
 type PrescriberQuery = {
@@ -43,6 +56,41 @@ function parseDirectoryDate(value?: string) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function normalizeAddresses(addresses?: ProviderAddressInput[]) {
+  const populated = (addresses ?? []).filter((address) =>
+    [
+      address.label,
+      address.addressLine1,
+      address.addressLine2,
+      address.city,
+      address.state,
+      address.postalCode,
+    ].some((value) => value?.trim()),
+  );
+
+  for (const address of populated) {
+    if (
+      !address.addressLine1?.trim() ||
+      !address.city?.trim() ||
+      !address.state?.trim() ||
+      !address.postalCode?.trim()
+    ) {
+      return null;
+    }
+  }
+
+  return populated.map((address, index) => ({
+    label: address.label?.trim() || undefined,
+    addressLine1: address.addressLine1!.trim(),
+    addressLine2: address.addressLine2?.trim() || undefined,
+    city: address.city!.trim(),
+    state: address.state!.trim().toUpperCase(),
+    postalCode: address.postalCode!.trim(),
+    isPrimary:
+      address.isPrimary === true ||
+      (!populated.some((item) => item.isPrimary === true) && index === 0),
+  }));
+}
 
 export async function prescriberRoutes(app: FastifyInstance) {
   app.get("/prescribers", async (request, reply) => {
@@ -88,12 +136,19 @@ export async function prescriberRoutes(app: FastifyInstance) {
                     { lastName: { startsWith: generic, mode: "insensitive" } },
                     { firstName: { startsWith: generic, mode: "insensitive" } },
                     { npi: { contains: generic } },
+                    { deaNumber: { contains: generic, mode: "insensitive" } },
+                    { stateProviderId: { contains: generic, mode: "insensitive" } },
                     ...(genericPhone
                       ? [{ phoneSearch: { contains: genericPhone } }]
                       : []),
                   ],
                 }
             : {}),
+        },
+        include: {
+          addresses: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+          },
         },
         orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { dateOfBirth: "asc" }],
         take: 100,
@@ -122,6 +177,13 @@ export async function prescriberRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid date of birth." });
       }
 
+      const addresses = normalizeAddresses(body.addresses);
+      if (addresses === null) {
+        return reply.code(400).send({
+          error: "Each provider address requires street, city, state, and postal code.",
+        });
+      }
+
       const prescriber = await db.$transaction(async (tx) => {
         const created = await tx.prescriber.create({
           data: {
@@ -130,10 +192,24 @@ export async function prescriberRoutes(app: FastifyInstance) {
             lastName: body.lastName!.trim(),
             dateOfBirth: dateOfBirth instanceof Date ? dateOfBirth : undefined,
             npi: body.npi?.trim() || undefined,
-            deaNumber: body.deaNumber?.trim() || undefined,
+            deaNumber: body.deaNumber?.trim().toUpperCase() || undefined,
+            stateProviderId: body.stateProviderId?.trim() || undefined,
+            stateProviderIdState:
+              body.stateProviderIdState?.trim().toUpperCase() || undefined,
             phone: body.phone?.trim() || undefined,
             phoneSearch: normalizePhone(body.phone) || undefined,
             fax: body.fax?.trim() || undefined,
+            addresses:
+              addresses.length > 0
+                ? {
+                    create: addresses,
+                  }
+                : undefined,
+          },
+          include: {
+            addresses: {
+              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+            },
           },
         });
 
@@ -144,6 +220,11 @@ export async function prescriberRoutes(app: FastifyInstance) {
           entityType: "Prescriber",
           entityId: created.id,
           requestId: request.id,
+          metadata: {
+            addressCount: created.addresses.length,
+            hasDeaNumber: Boolean(created.deaNumber),
+            hasStateProviderId: Boolean(created.stateProviderId),
+          },
         });
 
         return created;

@@ -166,8 +166,19 @@ export async function createPrescriber(
     dateOfBirth?: string;
     npi?: string;
     deaNumber?: string;
+    stateProviderId?: string;
+    stateProviderIdState?: string;
     phone?: string;
     fax?: string;
+    addresses?: Array<{
+      label?: string;
+      addressLine1: string;
+      addressLine2?: string;
+      city: string;
+      state: string;
+      postalCode: string;
+      isPrimary?: boolean;
+    }>;
   },
 ) {
   return request<{ prescriber: Prescriber }>("/api/prescribers", {

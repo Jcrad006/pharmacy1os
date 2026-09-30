@@ -11,6 +11,8 @@ const ids = {
   patient2: "patient-demo-002",
   prescriber1: "prescriber-demo-001",
   prescriber2: "prescriber-demo-002",
+  prescriberAddress1: "prescriber-address-demo-001",
+  prescriberAddress2: "prescriber-address-demo-002",
   rx1: "rx-demo-001",
   rx2: "rx-demo-002",
 };
@@ -84,6 +86,10 @@ async function main() {
       dateOfBirth: new Date("1970-01-15T00:00:00Z"),
       phone: "555-0201",
       phoneSearch: "5550201",
+      deaNumber: "DEMO-DEA-001",
+      stateProviderId: "NC-DEMO-1001",
+      stateProviderIdState: "NC",
+      fax: "555-0202",
     },
     create: {
       id: ids.prescriber1,
@@ -93,6 +99,8 @@ async function main() {
       dateOfBirth: new Date("1970-01-15T00:00:00Z"),
       npi: "0000000001",
       deaNumber: "DEMO-DEA-001",
+      stateProviderId: "NC-DEMO-1001",
+      stateProviderIdState: "NC",
       phone: "555-0201",
       phoneSearch: "5550201",
       fax: "555-0202",
@@ -105,6 +113,10 @@ async function main() {
       dateOfBirth: new Date("1981-06-22T00:00:00Z"),
       phone: "555-0203",
       phoneSearch: "5550203",
+      deaNumber: "DEMO-DEA-002",
+      stateProviderId: "NC-DEMO-1002",
+      stateProviderIdState: "NC",
+      fax: "555-0204",
     },
     create: {
       id: ids.prescriber2,
@@ -113,9 +125,58 @@ async function main() {
       lastName: "Example",
       dateOfBirth: new Date("1981-06-22T00:00:00Z"),
       npi: "0000000002",
+      deaNumber: "DEMO-DEA-002",
+      stateProviderId: "NC-DEMO-1002",
+      stateProviderIdState: "NC",
       phone: "555-0203",
       phoneSearch: "5550203",
       fax: "555-0204",
+    },
+  });
+
+  await db.prescriberAddress.upsert({
+    where: { id: ids.prescriberAddress1 },
+    update: {
+      label: "Main office",
+      addressLine1: "100 Demo Medical Plaza",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27000",
+      isPrimary: true,
+    },
+    create: {
+      id: ids.prescriberAddress1,
+      prescriberId: ids.prescriber1,
+      label: "Main office",
+      addressLine1: "100 Demo Medical Plaza",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27000",
+      isPrimary: true,
+    },
+  });
+
+  await db.prescriberAddress.upsert({
+    where: { id: ids.prescriberAddress2 },
+    update: {
+      label: "Clinic",
+      addressLine1: "200 Example Health Way",
+      addressLine2: "Suite 12",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27001",
+      isPrimary: true,
+    },
+    create: {
+      id: ids.prescriberAddress2,
+      prescriberId: ids.prescriber2,
+      label: "Clinic",
+      addressLine1: "200 Example Health Way",
+      addressLine2: "Suite 12",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27001",
+      isPrimary: true,
     },
   });
 

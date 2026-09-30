@@ -44,6 +44,17 @@ export type Patient = {
   email?: string | null;
 };
 
+export type PrescriberAddress = {
+  id: string;
+  label: string | null;
+  addressLine1: string;
+  addressLine2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  isPrimary: boolean;
+};
+
 export type Prescriber = {
   id: string;
   firstName: string;
@@ -51,8 +62,11 @@ export type Prescriber = {
   dateOfBirth: string | null;
   npi: string | null;
   deaNumber?: string | null;
+  stateProviderId?: string | null;
+  stateProviderIdState?: string | null;
   phone?: string | null;
   fax?: string | null;
+  addresses?: PrescriberAddress[];
 };
 
 export type PrescriptionFill = {

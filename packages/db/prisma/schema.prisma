@@ -108,18 +108,41 @@ model Prescriber {
   lastName      String
   dateOfBirth   DateTime?
   npi           String?
-  deaNumber     String?
-  phone         String?
-  phoneSearch   String?
-  fax           String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  prescriptions Prescription[]
+  deaNumber             String?
+  stateProviderId        String?
+  stateProviderIdState   String?
+  phone                 String?
+  phoneSearch           String?
+  fax                   String?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  prescriptions         Prescription[]
+  addresses             PrescriberAddress[]
 
   @@unique([siteId, npi])
   @@index([siteId, lastName, firstName])
   @@index([siteId, dateOfBirth])
   @@index([siteId, phoneSearch])
+  @@index([siteId, deaNumber])
+  @@index([siteId, stateProviderId])
+}
+
+model PrescriberAddress {
+  id             String     @id @default(uuid())
+  prescriberId   String
+  prescriber     Prescriber @relation(fields: [prescriberId], references: [id], onDelete: Cascade)
+  label          String?
+  addressLine1   String
+  addressLine2   String?
+  city           String
+  state          String
+  postalCode     String
+  isPrimary      Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([prescriberId, isPrimary])
+  @@index([state, postalCode])
 }
 
 model Prescription {
