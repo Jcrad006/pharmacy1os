@@ -417,3 +417,103 @@ kbd {
 .directory-help {
   margin: -7px 0 14px;
 }
+
+.exception-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.exception-summary-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid #dfe8e3;
+  border-radius: 11px;
+  padding: 14px 16px;
+  background: white;
+}
+.exception-summary-card span {
+  color: #68766f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.exception-summary-card strong {
+  color: #173c2f;
+  font-size: 25px;
+}
+.exception-toolbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 220px;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.exception-toolbar select {
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+}
+.exception-list {
+  display: grid;
+  gap: 10px;
+}
+.exception-card {
+  border: 1px solid #dfe7e3;
+  border-left-width: 5px;
+  border-radius: 10px;
+  padding: 15px;
+  background: #fbfdfc;
+}
+.exception-info { border-left-color: #7897aa; }
+.exception-warning { border-left-color: #c3913d; }
+.exception-high { border-left-color: #b45656; }
+.exception-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+.exception-main p {
+  margin-top: 5px;
+  color: #52635c;
+}
+.exception-main small {
+  display: block;
+  margin-top: 7px;
+  color: #728079;
+}
+.exception-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.exception-kind {
+  color: #5d6e66;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.exception-side {
+  display: grid;
+  justify-items: end;
+  align-content: start;
+  gap: 8px;
+  min-width: 180px;
+}
+.exception-side time {
+  color: #7c6a39;
+  font-size: 11px;
+  font-weight: 700;
+}
+@media (max-width: 900px) {
+  .exception-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .exception-toolbar { grid-template-columns: 1fr; }
+}
+@media (max-width: 650px) {
+  .exception-summary { grid-template-columns: 1fr; }
+  .exception-main { flex-direction: column; }
+  .exception-side { justify-items: start; }
+}
