@@ -32,7 +32,7 @@ const viewTitles: Record<View, string> = {
   "will-call": "Will Call",
   "new-rx": "New Prescription",
   patients: "Patients",
-  prescribers: "Prescribers",
+  prescribers: "Providers",
   detail: "Prescription Detail",
 };
 
@@ -132,15 +132,26 @@ export function App() {
         return;
       }
 
-      if (editing || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "Escape" && view === "detail") {
+        navigate("dashboard");
+        return;
+      }
 
-      if (event.key.toLowerCase() === "q") navigate("dashboard");
-      if (event.key.toLowerCase() === "e") navigate("exceptions");
-      if (event.key.toLowerCase() === "w") navigate("will-call");
-      if (event.key.toLowerCase() === "n") navigate("new-rx");
-      if (event.key.toLowerCase() === "p") navigate("patients");
-      if (event.key.toLowerCase() === "r") navigate("prescribers");
-      if (event.key === "Escape" && view === "detail") navigate("dashboard");
+      const functionKeyMap: Partial<Record<string, View>> = {
+        F1: "dashboard",
+        F2: "exceptions",
+        F3: "will-call",
+        F4: "new-rx",
+        F5: "patients",
+        F6: "prescribers",
+      };
+
+      const destination = functionKeyMap[event.key];
+      if (!destination) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      navigate(destination);
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -200,12 +211,12 @@ export function App() {
         </div>
 
         <nav>
-          <button className={view === "dashboard" ? "nav-item active" : "nav-item"} onClick={() => navigate("dashboard")}>Dashboard</button>
-          <button className={view === "exceptions" ? "nav-item active" : "nav-item"} onClick={() => navigate("exceptions")}>Exceptions <span className="nav-count">{exceptionSummary.total}</span></button>
-          <button className={view === "will-call" ? "nav-item active" : "nav-item"} onClick={() => navigate("will-call")}>Will Call <span className="nav-count">{willCall.length}</span></button>
-          <button className={view === "new-rx" ? "nav-item active" : "nav-item"} onClick={() => navigate("new-rx")}>New Prescription</button>
-          <button className={view === "patients" ? "nav-item active" : "nav-item"} onClick={() => navigate("patients")}>Patients</button>
-          <button className={view === "prescribers" ? "nav-item active" : "nav-item"} onClick={() => navigate("prescribers")}>Prescribers</button>
+          <button className={view === "dashboard" ? "nav-item active" : "nav-item"} onClick={() => navigate("dashboard")}><span>Dashboard</span><kbd>F1</kbd></button>
+          <button className={view === "exceptions" ? "nav-item active" : "nav-item"} onClick={() => navigate("exceptions")}><span>Exceptions <span className="nav-count">{exceptionSummary.total}</span></span><kbd>F2</kbd></button>
+          <button className={view === "will-call" ? "nav-item active" : "nav-item"} onClick={() => navigate("will-call")}><span>Will Call <span className="nav-count">{willCall.length}</span></span><kbd>F3</kbd></button>
+          <button className={view === "new-rx" ? "nav-item active" : "nav-item"} onClick={() => navigate("new-rx")}><span>New Prescription</span><kbd>F4</kbd></button>
+          <button className={view === "patients" ? "nav-item active" : "nav-item"} onClick={() => navigate("patients")}><span>Patients</span><kbd>F5</kbd></button>
+          <button className={view === "prescribers" ? "nav-item active" : "nav-item"} onClick={() => navigate("prescribers")}><span>Providers</span><kbd>F6</kbd></button>
           <button className="nav-item" disabled>Inventory</button>
           <button className="nav-item" disabled>Reports</button>
         </nav>
@@ -221,11 +232,12 @@ export function App() {
           </select>
           <small>Development only. This is not production authentication.</small>
           <div className="shortcut-hint">
-            <span><kbd>/</kbd> Search</span>
-            <span><kbd>Q</kbd> Queue</span>
-            <span><kbd>N</kbd> New Rx</span>
-            <span><kbd>E</kbd> Exceptions</span>
-            <span><kbd>W</kbd> Will Call</span>
+            <span><kbd>F1</kbd> Dashboard</span>
+            <span><kbd>F2</kbd> Exceptions</span>
+            <span><kbd>F3</kbd> Will Call</span>
+            <span><kbd>F4</kbd> New Rx</span>
+            <span><kbd>F5</kbd> Patients</span>
+            <span><kbd>F6</kbd> Providers</span>
           </div>
         </div>
       </aside>

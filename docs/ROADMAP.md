@@ -64,11 +64,11 @@
 - [x] Oldest/newest queue sorting
 - [x] Work-queue aging indicators
 - [x] Saved workstation queue filters/preferences
-- [x] Keyboard shortcuts for queue search and primary work areas
+- [x] F1–F6 function-key navigation for primary work areas
 - [x] Enter-to-open-first queue search workflow
 - [x] Database-backed queue search/filter tests
-- [x] Server-backed patient directory search
-- [x] Server-backed prescriber directory search
+- [x] Server-backed patient search by Last name, First name, DOB, and normalized phone
+- [x] Server-backed provider search by Last name, First name, DOB, and normalized phone
 - [x] Derived synthetic exception queue
 - [x] Clinical/DUR exception category
 - [x] On-hold exception category
