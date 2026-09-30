@@ -143,8 +143,11 @@ export type DurIssue = {
   severity: DurSeverity;
   status: DurIssueStatus;
   source: string;
+  eligibleAt: string | null;
   createdAt: string;
   resolvedAt: string | null;
+  resolutionNote: string | null;
+  resolvedAutomatically: boolean;
   resolvedBy: {
     displayName: string;
     role: UserRole;
