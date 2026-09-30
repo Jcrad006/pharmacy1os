@@ -78,7 +78,19 @@ const editableStatuses = new Set<PrescriptionStatus>([
 
 const prescriptionInclude = {
   patient: true,
-  prescriber: true,
+  prescriber: {
+    include: {
+      identifiers: {
+        orderBy: [{ type: "asc" as const }, { isPrimary: "desc" as const }, { createdAt: "asc" as const }],
+      },
+      contacts: {
+        orderBy: [{ type: "asc" as const }, { isPrimary: "desc" as const }, { createdAt: "asc" as const }],
+      },
+      addresses: {
+        orderBy: [{ isPrimary: "desc" as const }, { createdAt: "asc" as const }],
+      },
+    },
+  },
   fills: { orderBy: { fillNumber: "desc" as const } },
 };
 

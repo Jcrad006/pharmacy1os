@@ -1,4 +1,11 @@
-import { PrismaClient, UserRole, PrescriptionStatus, FillStatus } from "@prisma/client";
+import {
+  FillStatus,
+  PrescriberContactType,
+  PrescriberIdentifierType,
+  PrescriptionStatus,
+  PrismaClient,
+  UserRole,
+} from "@prisma/client";
 
 const db = new PrismaClient();
 
@@ -11,6 +18,19 @@ const ids = {
   patient2: "patient-demo-002",
   prescriber1: "prescriber-demo-001",
   prescriber2: "prescriber-demo-002",
+  providerNpi1: "provider-npi-demo-001",
+  providerDea1: "provider-dea-demo-001",
+  providerState1: "provider-state-demo-001",
+  providerPhone1: "provider-phone-demo-001",
+  providerPhone1b: "provider-phone-demo-001b",
+  providerFax1: "provider-fax-demo-001",
+  providerNpi2: "provider-npi-demo-002",
+  providerDea2: "provider-dea-demo-002",
+  providerState2: "provider-state-demo-002",
+  providerPhone2: "provider-phone-demo-002",
+  providerFax2: "provider-fax-demo-002",
+  prescriberAddress1: "prescriber-address-demo-001",
+  prescriberAddress2: "prescriber-address-demo-002",
   rx1: "rx-demo-001",
   rx2: "rx-demo-002",
 };
@@ -81,41 +101,147 @@ async function main() {
   await db.prescriber.upsert({
     where: { id: ids.prescriber1 },
     update: {
+      firstName: "Avery",
+      lastName: "Demo",
+      practiceLevel: "NP",
       dateOfBirth: new Date("1970-01-15T00:00:00Z"),
-      phone: "555-0201",
-      phoneSearch: "5550201",
     },
     create: {
       id: ids.prescriber1,
       siteId: ids.site,
       firstName: "Avery",
       lastName: "Demo",
+      practiceLevel: "NP",
       dateOfBirth: new Date("1970-01-15T00:00:00Z"),
-      npi: "0000000001",
-      deaNumber: "DEMO-DEA-001",
-      phone: "555-0201",
-      phoneSearch: "5550201",
-      fax: "555-0202",
     },
   });
 
   await db.prescriber.upsert({
     where: { id: ids.prescriber2 },
     update: {
+      firstName: "Cameron",
+      lastName: "Example",
+      practiceLevel: "MD",
       dateOfBirth: new Date("1981-06-22T00:00:00Z"),
-      phone: "555-0203",
-      phoneSearch: "5550203",
     },
     create: {
       id: ids.prescriber2,
       siteId: ids.site,
       firstName: "Cameron",
       lastName: "Example",
+      practiceLevel: "MD",
       dateOfBirth: new Date("1981-06-22T00:00:00Z"),
-      npi: "0000000002",
-      phone: "555-0203",
-      phoneSearch: "5550203",
-      fax: "555-0204",
+    },
+  });
+
+  const identifiers = [
+    [ids.providerNpi1, ids.prescriber1, PrescriberIdentifierType.NPI, "0000000001", "", true],
+    [ids.providerDea1, ids.prescriber1, PrescriberIdentifierType.DEA, "DEMO-DEA-001", "NC", true],
+    [ids.providerState1, ids.prescriber1, PrescriberIdentifierType.STATE_ID, "NC-DEMO-1001", "NC", true],
+    [ids.providerNpi2, ids.prescriber2, PrescriberIdentifierType.NPI, "0000000002", "", true],
+    [ids.providerDea2, ids.prescriber2, PrescriberIdentifierType.DEA, "DEMO-DEA-002", "NC", true],
+    [ids.providerState2, ids.prescriber2, PrescriberIdentifierType.STATE_ID, "NC-DEMO-1002", "NC", true],
+  ] as const;
+
+  for (const [id, prescriberId, type, number, jurisdiction, isPrimary] of identifiers) {
+    await db.prescriberIdentifier.upsert({
+      where: { id },
+      update: {
+        siteId: ids.site,
+        type,
+        number,
+        numberSearch: number.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+        jurisdiction,
+        isPrimary,
+      },
+      create: {
+        id,
+        siteId: ids.site,
+        prescriberId,
+        type,
+        number,
+        numberSearch: number.replace(/[^A-Za-z0-9]/g, "").toUpperCase(),
+        jurisdiction,
+        isPrimary,
+      },
+    });
+  }
+
+  const contacts = [
+    [ids.providerPhone1, ids.prescriber1, PrescriberContactType.PHONE, "Main office", "555-0201", null, true],
+    [ids.providerPhone1b, ids.prescriber1, PrescriberContactType.PHONE, "Direct line", "555-0205", "104", false],
+    [ids.providerFax1, ids.prescriber1, PrescriberContactType.FAX, "Main fax", "555-0202", null, true],
+    [ids.providerPhone2, ids.prescriber2, PrescriberContactType.PHONE, "Main office", "555-0203", null, true],
+    [ids.providerFax2, ids.prescriber2, PrescriberContactType.FAX, "Main fax", "555-0204", null, true],
+  ] as const;
+
+  for (const [id, prescriberId, type, label, value, extension, isPrimary] of contacts) {
+    await db.prescriberContact.upsert({
+      where: { id },
+      update: {
+        type,
+        label,
+        value,
+        valueSearch: value.replace(/\D/g, ""),
+        extension,
+        isPrimary,
+      },
+      create: {
+        id,
+        prescriberId,
+        type,
+        label,
+        value,
+        valueSearch: value.replace(/\D/g, ""),
+        extension,
+        isPrimary,
+      },
+    });
+  }
+
+  await db.prescriberAddress.upsert({
+    where: { id: ids.prescriberAddress1 },
+    update: {
+      label: "Main office",
+      addressLine1: "100 Demo Medical Plaza",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27000",
+      isPrimary: true,
+    },
+    create: {
+      id: ids.prescriberAddress1,
+      prescriberId: ids.prescriber1,
+      label: "Main office",
+      addressLine1: "100 Demo Medical Plaza",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27000",
+      isPrimary: true,
+    },
+  });
+
+  await db.prescriberAddress.upsert({
+    where: { id: ids.prescriberAddress2 },
+    update: {
+      label: "Clinic",
+      addressLine1: "200 Example Health Way",
+      addressLine2: "Suite 12",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27001",
+      isPrimary: true,
+    },
+    create: {
+      id: ids.prescriberAddress2,
+      prescriberId: ids.prescriber2,
+      label: "Clinic",
+      addressLine1: "200 Example Health Way",
+      addressLine2: "Suite 12",
+      city: "Sample City",
+      state: "NC",
+      postalCode: "27001",
+      isPrimary: true,
     },
   });
 
