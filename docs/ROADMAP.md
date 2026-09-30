@@ -43,16 +43,25 @@
 - [x] Database-backed end-to-end dispensing integration tests
 
 ## Phase 1C — Dispensing depth
-- Prescription editing with change audit trail
-- Return-to-stock workflow
-- Reversal of ready prescriptions
-- Will-call queue
-- Prescription expiration logic
-- Refill-too-soon / date-rule framework
-- Basic synthetic DUR issue model
-- Notes and intervention records
-- Better search, filtering, and queue prioritization
-- Keyboard-first pharmacy workflow
+
+### Completed
+- [x] Prescription editing with structured before/after audit trail
+- [x] Automatic Data Entry reset after editing a DUR-reviewed order
+- [x] Return-to-stock workflow for Ready, unsold fills
+- [x] Reversal of Ready prescriptions back to DUR Review
+- [x] Reprocess returned fills without consuming a refill number
+- [x] Dedicated Will Call API and workstation
+- [x] Will Call sale controls
+- [x] Will Call return-to-stock controls
+- [x] Database-backed integration tests for editing, Will Call, and return-to-stock
+
+### Next
+- [ ] Prescription expiration logic
+- [ ] Refill-too-soon / date-rule framework
+- [ ] Basic synthetic DUR issue model
+- [ ] Notes and pharmacist intervention records
+- [ ] Better search, filtering, and queue prioritization
+- [ ] Keyboard-first pharmacy workflow
 
 ## Phase 2 — Identity and security
 - Production authentication
@@ -69,7 +78,7 @@
 - Barcode scanning
 - Label generation and printing
 - Return-to-stock inventory effects
-- Will-call management
+- Will-call inventory/location management
 - Reports and dashboards
 
 ## Phase 4 — External integrations

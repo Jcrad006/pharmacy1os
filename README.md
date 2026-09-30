@@ -26,6 +26,11 @@ The current prototype now includes:
 - Pharmacist-only final verification
 - Sale-specific role permission
 - Fill and prescription audit events
+- Audited prescription editing with before/after field changes
+- Automatic workflow reset when a DUR-reviewed prescription is edited
+- Dedicated Will Call queue
+- Return-to-stock for Ready, unsold fills
+- Reprocessing of returned fills without consuming a refill number
 - Pharmacist/admin/auditor audit-history view
 - Database-backed end-to-end dispensing integration tests
 - Automated migration, seed, typecheck, test, and production-build validation in CI
@@ -51,12 +56,22 @@ Pharmacist Review
    ↓
 Pharmacist verification
    ↓
-Ready
+Ready / Will Call
    ↓
 Sold
 ```
 
 After a fill is sold, a refill may re-enter DUR Review only when authorized refills remain. Refill usage is counted when the refill is actually sold.
+
+A Ready fill may instead be **Returned to Stock**. Return-to-stock marks that dispensing event as `RETURNED_TO_STOCK`, removes it from Will Call, sends the prescription back to DUR Review, and does **not** consume a refill. Reprocessing that returned fill reuses the same fill number.
+
+## Prescription editing
+
+Prescription edits are currently allowed only in pre-verification workflow states and when no active fill exists. The API records a structured audit event containing before/after values for changed fields.
+
+If a prescription that already reached DUR Review is edited, Pharmacy1OS automatically resets it to Data Entry so the changed order must be reviewed again.
+
+Ready, Sold, Cancelled, and Transferred prescriptions cannot be silently edited.
 
 ## Repository layout
 

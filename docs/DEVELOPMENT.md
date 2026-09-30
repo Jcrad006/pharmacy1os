@@ -57,6 +57,30 @@ Important rules currently enforced:
 - Hold records the prior workflow state so Resume returns to that state.
 - Cancel/transfer cancels an active fill.
 
+## Prescription editing
+
+The prescription-edit API accepts changes to prescriber, medication, strength, dosage form, SIG, quantity, refill authorization, written date, expiration date, and do-not-fill-before date.
+
+Editing is currently restricted to pre-verification workflow states and is blocked when an active fill exists.
+
+Every meaningful edit creates a `PRESCRIPTION_EDITED` audit event with structured before/after values.
+
+If an Rx in DUR Review is edited, its workflow is reset to Data Entry. If an Rx is On Hold from DUR Review, its resume destination is changed to Data Entry. This forces the changed order back through review.
+
+## Will Call and return-to-stock
+
+Will Call is backed by a dedicated API query for prescriptions in `READY`.
+
+A Ready fill can be returned to stock if it has not been sold:
+
+1. the fill becomes `RETURNED_TO_STOCK`
+2. the prescription returns to `DUR_REVIEW`
+3. `refillsUsed` is unchanged
+4. the prescription disappears from Will Call
+5. when reprocessed, the same fill record and fill number are reused
+
+This prevents an unsold return-to-stock event from consuming a refill authorization.
+
 ## Automated validation
 
 CI creates a temporary PostgreSQL database and performs, in order:
@@ -70,7 +94,7 @@ CI creates a temporary PostgreSQL database and performs, in order:
 7. unit and database-backed integration tests
 8. production builds
 
-The integration test creates its own synthetic patient, prescriber, and prescription and exercises hold/resume, original fill, pharmacist verification, sale, refill processing, refill accounting, refusal of excess refills, and audit-history retrieval.
+The integration suite now exercises hold/resume, original fills, pharmacist verification, sale, refill processing, refill accounting, refusal of excess refills, audited prescription editing, workflow reset after editing, Will Call membership, return-to-stock, same-fill-number reprocessing, and audit-history retrieval.
 
 A green check means those development checks passed. It does **not** mean Pharmacy1OS is compliant, clinically validated, or production-ready.
 
