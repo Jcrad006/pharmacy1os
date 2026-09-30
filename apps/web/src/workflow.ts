@@ -90,3 +90,22 @@ export function canDocumentClinical(user?: DevUser) {
   return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
 }
 
+
+export function prioritizeQueueByStatus<
+  T extends { status: PrescriptionStatus },
+>(
+  items: readonly T[],
+  priorityStatus: "" | PrescriptionStatus,
+): T[] {
+  if (!priorityStatus) return [...items];
+
+  const priority: T[] = [];
+  const remainder: T[] = [];
+
+  for (const item of items) {
+    if (item.status === priorityStatus) priority.push(item);
+    else remainder.push(item);
+  }
+
+  return [...priority, ...remainder];
+}

@@ -76,8 +76,11 @@
 - [x] Scheduled-fill exception category
 - [x] Exception search/filtering and severity-first ordering
 - [x] Database-backed exception lifecycle tests
-- [ ] User-configurable queue priorities
-- [ ] Additional keyboard navigation within tables
+- [x] User-configurable saved queue priority pinning
+- [x] J/K and arrow-key queue row navigation
+- [x] Home/End queue jumping
+- [x] Enter-to-open highlighted queue row
+- [x] Unit-tested stable priority ordering
 
 ## Phase 2 — Identity and security
 - Production authentication

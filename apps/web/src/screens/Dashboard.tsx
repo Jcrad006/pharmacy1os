@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPrescriptionQueue } from "../api";
 import type { PrescriptionQueueItem, PrescriptionStatus } from "../types";
-import { formatPatientName, formatPrescriberName, statusLabels } from "../workflow";
+import {
+  formatPatientName,
+  formatPrescriberName,
+  prioritizeQueueByStatus,
+  statusLabels,
+} from "../workflow";
 
 const queueStatuses: Array<{ value: "" | PrescriptionStatus; label: string }> = [
   { value: "", label: "All statuses" },
@@ -16,6 +21,12 @@ const queueStatuses: Array<{ value: "" | PrescriptionStatus; label: string }> = 
   { value: "TRANSFERRED", label: "Transferred" },
 ];
 
+const priorityStatuses = queueStatuses.filter(
+  (option) =>
+    option.value === "" ||
+    !["SOLD", "CANCELLED", "TRANSFERRED"].includes(option.value),
+);
+
 function ageInfo(updatedAt: string) {
   const minutes = Math.max(
     0,
@@ -24,7 +35,12 @@ function ageInfo(updatedAt: string) {
 
   if (minutes < 30) return { label: `${minutes}m`, level: "fresh" };
   if (minutes < 60) return { label: `${minutes}m`, level: "watch" };
-  if (minutes < 120) return { label: `${Math.floor(minutes / 60)}h ${minutes % 60}m`, level: "aging" };
+  if (minutes < 120) {
+    return {
+      label: `${Math.floor(minutes / 60)}h ${minutes % 60}m`,
+      level: "aging",
+    };
+  }
   return { label: `${Math.floor(minutes / 60)}h+`, level: "late" };
 }
 
@@ -44,6 +60,7 @@ export function Dashboard({
   onRefresh: () => void;
 }) {
   const searchRef = useRef<HTMLInputElement>(null);
+  const selectedRowRef = useRef<HTMLTableRowElement>(null);
   const [query, setQuery] = useState(
     () => localStorage.getItem("pharmacy1os.queue.query") ?? "",
   );
@@ -61,12 +78,40 @@ export function Dashboard({
         | "newest"
         | null) ?? "oldest",
   );
+  const [priorityStatus, setPriorityStatus] = useState<"" | PrescriptionStatus>(
+    () =>
+      (localStorage.getItem("pharmacy1os.queue.priority") as
+        | ""
+        | PrescriptionStatus
+        | null) ?? "",
+  );
   const [visibleQueue, setVisibleQueue] = useState(queue);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const [searching, setSearching] = useState(false);
+
+  const workingQueue = useMemo(
+    () => prioritizeQueueByStatus(visibleQueue, priorityStatus),
+    [visibleQueue, priorityStatus],
+  );
 
   useEffect(() => {
     setVisibleQueue(queue);
   }, [queue]);
+
+  useEffect(() => {
+    setSelectedIndex((current) =>
+      workingQueue.length === 0
+        ? 0
+        : Math.min(current, workingQueue.length - 1),
+    );
+  }, [workingQueue.length]);
+
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [selectedIndex]);
 
   useEffect(() => {
     function focusSearch() {
@@ -82,6 +127,7 @@ export function Dashboard({
     localStorage.setItem("pharmacy1os.queue.query", query);
     localStorage.setItem("pharmacy1os.queue.status", status);
     localStorage.setItem("pharmacy1os.queue.sort", sort);
+    localStorage.setItem("pharmacy1os.queue.priority", priorityStatus);
 
     if (!devUser) return;
     const timer = window.setTimeout(async () => {
@@ -94,23 +140,67 @@ export function Dashboard({
           limit: 200,
         });
         setVisibleQueue(results);
+        setSelectedIndex(0);
       } finally {
         setSearching(false);
       }
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [devUser, query, status, sort]);
+  }, [devUser, query, status, sort, priorityStatus]);
+
+  useEffect(() => {
+    function handleQueueKeys(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const editing =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable;
+
+      if (editing || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (workingQueue.length === 0) return;
+
+      if (event.key === "ArrowDown" || event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        setSelectedIndex((index) =>
+          Math.min(workingQueue.length - 1, index + 1),
+        );
+      } else if (event.key === "ArrowUp" || event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSelectedIndex((index) => Math.max(0, index - 1));
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        setSelectedIndex(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        setSelectedIndex(workingQueue.length - 1);
+      } else if (event.key === "Enter" && workingQueue[selectedIndex]) {
+        event.preventDefault();
+        onOpen(workingQueue[selectedIndex].id);
+      }
+    }
+
+    window.addEventListener("keydown", handleQueueKeys);
+    return () => window.removeEventListener("keydown", handleQueueKeys);
+  }, [workingQueue, selectedIndex, onOpen]);
 
   const activeFilterCount = useMemo(
-    () => Number(Boolean(query.trim())) + Number(Boolean(status)) + Number(sort !== "oldest"),
-    [query, status, sort],
+    () =>
+      Number(Boolean(query.trim())) +
+      Number(Boolean(status)) +
+      Number(sort !== "oldest") +
+      Number(Boolean(priorityStatus)),
+    [query, status, sort, priorityStatus],
   );
 
   function resetFilters() {
     setQuery("");
     setStatus("");
     setSort("oldest");
+    setPriorityStatus("");
+    setSelectedIndex(0);
     searchRef.current?.focus();
   }
 
@@ -134,15 +224,19 @@ export function Dashboard({
           </div>
           <div className="queue-header-actions">
             <span className="queue-count">
-              {searching ? "Searching…" : `${visibleQueue.length} shown`}
+              {searching ? "Searching…" : `${workingQueue.length} shown`}
             </span>
-            <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+            <button
+              className="secondary-button"
+              onClick={onRefresh}
+              disabled={loading}
+            >
               {loading ? "Working…" : "Refresh"}
             </button>
           </div>
         </div>
 
-        <div className="queue-toolbar">
+        <div className="queue-toolbar queue-toolbar-priority">
           <label className="queue-search">
             <span>Search</span>
             <input
@@ -150,9 +244,9 @@ export function Dashboard({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && visibleQueue[0]) {
+                if (event.key === "Enter" && workingQueue[0]) {
                   event.preventDefault();
-                  onOpen(visibleQueue[0].id);
+                  onOpen(workingQueue[0].id);
                 }
               }}
               placeholder="Rx #, drug, patient, or prescriber  (/)"
@@ -170,6 +264,25 @@ export function Dashboard({
               {queueStatuses.map((option) => (
                 <option key={option.value || "all"} value={option.value}>
                   {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <span>Prioritize</span>
+            <select
+              value={priorityStatus}
+              onChange={(event) => {
+                setPriorityStatus(
+                  event.target.value as "" | PrescriptionStatus,
+                );
+                setSelectedIndex(0);
+              }}
+            >
+              {priorityStatuses.map((option) => (
+                <option key={option.value || "none"} value={option.value}>
+                  {option.value ? option.label : "No priority pin"}
                 </option>
               ))}
             </select>
@@ -198,14 +311,16 @@ export function Dashboard({
         </div>
 
         <div className="queue-help">
-          Saved automatically on this workstation. Press <kbd>/</kbd> to search;
-          press <kbd>Enter</kbd> to open the first result.
+          Saved on this workstation. <kbd>/</kbd> search · <kbd>J</kbd>/<kbd>↓</kbd>
+          next · <kbd>K</kbd>/<kbd>↑</kbd> previous · <kbd>Home</kbd>/<kbd>End</kbd>
+          jump · <kbd>Enter</kbd> open highlighted Rx.
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap queue-table-wrap">
           <table>
             <thead>
               <tr>
+                <th></th>
                 <th>Age</th>
                 <th>Rx</th>
                 <th>Patient</th>
@@ -217,12 +332,25 @@ export function Dashboard({
               </tr>
             </thead>
             <tbody>
-              {visibleQueue.map((item) => {
+              {workingQueue.map((item, index) => {
                 const age = ageInfo(item.updatedAt);
+                const selected = index === selectedIndex;
                 return (
-                  <tr key={item.id}>
+                  <tr
+                    key={item.id}
+                    ref={selected ? selectedRowRef : undefined}
+                    className={selected ? "queue-row-selected" : undefined}
+                    aria-selected={selected}
+                    onClick={() => setSelectedIndex(index)}
+                  >
+                    <td className="queue-cursor">
+                      {selected ? "▶" : ""}
+                    </td>
                     <td>
-                      <span className={`age-badge age-${age.level}`} title={new Date(item.updatedAt).toLocaleString()}>
+                      <span
+                        className={`age-badge age-${age.level}`}
+                        title={new Date(item.updatedAt).toLocaleString()}
+                      >
                         {age.label}
                       </span>
                     </td>
@@ -231,20 +359,29 @@ export function Dashboard({
                     <td>
                       <strong>{item.medicationName}</strong>
                       <small className="cell-subtext">
-                        {[item.strength, item.dosageForm].filter(Boolean).join(" · ")}
+                        {[item.strength, item.dosageForm]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </small>
                     </td>
                     <td>{formatPrescriberName(item.prescriber)}</td>
                     <td>
-                      <span className={`status status-${item.status.toLowerCase()}`}>
+                      <span
+                        className={`status status-${item.status.toLowerCase()}`}
+                      >
                         {statusLabels[item.status]}
                       </span>
                     </td>
-                    <td>{item.refillsUsed} / {item.refillsAllowed}</td>
+                    <td>
+                      {item.refillsUsed} / {item.refillsAllowed}
+                    </td>
                     <td>
                       <button
                         className="secondary-button table-action"
-                        onClick={() => onOpen(item.id)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpen(item.id);
+                        }}
                       >
                         Open
                       </button>
@@ -252,9 +389,9 @@ export function Dashboard({
                   </tr>
                 );
               })}
-              {visibleQueue.length === 0 && (
+              {workingQueue.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="empty-state">
+                  <td colSpan={9} className="empty-state">
                     No prescriptions match the current queue filters.
                   </td>
                 </tr>
