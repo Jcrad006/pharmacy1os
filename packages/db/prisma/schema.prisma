@@ -47,6 +47,8 @@ model PharmacySite {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   users         User[]
+  patients      Patient[]
+  prescribers   Prescriber[]
   prescriptions Prescription[]
   auditEvents   AuditEvent[]
 }
@@ -68,6 +70,8 @@ model User {
 
 model Patient {
   id            String         @id @default(uuid())
+  siteId        String
+  site          PharmacySite   @relation(fields: [siteId], references: [id])
   firstName     String
   lastName      String
   dateOfBirth   DateTime?
@@ -77,14 +81,16 @@ model Patient {
   updatedAt     DateTime       @updatedAt
   prescriptions Prescription[]
 
-  @@index([lastName, firstName])
+  @@index([siteId, lastName, firstName])
 }
 
 model Prescriber {
   id            String         @id @default(uuid())
+  siteId        String
+  site          PharmacySite   @relation(fields: [siteId], references: [id])
   firstName     String
   lastName      String
-  npi           String?        @unique
+  npi           String?
   deaNumber     String?
   phone         String?
   fax           String?
@@ -92,7 +98,8 @@ model Prescriber {
   updatedAt     DateTime       @updatedAt
   prescriptions Prescription[]
 
-  @@index([lastName, firstName])
+  @@unique([siteId, npi])
+  @@index([siteId, lastName, firstName])
 }
 
 model Prescription {

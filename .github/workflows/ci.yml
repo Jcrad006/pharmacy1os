@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, phase1-synthetic-dispensing]
   pull_request:
   workflow_dispatch:
 
@@ -12,6 +12,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://pharmacy1os:pharmacy1os_dev@localhost:5432/pharmacy1os?schema=public
       WEB_ORIGIN: http://localhost:5173
+      ALLOW_DEV_IDENTITY: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -22,6 +23,7 @@ jobs:
           node-version: 22
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm db:generate
+      - run: pnpm db:validate
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
