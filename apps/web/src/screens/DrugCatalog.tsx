@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   createMedication,
   createProduct,
+  createProductExpiration,
   createProductLot,
   getMedications,
 } from "../api";
@@ -52,10 +53,12 @@ export function DrugCatalog({
   const [labelName, setLabelName] = useState("");
   const [packageDescription, setPackageDescription] = useState("");
 
-  const [selectedProductId, setSelectedProductId] = useState("");
+  const [selectedLotProductId, setSelectedLotProductId] = useState("");
   const [lotNumber, setLotNumber] = useState("");
-  const [expirationDate, setExpirationDate] = useState("");
   const [receivedAt, setReceivedAt] = useState("");
+
+  const [selectedExpirationProductId, setSelectedExpirationProductId] = useState("");
+  const [expirationDate, setExpirationDate] = useState("");
 
   const writable = canWriteInventory(user);
 
@@ -85,13 +88,18 @@ export function DrugCatalog({
         setSelectedMedicationId("");
       }
 
-      if (
-        selectedProductId &&
-        !next.some((medication) =>
-          medication.products.some((product) => product.id === selectedProductId),
-        )
-      ) {
-        setSelectedProductId("");
+      for (const [selected, clear] of [
+        [selectedLotProductId, () => setSelectedLotProductId("")],
+        [selectedExpirationProductId, () => setSelectedExpirationProductId("")],
+      ] as const) {
+        if (
+          selected &&
+          !next.some((medication) =>
+            medication.products.some((product) => product.id === selected),
+          )
+        ) {
+          clear();
+        }
       }
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to load drug catalog.");
@@ -158,7 +166,8 @@ export function DrugCatalog({
       setManufacturerLabelerCode("");
       setLabelName("");
       setPackageDescription("");
-      setSelectedProductId(result.product.id);
+      setSelectedLotProductId(result.product.id);
+      setSelectedExpirationProductId(result.product.id);
       setQuery("");
       await load("");
     } catch (error) {
@@ -169,27 +178,50 @@ export function DrugCatalog({
 
   async function addLot(event: FormEvent) {
     event.preventDefault();
-    if (!selectedProductId) return;
+    if (!selectedLotProductId) return;
 
     setLoading(true);
     onError(null);
 
     try {
-      await createProductLot(devUser, selectedProductId, {
+      await createProductLot(devUser, selectedLotProductId, {
         lotNumber,
-        expirationDate: new Date(`${expirationDate}T00:00:00Z`).toISOString(),
         receivedAt: receivedAt
           ? new Date(`${receivedAt}T00:00:00Z`).toISOString()
           : undefined,
       });
 
       setLotNumber("");
-      setExpirationDate("");
       setReceivedAt("");
       setQuery("");
       await load("");
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to record lot.");
+      setLoading(false);
+    }
+  }
+
+  async function addExpiration(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedExpirationProductId) return;
+
+    setLoading(true);
+    onError(null);
+
+    try {
+      await createProductExpiration(
+        devUser,
+        selectedExpirationProductId,
+        new Date(`${expirationDate}T00:00:00Z`).toISOString(),
+      );
+
+      setExpirationDate("");
+      setQuery("");
+      await load("");
+    } catch (error) {
+      onError(
+        error instanceof Error ? error.message : "Unable to record expiration date.",
+      );
       setLoading(false);
     }
   }
@@ -203,7 +235,9 @@ export function DrugCatalog({
             <h2>Catalog</h2>
           </div>
           <span className="queue-count">
-            {loading ? "Loading…" : `${medications.length} drug${medications.length === 1 ? "" : "s"}`}
+            {loading
+              ? "Loading…"
+              : `${medications.length} drug${medications.length === 1 ? "" : "s"}`}
           </span>
         </div>
 
@@ -232,8 +266,8 @@ export function DrugCatalog({
         </form>
 
         <p className="catalog-help">
-          NDC search ignores punctuation. Lot-number search is normalized while the original
-          lot number is preserved for display.
+          Hierarchy: Drug → NDC → Lots + Expiration Dates. Lot and expiration
+          collections are stored independently under each NDC.
         </p>
 
         <div className="catalog-medication-list">
@@ -241,11 +275,15 @@ export function DrugCatalog({
             <article className="catalog-medication-card" key={medication.id}>
               <div className="catalog-medication-heading">
                 <div>
-                  <strong>{medication.genericName} {medication.strength}</strong>
+                  <strong>
+                    {medication.genericName} {medication.strength}
+                  </strong>
                   <span>
                     {medication.dosageForm}
                     {medication.route ? ` · ${medication.route}` : ""}
-                    {medication.brandName ? ` · Brand: ${medication.brandName}` : ""}
+                    {medication.brandName
+                      ? ` · Brand: ${medication.brandName}`
+                      : ""}
                   </span>
                 </div>
                 <button
@@ -254,12 +292,12 @@ export function DrugCatalog({
                   disabled={!writable}
                   onClick={() => setSelectedMedicationId(medication.id)}
                 >
-                  Add product
+                  Add NDC
                 </button>
               </div>
 
               {medication.products.length === 0 ? (
-                <p className="muted">No manufacturer/NDC products stored yet.</p>
+                <p className="muted">No NDC products stored yet.</p>
               ) : (
                 <div className="catalog-product-list">
                   {medication.products.map((product) => (
@@ -273,62 +311,81 @@ export function DrugCatalog({
                             <span>{product.packageDescription}</span>
                           )}
                         </div>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          disabled={!writable}
-                          onClick={() => setSelectedProductId(product.id)}
-                        >
-                          Add lot
-                        </button>
+                        <div className="catalog-product-actions">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={!writable}
+                            onClick={() => setSelectedLotProductId(product.id)}
+                          >
+                            Add lot
+                          </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={!writable}
+                            onClick={() => setSelectedExpirationProductId(product.id)}
+                          >
+                            Add expiration
+                          </button>
+                        </div>
                       </div>
 
-                      {product.lots.length === 0 ? (
-                        <p className="muted">No lots stored for this NDC at this site.</p>
-                      ) : (
-                        <div className="table-wrap catalog-lot-table">
-                          <table className="compact-table">
-                            <thead>
-                              <tr>
-                                <th>Lot</th>
-                                <th>Expiration</th>
-                                <th>Received</th>
-                                <th>Status</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {product.lots.map((lot) => {
+                      <div className="catalog-ndc-children">
+                        <div className="catalog-child-column">
+                          <strong>Lots</strong>
+                          {product.lots.length === 0 ? (
+                            <p className="muted">No lots stored.</p>
+                          ) : (
+                            <ul className="catalog-child-list">
+                              {product.lots.map((lot) => (
+                                <li key={lot.id}>
+                                  <span className="mono">{lot.lotNumber}</span>
+                                  {lot.receivedAt && (
+                                    <span>
+                                      Received{" "}
+                                      {new Date(lot.receivedAt).toLocaleDateString()}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div className="catalog-child-column">
+                          <strong>Expiration dates</strong>
+                          {product.expirations.length === 0 ? (
+                            <p className="muted">No expiration dates stored.</p>
+                          ) : (
+                            <ul className="catalog-child-list">
+                              {product.expirations.map((expiration) => {
                                 const expired =
-                                  new Date(lot.expirationDate).getTime() < Date.now();
+                                  new Date(expiration.expirationDate).getTime() <
+                                  Date.now();
                                 return (
-                                  <tr key={lot.id}>
-                                    <td className="mono">{lot.lotNumber}</td>
-                                    <td>
-                                      {new Date(lot.expirationDate).toLocaleDateString()}
-                                    </td>
-                                    <td>
-                                      {lot.receivedAt
-                                        ? new Date(lot.receivedAt).toLocaleDateString()
-                                        : "—"}
-                                    </td>
-                                    <td>
-                                      <span
-                                        className={
-                                          expired
-                                            ? "catalog-lot-status expired"
-                                            : "catalog-lot-status"
-                                        }
-                                      >
-                                        {expired ? "Expired" : "Current"}
-                                      </span>
-                                    </td>
-                                  </tr>
+                                  <li key={expiration.id}>
+                                    <span>
+                                      {new Date(
+                                        expiration.expirationDate,
+                                      ).toLocaleDateString()}
+                                    </span>
+                                    <span
+                                      className={
+                                        expired
+                                          ? "catalog-lot-status expired"
+                                          : "catalog-lot-status"
+                                      }
+                                    >
+                                      {expired ? "Expired" : "Current"}
+                                    </span>
+                                  </li>
                                 );
                               })}
-                            </tbody>
-                          </table>
+                            </ul>
+                          )}
                         </div>
-                      )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -354,33 +411,63 @@ export function DrugCatalog({
           <form className="stack-form" onSubmit={addMedication}>
             <label>
               Generic name
-              <input value={genericName} onChange={(e) => setGenericName(e.target.value)} required disabled={!writable} />
+              <input
+                value={genericName}
+                onChange={(e) => setGenericName(e.target.value)}
+                required
+                disabled={!writable}
+              />
             </label>
             <label>
               Brand name (optional)
-              <input value={brandName} onChange={(e) => setBrandName(e.target.value)} disabled={!writable} />
+              <input
+                value={brandName}
+                onChange={(e) => setBrandName(e.target.value)}
+                disabled={!writable}
+              />
             </label>
             <label>
               Strength
-              <input value={strength} onChange={(e) => setStrength(e.target.value)} placeholder="10 mg" required disabled={!writable} />
+              <input
+                value={strength}
+                onChange={(e) => setStrength(e.target.value)}
+                placeholder="10 mg"
+                required
+                disabled={!writable}
+              />
             </label>
             <label>
               Dosage form
-              <input value={dosageForm} onChange={(e) => setDosageForm(e.target.value)} placeholder="tablet" required disabled={!writable} />
+              <input
+                value={dosageForm}
+                onChange={(e) => setDosageForm(e.target.value)}
+                placeholder="tablet"
+                required
+                disabled={!writable}
+              />
             </label>
             <label>
               Route
-              <input value={route} onChange={(e) => setRoute(e.target.value)} placeholder="oral" disabled={!writable} />
+              <input
+                value={route}
+                onChange={(e) => setRoute(e.target.value)}
+                placeholder="oral"
+                disabled={!writable}
+              />
             </label>
-            <button className="primary-button" type="submit" disabled={!writable || loading}>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={!writable || loading}
+            >
               Add drug
             </button>
           </form>
         </section>
 
         <section className="panel">
-          <p className="eyebrow">Commercial product</p>
-          <h2>Add manufacturer / NDC</h2>
+          <p className="eyebrow">NDC product</p>
+          <h2>Add NDC / manufacturer</h2>
           <form className="stack-form" onSubmit={addProduct}>
             <label>
               Drug
@@ -400,43 +487,71 @@ export function DrugCatalog({
             </label>
             <label>
               Manufacturer
-              <input value={manufacturerName} onChange={(e) => setManufacturerName(e.target.value)} required disabled={!writable} />
+              <input
+                value={manufacturerName}
+                onChange={(e) => setManufacturerName(e.target.value)}
+                required
+                disabled={!writable}
+              />
             </label>
             <label>
               Manufacturer labeler code (optional)
-              <input value={manufacturerLabelerCode} onChange={(e) => setManufacturerLabelerCode(e.target.value)} disabled={!writable} />
+              <input
+                value={manufacturerLabelerCode}
+                onChange={(e) => setManufacturerLabelerCode(e.target.value)}
+                disabled={!writable}
+              />
             </label>
             <label>
               NDC
-              <input value={ndc} onChange={(e) => setNdc(e.target.value)} placeholder="00000-0000-00" required disabled={!writable} />
+              <input
+                value={ndc}
+                onChange={(e) => setNdc(e.target.value)}
+                placeholder="00000-0000-00"
+                required
+                disabled={!writable}
+              />
             </label>
             <label>
               Label/product name (optional)
-              <input value={labelName} onChange={(e) => setLabelName(e.target.value)} disabled={!writable} />
+              <input
+                value={labelName}
+                onChange={(e) => setLabelName(e.target.value)}
+                disabled={!writable}
+              />
             </label>
             <label>
               Package description (optional)
-              <input value={packageDescription} onChange={(e) => setPackageDescription(e.target.value)} placeholder="Bottle of 100 tablets" disabled={!writable} />
+              <input
+                value={packageDescription}
+                onChange={(e) => setPackageDescription(e.target.value)}
+                placeholder="Bottle of 100 tablets"
+                disabled={!writable}
+              />
             </label>
-            <button className="primary-button" type="submit" disabled={!writable || loading || !selectedMedicationId}>
-              Add product
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={!writable || loading || !selectedMedicationId}
+            >
+              Add NDC
             </button>
           </form>
         </section>
 
         <section className="panel">
-          <p className="eyebrow">Traceable package lot</p>
-          <h2>Add lot / expiration</h2>
+          <p className="eyebrow">NDC child collection</p>
+          <h2>Add lot</h2>
           <form className="stack-form" onSubmit={addLot}>
             <label>
-              Manufacturer / NDC product
+              NDC product
               <select
-                value={selectedProductId}
-                onChange={(e) => setSelectedProductId(e.target.value)}
+                value={selectedLotProductId}
+                onChange={(e) => setSelectedLotProductId(e.target.value)}
                 required
                 disabled={!writable}
               >
-                <option value="">Select product</option>
+                <option value="">Select NDC</option>
                 {products.map(({ medication, product }) => (
                   <option key={product.id} value={product.id}>
                     {productLabel(product, medication)}
@@ -446,18 +561,68 @@ export function DrugCatalog({
             </label>
             <label>
               Lot number
-              <input value={lotNumber} onChange={(e) => setLotNumber(e.target.value)} required disabled={!writable} />
-            </label>
-            <label>
-              Expiration date
-              <input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} required disabled={!writable} />
+              <input
+                value={lotNumber}
+                onChange={(e) => setLotNumber(e.target.value)}
+                required
+                disabled={!writable}
+              />
             </label>
             <label>
               Received date (optional)
-              <input type="date" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} disabled={!writable} />
+              <input
+                type="date"
+                value={receivedAt}
+                onChange={(e) => setReceivedAt(e.target.value)}
+                disabled={!writable}
+              />
             </label>
-            <button className="primary-button" type="submit" disabled={!writable || loading || !selectedProductId}>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={!writable || loading || !selectedLotProductId}
+            >
               Record lot
+            </button>
+          </form>
+        </section>
+
+        <section className="panel">
+          <p className="eyebrow">NDC child collection</p>
+          <h2>Add expiration</h2>
+          <form className="stack-form" onSubmit={addExpiration}>
+            <label>
+              NDC product
+              <select
+                value={selectedExpirationProductId}
+                onChange={(e) => setSelectedExpirationProductId(e.target.value)}
+                required
+                disabled={!writable}
+              >
+                <option value="">Select NDC</option>
+                {products.map(({ medication, product }) => (
+                  <option key={product.id} value={product.id}>
+                    {productLabel(product, medication)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Expiration date
+              <input
+                type="date"
+                value={expirationDate}
+                onChange={(e) => setExpirationDate(e.target.value)}
+                required
+                disabled={!writable}
+              />
+            </label>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={!writable || loading || !selectedExpirationProductId}
+            >
+              Record expiration
             </button>
           </form>
         </section>
