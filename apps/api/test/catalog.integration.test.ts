@@ -48,8 +48,12 @@ describe("drug product NDC and lot catalog", () => {
       payload: {
         ndc: `98765-${ndcSegment}-01`,
         manufacturerName: `Manufacturer A ${suffix}`,
-        labelName: `${genericName} 25 mg`,
+        descriptor: `${genericName} 25 mg tablet — 100 count bottle`,
         packageDescription: "Bottle of 100 tablets",
+        packageType: "bottle",
+        unitsPerPackage: 100,
+        dispensingUnit: "EACH",
+        packagePrice: 3.0,
       },
     });
     expect(productA.statusCode).toBe(201);
@@ -61,8 +65,12 @@ describe("drug product NDC and lot catalog", () => {
       payload: {
         ndc: `87654-${ndcSegment}-02`,
         manufacturerName: `Manufacturer B ${suffix}`,
-        labelName: `${genericName} 25 mg`,
+        descriptor: `${genericName} 25 mg tablet — 500 count bottle`,
         packageDescription: "Bottle of 500 tablets",
+        packageType: "bottle",
+        unitsPerPackage: 500,
+        dispensingUnit: "EACH",
+        unitPrice: 0.025,
       },
     });
     expect(productB.statusCode).toBe(201);
@@ -133,6 +141,17 @@ describe("drug product NDC and lot catalog", () => {
     const storedB = stored.products.find(
       (item: { id: string }) => item.id === productBId,
     );
+
+    expect(storedA.descriptor).toContain("100 count bottle");
+    expect(Number(storedA.unitsPerPackage)).toBe(100);
+    expect(storedA.dispensingUnit).toBe("EACH");
+    expect(Number(storedA.packagePrice)).toBeCloseTo(3, 4);
+    expect(Number(storedA.unitPrice)).toBeCloseTo(0.03, 6);
+
+    expect(Number(storedB.unitsPerPackage)).toBe(500);
+    expect(storedB.dispensingUnit).toBe("EACH");
+    expect(Number(storedB.unitPrice)).toBeCloseTo(0.025, 6);
+    expect(Number(storedB.packagePrice)).toBeCloseTo(12.5, 4);
 
     expect(storedA.lots).toHaveLength(3);
     expect(storedA.expirations).toHaveLength(2);
@@ -206,6 +225,74 @@ describe("drug product NDC and lot catalog", () => {
         product.lots.some((lot) => lot.lotNumber === "LIS-A1002"),
       ),
     ).toBe(true);
+  });
+
+  it("supports gram and milliliter dispensing units for NDC packages", async () => {
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 6);
+    const ndcA = Math.floor(Math.random() * 10_000).toString().padStart(4, "0");
+    const ndcB = Math.floor(Math.random() * 10_000).toString().padStart(4, "0");
+
+    const cream = await app.inject({
+      method: "POST",
+      url: "/api/medications",
+      headers: technicianHeaders,
+      payload: {
+        genericName: `CreamDrug-${suffix}`,
+        strength: "1%",
+        dosageForm: "cream",
+        route: "topical",
+      },
+    });
+    expect(cream.statusCode).toBe(201);
+
+    const creamProduct = await app.inject({
+      method: "POST",
+      url: `/api/medications/${cream.json().medication.id}/products`,
+      headers: technicianHeaders,
+      payload: {
+        ndc: `76543-${ndcA}-01`,
+        manufacturerName: `Cream Manufacturer ${suffix}`,
+        descriptor: `CreamDrug-${suffix} 1% — 30 g tube`,
+        packageType: "tube",
+        unitsPerPackage: 30,
+        dispensingUnit: "GRAM",
+        packagePrice: 15,
+      },
+    });
+    expect(creamProduct.statusCode).toBe(201);
+    expect(creamProduct.json().product.dispensingUnit).toBe("GRAM");
+    expect(Number(creamProduct.json().product.unitPrice)).toBeCloseTo(0.5, 6);
+
+    const liquid = await app.inject({
+      method: "POST",
+      url: "/api/medications",
+      headers: technicianHeaders,
+      payload: {
+        genericName: `LiquidDrug-${suffix}`,
+        strength: "10 mg/mL",
+        dosageForm: "solution",
+        route: "oral",
+      },
+    });
+    expect(liquid.statusCode).toBe(201);
+
+    const liquidProduct = await app.inject({
+      method: "POST",
+      url: `/api/medications/${liquid.json().medication.id}/products`,
+      headers: technicianHeaders,
+      payload: {
+        ndc: `65432-${ndcB}-01`,
+        manufacturerName: `Liquid Manufacturer ${suffix}`,
+        descriptor: `LiquidDrug-${suffix} 10 mg/mL — 473 mL bottle`,
+        packageType: "bottle",
+        unitsPerPackage: 473,
+        dispensingUnit: "MILLILITER",
+        unitPrice: 0.12,
+      },
+    });
+    expect(liquidProduct.statusCode).toBe(201);
+    expect(liquidProduct.json().product.dispensingUnit).toBe("MILLILITER");
+    expect(Number(liquidProduct.json().product.packagePrice)).toBeCloseTo(56.76, 4);
   });
 
   it("prevents roles without inventory-write permission from creating catalog records", async () => {
