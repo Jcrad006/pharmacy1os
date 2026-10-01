@@ -159,7 +159,45 @@ export async function receiveInventory(
     },
   });
 
-  return { balance: updated, transaction };
+  const lot = await tx.productLot.findUnique({
+    where: { id: input.productLotId },
+    select: { lotNumber: true, lotNumberSearch: true },
+  });
+
+  const recall = lot
+    ? await tx.recallCase.findFirst({
+        where: {
+          siteId: input.siteId,
+          productId: input.productId,
+          status: "ACTIVE",
+          OR: [
+            { lotNumberSearch: null },
+            { lotNumberSearch: lot.lotNumberSearch },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    : null;
+
+  if (recall) {
+    const held = await quarantineInventory(tx, {
+      balanceId: locked.id,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      quantity,
+      reasonCode: "RECALL",
+      note: `Automatically quarantined on receipt for recall ${recall.reference}`,
+      recallCaseId: recall.id,
+    });
+
+    return {
+      balance: held.balance,
+      transaction,
+      quarantineHold: held.hold,
+    };
+  }
+
+  return { balance: updated, transaction, quarantineHold: null };
 }
 
 export async function releaseInventoryReservation(
@@ -192,10 +230,6 @@ export async function releaseInventoryReservation(
 
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
-  await ensureBalanceNotRecalled(tx, {
-    siteId: input.siteId,
-    balanceId: balance.id,
-  });
 
   if (balance.reservedQuantity.lt(quantity)) {
     throw new InventoryError(
@@ -276,15 +310,6 @@ export async function reserveInventoryForFill(
 
   const quantity = positiveQuantity(fill.quantity);
 
-  if (fill.inventoryBalanceId && fill.inventoryReservedAt) {
-    await releaseInventoryReservation(tx, {
-      fillId: fill.id,
-      siteId: input.siteId,
-      actorId: input.actorId,
-      reason: "Product rescanned during Product Fill",
-    });
-  }
-
   const balance = await tx.inventoryBalance.findUnique({
     where: {
       siteId_productId_productLotId_productExpirationId: {
@@ -309,6 +334,28 @@ export async function reserveInventoryForFill(
     siteId: input.siteId,
     balanceId: locked.id,
   });
+
+  if (
+    fill.inventoryBalanceId &&
+    fill.inventoryReservedAt &&
+    fill.inventoryBalanceId !== locked.id
+  ) {
+    await releaseInventoryReservation(tx, {
+      fillId: fill.id,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      reason: "Product rescanned during Product Fill",
+    });
+  } else if (
+    fill.inventoryBalanceId === locked.id &&
+    fill.inventoryReservedAt
+  ) {
+    return {
+      balance: locked,
+      quantity,
+      reservedAt: fill.inventoryReservedAt,
+    };
+  }
   const available = locked.onHandQuantity
     .minus(locked.reservedQuantity)
     .minus(locked.quarantinedQuantity);
@@ -401,6 +448,10 @@ export async function commitInventoryForFill(
 
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
+  await ensureBalanceNotRecalled(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+  });
 
   if (
     balance.reservedQuantity.lt(quantity) ||
