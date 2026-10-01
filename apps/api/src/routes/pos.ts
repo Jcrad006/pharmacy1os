@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { resolveDevelopmentActor, AccessError } from "../security/devIdentity.js";
 import {
   checkoutFills,
@@ -17,7 +17,7 @@ type CheckoutBody = {
   idempotencyKey?: string;
 };
 
-function handleError(error: unknown, reply: Parameters<Parameters<FastifyInstance["post"]>[1]>[1]) {
+function handleError(error: unknown, reply: FastifyReply) {
   if (error instanceof AccessError || error instanceof PosError) {
     return reply.code(error.statusCode).send({
       error: error.message,
