@@ -93,6 +93,7 @@ export async function catalogRoutes(app: FastifyInstance) {
       const raw = query?.trim();
       const ndcSearch = normalizeNdc(raw);
       const lotSearch = normalizeLotNumber(raw);
+      const barcodeSearch = normalizeLotNumber(raw);
 
       const medications = await db.medication.findMany({
         where: raw
@@ -112,6 +113,17 @@ export async function catalogRoutes(app: FastifyInstance) {
                         { packageType: { contains: raw, mode: "insensitive" } },
                         ...(ndcSearch
                           ? [{ ndcSearch: { contains: ndcSearch } }]
+                          : []),
+                        ...(barcodeSearch
+                          ? [
+                              {
+                                barcodes: {
+                                  some: {
+                                    identifierSearch: { contains: barcodeSearch },
+                                  },
+                                },
+                              },
+                            ]
                           : []),
                         {
                           manufacturer: {
