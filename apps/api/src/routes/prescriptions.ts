@@ -1479,6 +1479,29 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           },
         });
 
+        if (wasReserved) {
+          if (
+            !fill.productId ||
+            !fill.productLotId ||
+            !fill.productExpirationId
+          ) {
+            throw new InventoryError(
+              409,
+              "PARTIAL_RESERVATION_TRACEABILITY_MISSING",
+              "The existing reservation cannot be resized because its product traceability is incomplete.",
+            );
+          }
+
+          await reserveInventoryForFill(tx, {
+            fillId: fill.id,
+            siteId: actor.siteId,
+            actorId: actor.id,
+            productId: fill.productId,
+            productLotId: fill.productLotId,
+            productExpirationId: fill.productExpirationId,
+          });
+        }
+
         await createOrUpdateFillDemand(tx, {
           fillId: completion.id,
           source: "COMPLETION",
@@ -1487,10 +1510,65 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             "Remaining quantity required to complete a partial fill.",
         });
 
+        let inventoryException = null;
+        if (
+          balanceBefore &&
+          interruptionReason &&
+          ["INSUFFICIENT_PHYSICAL_STOCK", "STOCK_DISCREPANCY"].includes(
+            interruptionReason,
+          )
+        ) {
+          const systemAvailableBefore = balanceBefore.onHandQuantity
+            .minus(balanceBefore.reservedQuantity)
+            .minus(balanceBefore.quarantinedQuantity)
+            .plus(wasReserved ? plannedPartQuantity : 0);
+
+          inventoryException = await tx.inventoryException.upsert({
+            where: {
+              siteId_fingerprint: {
+                siteId: actor.siteId,
+                fingerprint: `physical-stock-shortage:${fill.id}`,
+              },
+            },
+            update: {
+              type: "PHYSICAL_STOCK_SHORTAGE",
+              status: "OPEN",
+              severity: "HIGH",
+              entityType: "PrescriptionFill",
+              entityId: fill.id,
+              title: "Physical stock shortage reported during Product Fill",
+              detail:
+                `Technician reported only ${partial.toString()} units dispensable while the dispense part expected ${plannedPartQuantity.toString()} units. ` +
+                `System balance before reservation resize: on hand ${balanceBefore.onHandQuantity.toString()}, reserved ${balanceBefore.reservedQuantity.toString()}, quarantined ${balanceBefore.quarantinedQuantity.toString()}. Reconcile physical stock before relying on this balance.`,
+              lastDetectedAt: new Date(),
+              acknowledgedById: null,
+              acknowledgedAt: null,
+              resolvedAt: null,
+              resolvedById: null,
+              resolutionNote: null,
+            },
+            create: {
+              siteId: actor.siteId,
+              fingerprint: `physical-stock-shortage:${fill.id}`,
+              type: "PHYSICAL_STOCK_SHORTAGE",
+              status: "OPEN",
+              severity: "HIGH",
+              entityType: "PrescriptionFill",
+              entityId: fill.id,
+              title: "Physical stock shortage reported during Product Fill",
+              detail:
+                `Technician reported only ${partial.toString()} units dispensable while the dispense part expected ${plannedPartQuantity.toString()} units. ` +
+                `System-available quantity before resize was approximately ${systemAvailableBefore.toString()}. Reconcile physical stock before relying on this balance.`,
+            },
+          });
+        }
+
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
-          action: "PRESCRIPTION_PARTIAL_FILL_CREATED",
+          action: interruptedAfterScan
+            ? "PRESCRIPTION_FILL_INTERRUPTED_TO_PARTIAL"
+            : "PRESCRIPTION_PARTIAL_FILL_CREATED",
           entityType: "PrescriptionFill",
           entityId: fill.id,
           requestId: request.id,
