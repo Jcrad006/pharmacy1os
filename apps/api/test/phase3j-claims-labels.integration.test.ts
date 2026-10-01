@@ -51,6 +51,8 @@ async function makePatient(
   });
 
   for (const [index, item] of memberIds.entries()) {
+    const billingNdcStrategy =
+      item.billingNdcStrategy ?? "REQUIRE_MANUAL_SELECTION";
     const payer = await db.payer.create({
       data: {
         id: `payer-3j-${randomUUID()}`,
@@ -59,8 +61,16 @@ async function makePatient(
         bin: `9${String(index + 1).padStart(5, "0")}`,
         pcn: "PHASE3J",
         claimStandard: item.standard,
-        billingNdcStrategy:
-          item.billingNdcStrategy ?? "REQUIRE_MANUAL_SELECTION",
+        billingNdcStrategy,
+        billingProfile: {
+          create: {
+            siteId,
+            billingNdcStrategy,
+            autoReversePaidClaimOnSourceCorrection:
+              billingNdcStrategy === "MAJORITY_SOURCE",
+            notes: "Phase 3J integration profile",
+          },
+        },
       },
     });
     await db.patientCoverage.create({
@@ -366,6 +376,118 @@ beforeAll(async () => {
 afterAll(async () => {
   await app.close();
   await db.$disconnect();
+});
+
+describe("Payer billing profile management", () => {
+  it("restricts payer profile creation to pharmacists/admins and versions audited profile changes", async () => {
+    const payerName = `Managed Payer ${randomUUID().slice(0, 8)}`;
+
+    const technicianAttempt = await app.inject({
+      method: "POST",
+      url: "/api/third-party/payers",
+      headers: technicianHeaders,
+      payload: {
+        name: `${payerName} tech`,
+        claimStandard: "D0",
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      },
+    });
+    expect(technicianAttempt.statusCode).toBe(403);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/third-party/payers",
+      headers: pharmacistHeaders,
+      payload: {
+        name: payerName,
+        bin: "019876",
+        pcn: "PROFILE",
+        defaultGroupId: "DEFAULT",
+        claimStandard: "D0",
+        billingNdcStrategy: "MAJORITY_SOURCE",
+        autoReversePaidClaimOnSourceCorrection: true,
+        billingProfileNotes: "Initial contract configuration",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().payer.billingProfile.version).toBe(1);
+    expect(
+      created.json().payer.billingProfile.autoReversePaidClaimOnSourceCorrection,
+    ).toBe(true);
+
+    const payerId = created.json().payer.id as string;
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/third-party/payers/${payerId}`,
+      headers: pharmacistHeaders,
+      payload: {
+        billingNdcStrategy: "REQUIRE_MANUAL_SELECTION",
+        autoReversePaidClaimOnSourceCorrection: false,
+        billingProfileNotes: "Contract requires manual billed-NDC selection.",
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().payer.billingProfile.version).toBe(2);
+    expect(updated.json().payer.billingProfile.billingNdcStrategy).toBe(
+      "REQUIRE_MANUAL_SELECTION",
+    );
+    expect(
+      updated.json().payer.billingProfile.autoReversePaidClaimOnSourceCorrection,
+    ).toBe(false);
+
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/third-party/payers/${payerId}/history`,
+      headers: pharmacistHeaders,
+    });
+    expect(history.statusCode).toBe(200);
+    expect(
+      history
+        .json()
+        .events.some(
+          (event: { action: string }) =>
+            event.action === "PAYER_BILLING_PROFILE_UPDATED",
+        ),
+    ).toBe(true);
+  });
+
+  it("uses the payer billing profile as the authoritative NDC rule and snapshots its version on the claim", async () => {
+    const patient = await makePatient([
+      {
+        memberId: "PAID-PROFILE-SNAPSHOT-3J",
+        standard: "D0",
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      },
+    ]);
+    const coverage = await db.patientCoverage.findFirstOrThrow({
+      where: { patientId: patient.id, position: 1 },
+      include: { payer: { include: { billingProfile: true } } },
+    });
+    expect(coverage.payer.billingProfile?.version).toBe(1);
+
+    await db.payer.update({
+      where: { id: coverage.payerId },
+      data: { billingNdcStrategy: "REQUIRE_MANUAL_SELECTION" },
+    });
+
+    const prescriptionId = await createPrescription(patient.id, 90);
+    const fillId = await createFill(prescriptionId, 90, 30);
+    expect((await scan(fillId, 30)).statusCode).toBe(200);
+    const completed = await scanSecondary(fillId, 60);
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().adjudication.state).toBe("PAID_LABEL_READY");
+
+    const claim = await db.claimTransaction.findFirstOrThrow({
+      where: { fillId, operation: "SUBMIT", outcome: "PAID" },
+    });
+    expect(claim.billedNdc).toBe(secondaryNdc);
+    expect(claim.billingProfileVersion).toBe(1);
+    expect(claim.billingProfileSnapshot).toMatchObject({
+      version: 1,
+      billingNdcStrategy: "MAJORITY_SOURCE",
+      autoReversePaidClaimOnSourceCorrection: true,
+    });
+  });
 });
 
 describe("Phase 3J billing, adjudication, and prescription labeling", () => {
