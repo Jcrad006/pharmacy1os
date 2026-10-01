@@ -233,6 +233,22 @@ export async function stageWillCallPackage(
       );
     }
 
+    const barcodeOwner = await tx.willCallPackage.findUnique({
+      where: { bagBarcode },
+      select: { id: true, fillId: true },
+    });
+    if (
+      barcodeOwner &&
+      barcodeOwner.id !== fill.willCallPackage?.id
+    ) {
+      throw new PosError(
+        409,
+        "BAG_BARCODE_IN_USE",
+        "That Will Call bag barcode is already assigned to another fill.",
+        { fillId: barcodeOwner.fillId },
+      );
+    }
+
     const packageRecord = fill.willCallPackage
       ? await tx.willCallPackage.update({
           where: { id: fill.willCallPackage.id },
