@@ -117,9 +117,19 @@ export type BackupVerificationReport = {
   findings: BackupVerificationFinding[];
 };
 
+export type VaultDocumentRecord = {
+  id: string;
+  siteId: string;
+  storageKey: string;
+  sha256: string;
+  byteSize: number;
+  encrypted: boolean;
+};
+
 export type BackupTooling = {
   dumpDatabase?: (destination: string) => Promise<void>;
   restoreDatabase?: (source: string) => Promise<void>;
+  listDocuments?: () => Promise<VaultDocumentRecord[]>;
 };
 
 function backupRoot() {
@@ -230,13 +240,11 @@ async function persistIntegrityReport(report: VaultIntegrityReport) {
   });
 }
 
-export async function scanDocumentVaultIntegrity(options?: {
-  persist?: boolean;
-}) {
-  const startedAt = new Date();
-  const documents = await db.document.findMany({
+async function loadVaultDocuments(): Promise<VaultDocumentRecord[]> {
+  return db.document.findMany({
     select: {
       id: true,
+      siteId: true,
       storageKey: true,
       sha256: true,
       byteSize: true,
@@ -244,6 +252,14 @@ export async function scanDocumentVaultIntegrity(options?: {
     },
     orderBy: { createdAt: "asc" },
   });
+}
+
+export async function scanDocumentVaultIntegrity(options?: {
+  persist?: boolean;
+  documents?: VaultDocumentRecord[];
+}) {
+  const startedAt = new Date();
+  const documents = options?.documents ?? (await loadVaultDocuments());
 
   const findings: VaultIntegrityFinding[] = [];
   let checkedFileCount = 0;
@@ -661,7 +677,13 @@ export async function createBackupSet(options?: {
     await mkdir(stagingDirectory, { recursive: false });
 
     try {
-      const integrity = await scanDocumentVaultIntegrity({ persist: true });
+      const documents = await (
+        options?.tooling?.listDocuments ?? loadVaultDocuments
+      )();
+      const integrity = await scanDocumentVaultIntegrity({
+        persist: true,
+        documents,
+      });
       if (integrity.status === "FAIL") {
         throw new DocumentVaultError(
           409,
@@ -670,18 +692,6 @@ export async function createBackupSet(options?: {
           { reportId: integrity.reportId },
         );
       }
-
-      const documents = await db.document.findMany({
-        select: {
-          id: true,
-          siteId: true,
-          storageKey: true,
-          sha256: true,
-          byteSize: true,
-          encrypted: true,
-        },
-        orderBy: { createdAt: "asc" },
-      });
 
       const databasePath = join(stagingDirectory, "database.sql");
       await (options?.tooling?.dumpDatabase ?? defaultDumpDatabase)(databasePath);
@@ -928,7 +938,13 @@ export async function restoreBackupSet(
       journal.phase = "DATABASE_RESTORED";
       await writeFile(journalPath, JSON.stringify(journal, null, 2) + "\n");
 
-      const postcheck = await scanDocumentVaultIntegrity({ persist: true });
+      const postRestoreDocuments = await (
+        options?.tooling?.listDocuments ?? loadVaultDocuments
+      )();
+      const postcheck = await scanDocumentVaultIntegrity({
+        persist: true,
+        documents: postRestoreDocuments,
+      });
       if (postcheck.status === "FAIL") {
         journal.phase = "POST_RESTORE_INTEGRITY_FAILED";
         await writeFile(
