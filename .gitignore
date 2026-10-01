@@ -9,3 +9,4 @@ apps/web/.vite
 packages/db/prisma/*.db
 
 data/documents/
+\ndata/backups/\n
