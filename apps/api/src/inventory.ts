@@ -59,6 +59,50 @@ async function lockBalance(tx: Prisma.TransactionClient, balanceId: string) {
   return balance;
 }
 
+async function ensureBalanceNotRecalled(
+  tx: Prisma.TransactionClient,
+  input: { siteId: string; balanceId: string },
+) {
+  const balance = await tx.inventoryBalance.findFirst({
+    where: { id: input.balanceId, siteId: input.siteId },
+    include: { productLot: true },
+  });
+
+  if (!balance) {
+    throw new InventoryError(
+      404,
+      "INVENTORY_NOT_FOUND",
+      "Inventory balance not found.",
+    );
+  }
+
+  const recall = await tx.recallCase.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: balance.productId,
+      status: "ACTIVE",
+      OR: [
+        { lotNumberSearch: null },
+        { lotNumberSearch: balance.productLot.lotNumberSearch },
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (recall) {
+    throw new InventoryError(
+      409,
+      "INVENTORY_RECALLED",
+      "This NDC/lot is under an active recall and cannot be dispensed.",
+      {
+        recallCaseId: recall.id,
+        reference: recall.reference,
+        lotNumber: balance.productLot.lotNumber,
+      },
+    );
+  }
+}
+
 export async function receiveInventory(
   tx: Prisma.TransactionClient,
   input: {
@@ -148,6 +192,10 @@ export async function releaseInventoryReservation(
 
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
+  await ensureBalanceNotRecalled(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+  });
 
   if (balance.reservedQuantity.lt(quantity)) {
     throw new InventoryError(
@@ -257,6 +305,10 @@ export async function reserveInventoryForFill(
   }
 
   const locked = await lockBalance(tx, balance.id);
+  await ensureBalanceNotRecalled(tx, {
+    siteId: input.siteId,
+    balanceId: locked.id,
+  });
   const available = locked.onHandQuantity
     .minus(locked.reservedQuantity)
     .minus(locked.quarantinedQuantity);
@@ -536,6 +588,7 @@ export async function quarantineInventory(
     quantity: number | string | Prisma.Decimal;
     reasonCode: InventoryHoldReason;
     note?: string | null;
+    recallCaseId?: string | null;
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
@@ -575,6 +628,7 @@ export async function quarantineInventory(
       quantity,
       reasonCode: input.reasonCode,
       note: input.note?.trim() || null,
+      recallCaseId: input.recallCaseId ?? null,
       createdById: input.actorId,
     },
   });
