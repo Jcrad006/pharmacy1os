@@ -44,6 +44,20 @@ export type FillInterruptionReason =
   | "STOCK_DISCREPANCY"
   | "OTHER";
 
+export type ProductSelectionDirective =
+  | "UNSPECIFIED"
+  | "SELECTION_PERMITTED"
+  | "DISPENSE_AS_WRITTEN";
+
+export type ClaimStandard = "D0" | "F6";
+
+export type BillingNdcStrategy =
+  | "REQUIRE_MANUAL_SELECTION"
+  | "SINGLE_SOURCE_ONLY"
+  | "PAYER_CONFIGURED";
+
+export type CoverageRelationship = "SELF" | "SPOUSE" | "CHILD" | "OTHER";
+
 export type DurSeverity = "INFO" | "WARNING" | "HIGH";
 export type DurIssueStatus = "OPEN" | "RESOLVED";
 
@@ -124,6 +138,11 @@ export type PrescriptionFill = {
   interruptionNote: string | null;
   interruptedAt: string | null;
   interruptedById: string | null;
+  billingProductId: string | null;
+  patientDiscardDate: string | null;
+  dispensedInOriginalContainer: boolean;
+  productSources: FillProductSource[];
+  biologicCommunicationTask: BiologicCommunicationTask | null;
   consumesRefill: boolean;
   completionOfFillId: string | null;
   emergencyReason: string | null;
@@ -158,6 +177,9 @@ export type PrescriptionQueueItem = {
   rxNumber: string | null;
   medicationId: string | null;
   medication: Medication | null;
+  prescribedProductId: string | null;
+  prescribedProduct: Product | null;
+  productSelectionDirective: ProductSelectionDirective;
   medicationName: string;
   strength: string | null;
   dosageForm: string | null;
@@ -229,7 +251,8 @@ export type ExceptionKind =
   | "PHARMACIST_REVIEW"
   | "SCHEDULED_FILL"
   | "COMPLETION_FILL"
-  | "EMERGENCY_FOLLOW_UP";
+  | "EMERGENCY_FOLLOW_UP"
+  | "BIOLOGIC_COMMUNICATION";
 
 export type ExceptionItem = {
   id: string;
@@ -252,6 +275,7 @@ export type ExceptionSummary = {
   pharmacistReview: number;
   scheduled: number;
   emergencyFollowUp: number;
+  biologicCommunication: number;
 };
 
 
@@ -470,7 +494,8 @@ export type InventoryStockPosition = {
 export type InventoryAllocationStatus =
   | "ACTIVE"
   | "COMMITTED"
-  | "RELEASED";
+  | "RELEASED"
+  | "RETURNED";
 
 export type InventoryAllocation = {
   id: string;
@@ -867,6 +892,8 @@ export type Product = {
   packageType: string | null;
   unitsPerPackage: string | number | null;
   dispensingUnit: ProductUnit | null;
+  therapeuticEquivalenceCode: string | null;
+  isInterchangeableBiological: boolean;
   unitPrice: string | number | null;
   packagePrice: string | number | null;
   active: boolean;
@@ -883,6 +910,83 @@ export type Medication = {
   strength: string;
   dosageForm: string;
   route: string | null;
+  ncNarrowTherapeuticIndex: boolean;
+  isBiological: boolean;
+  hasFdaInterchangeableBiologicAlternative: boolean;
   active: boolean;
   products: Product[];
+};
+
+export type FillProductSource = {
+  id: string;
+  fillId: string;
+  sequence: number;
+  productId: string;
+  manufacturerId: string;
+  productLotId: string;
+  productExpirationId: string;
+  inventoryBalanceId: string;
+  quantity: string | number;
+  ndcSnapshot: string;
+  manufacturerSnapshot: string;
+  lotNumberSnapshot: string;
+  expirationSnapshot: string;
+  verifiedAt: string;
+  committedAt: string | null;
+  returnedAt: string | null;
+  product: Product;
+  manufacturer: Manufacturer;
+  productLot: ProductLot;
+  productExpiration: ProductExpiration;
+  inventoryBalance: InventoryBalance;
+};
+
+export type BiologicCommunicationTask = {
+  id: string;
+  siteId: string;
+  fillId: string;
+  status: "OPEN" | "COMPLETED" | "EXEMPT";
+  productName: string;
+  manufacturerName: string;
+  dueAt: string;
+  completedById: string | null;
+  completedAt: string | null;
+  note: string | null;
+  exemptReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Payer = {
+  id: string;
+  siteId: string;
+  name: string;
+  bin: string | null;
+  pcn: string | null;
+  defaultGroupId: string | null;
+  claimStandard: ClaimStandard;
+  billingNdcStrategy: BillingNdcStrategy;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PatientCoverage = {
+  id: string;
+  siteId: string;
+  patientId: string;
+  payerId: string;
+  position: number;
+  memberId: string;
+  personCode: string | null;
+  groupId: string | null;
+  relationship: CoverageRelationship;
+  cardholderName: string | null;
+  cardholderDateOfBirth: string | null;
+  effectiveDate: string | null;
+  terminationDate: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  payer: Payer;
 };
