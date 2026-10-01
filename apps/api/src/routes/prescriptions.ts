@@ -239,6 +239,8 @@ async function tryAutoAdjudication(
         transactions: [],
         label: null,
         printJob: null,
+        labels: [],
+        printJobs: [],
       };
     }
     throw error;
