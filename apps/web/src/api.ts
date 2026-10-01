@@ -16,6 +16,8 @@ import type {
   ProductExpiration,
   ProductBarcode,
   ParsedBarcode,
+  InventoryBalance,
+  InventoryTransaction,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -617,6 +619,56 @@ export async function correctReceivingBarcode(
       message: string | null;
     };
   }>(`/api/receiving/barcodes/${barcodeId}/correct`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function receiveInventoryStock(
+  devUser: string,
+  input: {
+    rawBarcode: string;
+    quantity: number;
+    source?: string;
+    reference?: string;
+  },
+) {
+  return request<{
+    status: "RECEIVED";
+    parsed: ParsedBarcode;
+    barcode: ProductBarcode;
+    product: Product & { medication: Medication };
+    traceability: {
+      lot: ProductLot;
+      expiration: ProductExpiration;
+    };
+    balance: InventoryBalance;
+    transaction: InventoryTransaction;
+  }>("/api/receiving/stock", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getInventoryBalances(devUser: string) {
+  const result = await request<{ balances: InventoryBalance[] }>(
+    "/api/inventory/balances",
+    { devUser },
+  );
+  return result.balances;
+}
+
+export async function adjustInventoryBalance(
+  devUser: string,
+  balanceId: string,
+  input: { delta: number; reason: string },
+) {
+  return request<{
+    balance: InventoryBalance;
+    transaction: InventoryTransaction;
+  }>(`/api/inventory/balances/${balanceId}/adjust`, {
     method: "POST",
     devUser,
     body: JSON.stringify(input),
