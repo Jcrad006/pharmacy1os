@@ -6,6 +6,8 @@ import {
   assignProductBarcode,
   createProductLot,
   getMedications,
+  updateMedicationCompliance,
+  updateProductCompliance,
 } from "../api";
 import type { DevUser, Medication, Product } from "../types";
 import { canWriteInventory } from "../workflow";
@@ -272,6 +274,77 @@ export function DrugCatalog({
     }
   }
 
+  async function configureMedicationCompliance(medication: Medication) {
+    if (user?.role !== "PHARMACIST" && user?.role !== "ADMIN") return;
+
+    const nti = window.confirm(
+      `Mark ${medication.genericName} ${medication.strength} as a North Carolina narrow therapeutic index medication?\n\nOK = NTI, Cancel = not NTI.`,
+    );
+    const biologic = window.confirm(
+      "Is this Drug concept a biological product?\n\nOK = biological, Cancel = non-biological.",
+    );
+    const interchangeableAlternative = biologic
+      ? window.confirm(
+          "Does this biological product have an FDA-designated interchangeable alternative requiring the NC communication workflow when a different biological product is dispensed?",
+        )
+      : false;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await updateMedicationCompliance(devUser, medication.id, {
+        ncNarrowTherapeuticIndex: nti,
+        isBiological: biologic,
+        hasFdaInterchangeableBiologicAlternative: interchangeableAlternative,
+      });
+      await load(query);
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to update medication compliance settings.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function configureProductCompliance(
+    product: Product,
+    medication: Medication,
+  ) {
+    if (user?.role !== "PHARMACIST" && user?.role !== "ADMIN") return;
+
+    const therapeuticEquivalenceCode = window.prompt(
+      "Therapeutic-equivalence grouping code used to validate split-NDC substitution. Leave blank to clear.",
+      product.therapeuticEquivalenceCode ?? "",
+    );
+    if (therapeuticEquivalenceCode === null) return;
+
+    const interchangeableBiological = medication.isBiological
+      ? window.confirm(
+          "Is this specific biological product configured as FDA interchangeable?",
+        )
+      : false;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await updateProductCompliance(devUser, product.id, {
+        therapeuticEquivalenceCode:
+          therapeuticEquivalenceCode.trim() || null,
+        isInterchangeableBiological: interchangeableBiological,
+      });
+      await load(query);
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to update product compliance settings.",
+      );
+      setLoading(false);
+    }
+  }
+
   async function assignBarcodeToProduct(productId: string) {
     const rawBarcode = window.prompt(
       "Scan or enter the barcode identifier to assign to this NDC.",
@@ -353,15 +426,43 @@ export function DrugCatalog({
                       ? ` · Brand: ${medication.brandName}`
                       : ""}
                   </span>
+                  <div className="catalog-compliance-badges">
+                    {medication.ncNarrowTherapeuticIndex && (
+                      <span className="barcode-chip">NC NTI</span>
+                    )}
+                    {medication.isBiological && (
+                      <span className="barcode-chip">Biological</span>
+                    )}
+                    {medication.hasFdaInterchangeableBiologicAlternative && (
+                      <span className="barcode-chip">
+                        Interchangeable-alt communication
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={!writable}
-                  onClick={() => setSelectedMedicationId(medication.id)}
-                >
-                  Add NDC
-                </button>
+                <div className="catalog-product-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!writable}
+                    onClick={() => setSelectedMedicationId(medication.id)}
+                  >
+                    Add NDC
+                  </button>
+                  {(user?.role === "PHARMACIST" ||
+                    user?.role === "ADMIN") && (
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={loading}
+                      onClick={() =>
+                        void configureMedicationCompliance(medication)
+                      }
+                    >
+                      NC safety settings
+                    </button>
+                  )}
+                </div>
               </div>
 
               {medication.products.length === 0 ? (
@@ -376,6 +477,13 @@ export function DrugCatalog({
                           <span className="mono">NDC {product.ndc}</span>
                           <span>{product.descriptor}</span>
                           <span>Dosage form: {medication.dosageForm}</span>
+                          <span>
+                            Therapeutic-equivalence group:{" "}
+                            {product.therapeuticEquivalenceCode ?? "not configured"}
+                          </span>
+                          {product.isInterchangeableBiological && (
+                            <span>FDA interchangeable biological product</span>
+                          )}
                           <span>
                             Stock package: {product.unitsPerPackage ?? "—"}{" "}
                             {unitLabel(product.dispensingUnit)}
@@ -415,6 +523,22 @@ export function DrugCatalog({
                           >
                             Assign barcode
                           </button>
+                          {(user?.role === "PHARMACIST" ||
+                            user?.role === "ADMIN") && (
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              disabled={loading}
+                              onClick={() =>
+                                void configureProductCompliance(
+                                  product,
+                                  medication,
+                                )
+                              }
+                            >
+                              Equivalence / biologic
+                            </button>
+                          )}
                         </div>
                       </div>
 
