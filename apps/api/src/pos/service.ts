@@ -131,6 +131,131 @@ async function activePaidClaim(
   );
 }
 
+async function resolveWillCallLocation(
+  tx: Prisma.TransactionClient,
+  context: PosActorContext,
+  input: {
+    locationId?: string | null;
+    locationBarcode?: string | null;
+  },
+  options: { allowDefault: boolean },
+) {
+  const requestedLocationBarcode =
+    input.locationBarcode?.trim().toUpperCase() || null;
+
+  const location = input.locationId
+    ? await tx.inventoryLocation.findFirst({
+        where: {
+          id: input.locationId,
+          siteId: context.siteId,
+          active: true,
+        },
+      })
+    : requestedLocationBarcode
+      ? await tx.inventoryLocation.findFirst({
+          where: {
+            siteId: context.siteId,
+            barcode: requestedLocationBarcode,
+            active: true,
+          },
+        })
+      : options.allowDefault
+        ? await tx.inventoryLocation.findFirst({
+            where: {
+              siteId: context.siteId,
+              code: "WILL-CALL",
+              active: true,
+            },
+          })
+        : null;
+
+  if (!location || location.type !== "WILL_CALL") {
+    throw new PosError(
+      409,
+      "WILL_CALL_LOCATION_REQUIRED",
+      "Scan or select an active Will Call location.",
+    );
+  }
+
+  return location;
+}
+
+async function assertUnusedWillCallBagBarcode(
+  tx: Prisma.TransactionClient,
+  bagBarcode: string,
+) {
+  const prior = await tx.willCallBagBarcode.findUnique({
+    where: { barcode: bagBarcode },
+    include: {
+      package: {
+        select: {
+          id: true,
+          fillId: true,
+          bagBarcode: true,
+          status: true,
+        },
+      },
+    },
+  });
+
+  if (prior) {
+    throw new PosError(
+      409,
+      prior.status === "VOIDED"
+        ? "BAG_BARCODE_RETIRED"
+        : "BAG_BARCODE_IN_USE",
+      prior.status === "VOIDED"
+        ? "That bag barcode was previously used and retired. Use a new physical bag barcode."
+        : "That bag barcode is already assigned to another fill.",
+      {
+        fillId: prior.package.fillId,
+        willCallPackageId: prior.package.id,
+        currentBagBarcode: prior.package.bagBarcode,
+        packageStatus: prior.package.status,
+      },
+    );
+  }
+}
+
+async function requireOpenWillCallPackage(
+  tx: Prisma.TransactionClient,
+  fillId: string,
+  context: PosActorContext,
+) {
+  const fill = await tx.prescriptionFill.findFirst({
+    where: {
+      id: fillId,
+      prescription: { siteId: context.siteId },
+    },
+    include: {
+      prescription: true,
+      willCallPackage: {
+        include: { location: true },
+      },
+    },
+  });
+
+  if (!fill) {
+    throw new PosError(404, "FILL_NOT_FOUND", "Fill not found.");
+  }
+  if (fill.status !== "READY" || fill.prescription.status !== "READY") {
+    throw new PosError(
+      409,
+      "FILL_NOT_READY",
+      "Only a pharmacist-verified ready fill can be changed in Will Call.",
+    );
+  }
+  if (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED") {
+    throw new PosError(
+      409,
+      "WILL_CALL_PACKAGE_NOT_STAGED",
+      "The fill does not have an active staged Will Call package.",
+    );
+  }
+
+  return fill;
+}
+
 export async function stageWillCallPackage(
   fillId: string,
   input: {
@@ -153,9 +278,7 @@ export async function stageWillCallPackage(
           select: { id: true },
           take: 1,
         },
-        willCallPackage: {
-          include: { location: true },
-        },
+        willCallPackage: true,
       },
     });
 
@@ -176,54 +299,23 @@ export async function stageWillCallPackage(
         "The fill must have an active dispensing label before Will Call staging.",
       );
     }
-    if (
-      fill.willCallPackage &&
-      fill.willCallPackage.status !== "STAGED"
-    ) {
+    if (fill.willCallPackage) {
       throw new PosError(
         409,
-        "WILL_CALL_PACKAGE_CLOSED",
-        "This Will Call package has already left the staged queue.",
+        fill.willCallPackage.status === "STAGED"
+          ? "WILL_CALL_PACKAGE_ALREADY_STAGED"
+          : "WILL_CALL_PACKAGE_CLOSED",
+        fill.willCallPackage.status === "STAGED"
+          ? "This fill is already staged. Use Relocate or Replace Bag for physical changes."
+          : "This Will Call package has already left the staged queue.",
       );
     }
 
-    const requestedLocationBarcode =
-      input.locationBarcode?.trim().toUpperCase() || null;
-    const location = input.locationId
-      ? await tx.inventoryLocation.findFirst({
-          where: {
-            id: input.locationId,
-            siteId: context.siteId,
-            active: true,
-          },
-        })
-      : requestedLocationBarcode
-        ? await tx.inventoryLocation.findFirst({
-            where: {
-              siteId: context.siteId,
-              barcode: requestedLocationBarcode,
-              active: true,
-            },
-          })
-        : await tx.inventoryLocation.findFirst({
-            where: {
-              siteId: context.siteId,
-              code: "WILL-CALL",
-              active: true,
-            },
-          });
-
-    if (!location || location.type !== "WILL_CALL") {
-      throw new PosError(
-        409,
-        "WILL_CALL_LOCATION_REQUIRED",
-        "Select or scan an active Will Call location before staging the package.",
-      );
-    }
-
+    const location = await resolveWillCallLocation(tx, context, input, {
+      allowDefault: true,
+    });
     const bagBarcode =
       input.bagBarcode?.trim().toUpperCase() ||
-      fill.willCallPackage?.bagBarcode ||
       `WC-BAG-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
 
     if (bagBarcode.length > 120) {
@@ -233,58 +325,48 @@ export async function stageWillCallPackage(
         "Will Call bag barcodes must be 120 characters or fewer.",
       );
     }
+    await assertUnusedWillCallBagBarcode(tx, bagBarcode);
 
-    const barcodeOwner = await tx.willCallPackage.findUnique({
-      where: { bagBarcode },
-      select: { id: true, fillId: true },
+    const packageRecord = await tx.willCallPackage.create({
+      data: {
+        siteId: context.siteId,
+        fillId: fill.id,
+        bagBarcode,
+        locationId: location.id,
+        stagedById: context.actorId,
+      },
+      include: { location: true },
     });
-    if (
-      barcodeOwner &&
-      barcodeOwner.id !== fill.willCallPackage?.id
-    ) {
-      throw new PosError(
-        409,
-        "BAG_BARCODE_IN_USE",
-        "That Will Call bag barcode is already assigned to another fill.",
-        { fillId: barcodeOwner.fillId },
-      );
-    }
 
-    const packageRecord = fill.willCallPackage
-      ? await tx.willCallPackage.update({
-          where: { id: fill.willCallPackage.id },
-          data: {
-            bagBarcode,
-            locationId: location.id,
-            stagedById: context.actorId,
-            stagedAt: new Date(),
-          },
-          include: { location: true },
-        })
-      : await tx.willCallPackage.create({
-          data: {
-            siteId: context.siteId,
-            fillId: fill.id,
-            bagBarcode,
-            locationId: location.id,
-            stagedById: context.actorId,
-          },
-          include: { location: true },
-        });
+    await tx.willCallBagBarcode.create({
+      data: {
+        siteId: context.siteId,
+        packageId: packageRecord.id,
+        barcode: bagBarcode,
+      },
+    });
+    await tx.willCallEvent.create({
+      data: {
+        siteId: context.siteId,
+        packageId: packageRecord.id,
+        eventType: "STAGED",
+        actorId: context.actorId,
+        newBagBarcode: bagBarcode,
+        toLocationId: location.id,
+      },
+    });
 
     await writeAuditEvent(tx, {
       siteId: context.siteId,
       actorId: context.actorId,
-      action: fill.willCallPackage
-        ? "WILL_CALL_PACKAGE_RESTAGED"
-        : "WILL_CALL_PACKAGE_STAGED",
+      action: "WILL_CALL_PACKAGE_STAGED",
       entityType: "WillCallPackage",
       entityId: packageRecord.id,
       requestId: context.requestId,
       metadata: {
         fillId: fill.id,
         prescriptionId: fill.prescriptionId,
-        bagBarcode: packageRecord.bagBarcode,
+        bagBarcode,
         locationId: location.id,
         locationCode: location.code,
         locationBarcode: location.barcode,
@@ -292,6 +374,169 @@ export async function stageWillCallPackage(
     });
 
     return packageRecord;
+  });
+}
+
+export async function rebagWillCallPackage(
+  fillId: string,
+  input: { bagBarcode?: string | null },
+  context: PosActorContext,
+) {
+  return db.$transaction(async (tx) => {
+    const fill = await requireOpenWillCallPackage(tx, fillId, context);
+    const packageRecord = fill.willCallPackage!;
+    const newBagBarcode = input.bagBarcode?.trim().toUpperCase();
+
+    if (!newBagBarcode) {
+      throw new PosError(
+        400,
+        "NEW_BAG_BARCODE_REQUIRED",
+        "Scan the replacement bag barcode.",
+      );
+    }
+    if (newBagBarcode.length > 120) {
+      throw new PosError(
+        400,
+        "INVALID_BAG_BARCODE",
+        "Will Call bag barcodes must be 120 characters or fewer.",
+      );
+    }
+    if (newBagBarcode === packageRecord.bagBarcode) {
+      throw new PosError(
+        409,
+        "SAME_BAG_BARCODE",
+        "The replacement bag barcode must be different from the current bag.",
+      );
+    }
+
+    await assertUnusedWillCallBagBarcode(tx, newBagBarcode);
+    const changedAt = new Date();
+
+    await tx.willCallBagBarcode.updateMany({
+      where: {
+        packageId: packageRecord.id,
+        barcode: packageRecord.bagBarcode,
+        status: "ACTIVE",
+      },
+      data: {
+        status: "VOIDED",
+        voidedAt: changedAt,
+      },
+    });
+
+    const updated = await tx.willCallPackage.update({
+      where: { id: packageRecord.id },
+      data: {
+        bagBarcode: newBagBarcode,
+        stagedById: context.actorId,
+      },
+      include: { location: true },
+    });
+
+    await tx.willCallBagBarcode.create({
+      data: {
+        siteId: context.siteId,
+        packageId: packageRecord.id,
+        barcode: newBagBarcode,
+        assignedAt: changedAt,
+      },
+    });
+    await tx.willCallEvent.create({
+      data: {
+        siteId: context.siteId,
+        packageId: packageRecord.id,
+        eventType: "REBAGGED",
+        actorId: context.actorId,
+        oldBagBarcode: packageRecord.bagBarcode,
+        newBagBarcode,
+        fromLocationId: packageRecord.locationId,
+        toLocationId: packageRecord.locationId,
+        occurredAt: changedAt,
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: "WILL_CALL_PACKAGE_REBAGGED",
+      entityType: "WillCallPackage",
+      entityId: packageRecord.id,
+      requestId: context.requestId,
+      metadata: {
+        fillId,
+        oldBagBarcode: packageRecord.bagBarcode,
+        newBagBarcode,
+        locationId: packageRecord.locationId,
+        locationCode: packageRecord.location.code,
+      },
+    });
+
+    return updated;
+  });
+}
+
+export async function relocateWillCallPackage(
+  fillId: string,
+  input: {
+    locationId?: string | null;
+    locationBarcode?: string | null;
+  },
+  context: PosActorContext,
+) {
+  return db.$transaction(async (tx) => {
+    const fill = await requireOpenWillCallPackage(tx, fillId, context);
+    const packageRecord = fill.willCallPackage!;
+    const location = await resolveWillCallLocation(tx, context, input, {
+      allowDefault: false,
+    });
+
+    if (location.id === packageRecord.locationId) {
+      return packageRecord;
+    }
+
+    const changedAt = new Date();
+    const updated = await tx.willCallPackage.update({
+      where: { id: packageRecord.id },
+      data: {
+        locationId: location.id,
+        stagedById: context.actorId,
+      },
+      include: { location: true },
+    });
+
+    await tx.willCallEvent.create({
+      data: {
+        siteId: context.siteId,
+        packageId: packageRecord.id,
+        eventType: "RELOCATED",
+        actorId: context.actorId,
+        oldBagBarcode: packageRecord.bagBarcode,
+        newBagBarcode: packageRecord.bagBarcode,
+        fromLocationId: packageRecord.locationId,
+        toLocationId: location.id,
+        occurredAt: changedAt,
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: "WILL_CALL_PACKAGE_RELOCATED",
+      entityType: "WillCallPackage",
+      entityId: packageRecord.id,
+      requestId: context.requestId,
+      metadata: {
+        fillId,
+        bagBarcode: packageRecord.bagBarcode,
+        fromLocationId: packageRecord.locationId,
+        fromLocationCode: packageRecord.location.code,
+        toLocationId: location.id,
+        toLocationCode: location.code,
+        toLocationBarcode: location.barcode,
+      },
+    });
+
+    return updated;
   });
 }
 
