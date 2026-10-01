@@ -4,13 +4,18 @@ import {
   createEmergencySupply,
   createFill,
   createPartialFill,
+  completeBiologicCommunication,
   completeEmergencySupplyFollowUp,
+  documentNtiManufacturerConsent,
   getMedications,
   getPrescription,
   getPrescriptionAudit,
+  removeFillProductSource,
   returnFillToStock,
   scanFillBarcode,
   scanFillProduct,
+  setFillBillingProduct,
+  setFillPackaging,
   startFill,
   transitionPrescription,
   updatePrescription,
@@ -123,6 +128,13 @@ export function PrescriptionDetail({
   const [scanNdc, setScanNdc] = useState("");
   const [scanLot, setScanLot] = useState("");
   const [scanExpiration, setScanExpiration] = useState("");
+  const [scanSourceQuantity, setScanSourceQuantity] = useState("");
+  const [ntiPriorManufacturerId, setNtiPriorManufacturerId] = useState("");
+  const [ntiNewManufacturerId, setNtiNewManufacturerId] = useState("");
+  const [ntiPrescriberConsentAt, setNtiPrescriberConsentAt] = useState("");
+  const [ntiPatientConsentAt, setNtiPatientConsentAt] = useState("");
+  const [ntiConsentNote, setNtiConsentNote] = useState("");
+  const [biologicCommunicationNote, setBiologicCommunicationNote] = useState("");
   const [quantity, setQuantity] = useState("");
   const [scheduledFor, setScheduledFor] = useState("");
   const [partialQuantity, setPartialQuantity] = useState("");
@@ -253,10 +265,16 @@ export function PrescriptionDetail({
     setLoading(true);
     onError(null);
     try {
-      await scanFillBarcode(devUser, currentFill.id, scanBarcode);
+      await scanFillBarcode(
+        devUser,
+        currentFill.id,
+        scanBarcode,
+        scanSourceQuantity ? Number(scanSourceQuantity) : undefined,
+      );
       setScanBarcode("");
+      setScanSourceQuantity("");
       await onMutated(
-        "Raw barcode verified against the selected drug and attached to this fill.",
+        "Physical product source verified and reserved for this fill.",
       );
       await load();
     } catch (error) {
@@ -282,17 +300,150 @@ export function PrescriptionDetail({
         expirationDate: new Date(
           `${scanExpiration}T00:00:00Z`,
         ).toISOString(),
+        sourceQuantity: scanSourceQuantity
+          ? Number(scanSourceQuantity)
+          : undefined,
       });
       setScanNdc("");
       setScanLot("");
       setScanExpiration("");
-      await onMutated("Scanned NDC, lot, and expiration verified against the selected drug.");
+      setScanSourceQuantity("");
+      await onMutated(
+        "Physical NDC, lot, expiration, and source quantity added to this fill.",
+      );
       await load();
     } catch (error) {
       onError(
         error instanceof Error
           ? error.message
           : "Scanned product did not match the prescription.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function removeProductSource(sourceId: string) {
+    if (!currentFill) return;
+    setLoading(true);
+    onError(null);
+    try {
+      await removeFillProductSource(devUser, currentFill.id, sourceId);
+      await onMutated("Physical product source removed and reservation released.");
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to remove physical product source.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function selectBillingProduct(productId: string) {
+    if (!currentFill) return;
+    setLoading(true);
+    onError(null);
+    try {
+      await setFillBillingProduct(
+        devUser,
+        currentFill.id,
+        productId || null,
+      );
+      await onMutated(
+        productId
+          ? "Default billing NDC candidate selected."
+          : "Billing NDC candidate cleared; payer strategy must select it during adjudication.",
+      );
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to select billing NDC.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function changePackaging(originalContainer: boolean) {
+    if (!currentFill) return;
+    setLoading(true);
+    onError(null);
+    try {
+      await setFillPackaging(devUser, currentFill.id, originalContainer);
+      await onMutated(
+        originalContainer
+          ? "Fill marked for dispensing in the manufacturer's original container."
+          : "Fill marked for pharmacy-container dispensing; NC discard-date calculation will apply at verification.",
+      );
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to update packaging status.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function submitNtiConsent(event: FormEvent) {
+    event.preventDefault();
+    if (
+      !currentFill ||
+      !ntiPriorManufacturerId ||
+      !ntiNewManufacturerId ||
+      !ntiPrescriberConsentAt ||
+      !ntiPatientConsentAt ||
+      !ntiConsentNote.trim()
+    ) return;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await documentNtiManufacturerConsent(devUser, currentFill.id, {
+        priorManufacturerId: ntiPriorManufacturerId,
+        newManufacturerId: ntiNewManufacturerId,
+        prescriberConsentAt: new Date(ntiPrescriberConsentAt).toISOString(),
+        patientConsentAt: new Date(ntiPatientConsentAt).toISOString(),
+        note: ntiConsentNote.trim(),
+      });
+      setNtiPrescriberConsentAt("");
+      setNtiPatientConsentAt("");
+      setNtiConsentNote("");
+      await onMutated(
+        "NC NTI manufacturer-change prescriber and patient consent documented.",
+      );
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to document NTI manufacturer change consent.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function finishBiologicCommunication(fillId: string) {
+    if (!biologicCommunicationNote.trim()) return;
+    setLoading(true);
+    onError(null);
+    try {
+      await completeBiologicCommunication(
+        devUser,
+        fillId,
+        biologicCommunicationNote.trim(),
+      );
+      setBiologicCommunicationNote("");
+      await onMutated("NC biologic prescriber communication documented.");
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to document biologic communication.",
       );
       setLoading(false);
     }
