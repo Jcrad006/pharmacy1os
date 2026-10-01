@@ -58,6 +58,7 @@ export function App() {
     onHold: 0,
     pharmacistReview: 0,
     scheduled: 0,
+    emergencyFollowUp: 0,
   });
   const [exceptionRefreshToken, setExceptionRefreshToken] = useState(0);
   const [patients, setPatients] = useState<Patient[]>([]);
