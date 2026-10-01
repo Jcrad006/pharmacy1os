@@ -36,6 +36,7 @@ import type {
   RecallCase,
   PurchaseOrder,
   PrescriptionFill,
+  FillInterruptionReason,
   PrescriptionQueueItem,
   PrescriptionStatus,
 } from "./types";
@@ -310,12 +311,14 @@ export async function createPartialFill(
   input: {
     dispenseQuantity: number;
     completionScheduledFor: string;
+    interruptionReason?: FillInterruptionReason;
     reason?: string;
   },
 ) {
   return request<{
     partialFill: PrescriptionFill;
     completionFill: PrescriptionFill;
+    inventoryException: InventoryException | null;
     prescription: PrescriptionQueueItem;
   }>(`/api/fills/${fillId}/partial`, {
     method: "POST",
@@ -1229,6 +1232,21 @@ export async function acknowledgeInventoryException(
   return request<{ exception: InventoryException }>(
     `/api/inventory/exceptions/${exceptionId}/acknowledge`,
     { method: "POST", devUser },
+  );
+}
+
+export async function resolveInventoryException(
+  devUser: string,
+  exceptionId: string,
+  resolutionNote: string,
+) {
+  return request<{ exception: InventoryException }>(
+    `/api/inventory/exceptions/${exceptionId}/resolve`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ resolutionNote }),
+    },
   );
 }
 

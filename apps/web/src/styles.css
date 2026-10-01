@@ -1708,6 +1708,7 @@ kbd {
 }
 
 .continuity-form input,
+.continuity-form select,
 .continuity-form textarea {
   width: 100%;
   border: 1px solid #cfdad4;
@@ -1720,6 +1721,29 @@ kbd {
 
 .continuity-form textarea {
   resize: vertical;
+}
+
+.fill-quantity-summary {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fill-quantity-summary span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #d9e4de;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #f7faf8;
+  color: #607168;
+  font-size: 11px;
+}
+
+.fill-quantity-summary strong {
+  color: #23352d;
+  font-size: 15px;
 }
 
 .emergency-follow-up-panel {
@@ -1755,6 +1779,10 @@ kbd {
 
   .continuity-form .wide {
     grid-column: auto;
+  }
+
+  .fill-quantity-summary {
+    grid-template-columns: 1fr;
   }
 }
 

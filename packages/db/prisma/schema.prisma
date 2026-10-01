@@ -45,6 +45,20 @@ enum FillKind {
   EMERGENCY_SUPPLY
 }
 
+enum FillBillingRole {
+  PRIMARY_CLAIM
+  COMPLETION_OF_PRIMARY
+  EMERGENCY_SUPPLY
+}
+
+enum FillInterruptionReason {
+  INSUFFICIENT_PHYSICAL_STOCK
+  DAMAGED_PRODUCT
+  EXPIRED_PRODUCT
+  STOCK_DISCREPANCY
+  OTHER
+}
+
 enum DurSeverity {
   INFO
   WARNING
@@ -212,6 +226,7 @@ enum InventoryExceptionType {
   UNALLOCATED_DEMAND
   POSITION_IMBALANCE
   MISSING_ACQUISITION_COST
+  PHYSICAL_STOCK_SHORTAGE
 }
 
 enum InventoryExceptionStatus {
@@ -289,6 +304,7 @@ model User {
   cancelledPurchaseOrders PurchaseOrder[]           @relation("PurchaseOrderCancelledBy")
   purchaseOrderReceipts  PurchaseOrderReceipt[]     @relation("PurchaseOrderReceiptActor")
   authorizedEmergencyFills PrescriptionFill[]         @relation("EmergencyFillAuthorizedBy")
+  interruptedFills         PrescriptionFill[]         @relation("FillInterruptedBy")
   inventoryAllocations      InventoryAllocation[]
   createdReceivingDiscrepancies ReceivingDiscrepancy[] @relation("ReceivingDiscrepancyCreatedBy")
   resolvedReceivingDiscrepancies ReceivingDiscrepancy[] @relation("ReceivingDiscrepancyResolvedBy")
@@ -558,12 +574,25 @@ model PrescriptionFill {
   partNumber          Int                @default(1)
   kind                FillKind           @default(STANDARD)
   scheduledFor        DateTime?
-  quantity            Decimal?           @db.Decimal(10, 3)
-  authorizedQuantity  Decimal?           @db.Decimal(10, 3)
-  consumesRefill      Boolean            @default(true)
-  completionOfFillId  String?
-  completionOfFill    PrescriptionFill?  @relation("FillCompletionChain", fields: [completionOfFillId], references: [id], onDelete: Restrict)
-  completionFills     PrescriptionFill[] @relation("FillCompletionChain")
+  quantity                    Decimal?               @db.Decimal(10, 3)
+  authorizedQuantity          Decimal?               @db.Decimal(10, 3)
+  intendedQuantity            Decimal?               @db.Decimal(10, 3)
+  payerIntendedQuantity       Decimal?               @db.Decimal(10, 3)
+  physicalDispensedQuantity   Decimal                @default(0) @db.Decimal(10, 3)
+  remainingOwedQuantity       Decimal                @default(0) @db.Decimal(10, 3)
+  billingRole                 FillBillingRole        @default(PRIMARY_CLAIM)
+  consumesRefill              Boolean                @default(true)
+  completionOfFillId          String?
+  completionOfFill            PrescriptionFill?      @relation("FillCompletionChain", fields: [completionOfFillId], references: [id], onDelete: Restrict)
+  completionFills             PrescriptionFill[]     @relation("FillCompletionChain")
+  billingAnchorFillId         String?
+  billingAnchorFill           PrescriptionFill?      @relation("FillBillingAnchor", fields: [billingAnchorFillId], references: [id], onDelete: Restrict)
+  billingCompletionFills      PrescriptionFill[]     @relation("FillBillingAnchor")
+  interruptionReason          FillInterruptionReason?
+  interruptionNote            String?
+  interruptedAt               DateTime?
+  interruptedById             String?
+  interruptedBy               User?                  @relation("FillInterruptedBy", fields: [interruptedById], references: [id], onDelete: Restrict)
   emergencyReason     String?
   emergencyAuthorizedById String?
   emergencyAuthorizedBy User?            @relation("EmergencyFillAuthorizedBy", fields: [emergencyAuthorizedById], references: [id], onDelete: Restrict)
@@ -598,6 +627,9 @@ model PrescriptionFill {
 
   @@unique([prescriptionId, fillNumber, partNumber])
   @@index([completionOfFillId])
+  @@index([billingAnchorFillId])
+  @@index([billingRole, status])
+  @@index([interruptedAt])
   @@index([kind, status, scheduledFor])
   @@index([followUpDueAt, followUpCompletedAt])
   @@index([scheduledFor, status])

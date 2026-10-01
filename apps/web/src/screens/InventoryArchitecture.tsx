@@ -11,6 +11,7 @@ import {
   getInventoryProjection,
   getReceivingDiscrepancies,
   moveInventoryStock,
+  resolveInventoryException,
   resolveReceivingDiscrepancy,
   saveInventoryPolicy,
 } from "../api";
@@ -79,6 +80,9 @@ export function InventoryArchitecture({
   const [exceptions, setExceptions] = useState<InventoryException[]>([]);
   const [discrepancies, setDiscrepancies] = useState<ReceivingDiscrepancy[]>([]);
   const [busy, setBusy] = useState(false);
+  const [exceptionResolveId, setExceptionResolveId] =
+    useState<string | null>(null);
+  const [exceptionResolutionNote, setExceptionResolutionNote] = useState("");
 
   const [locationCode, setLocationCode] = useState("");
   const [locationName, setLocationName] = useState("");
@@ -331,6 +335,30 @@ export function InventoryArchitecture({
     }
   }
 
+  async function resolveException() {
+    if (!exceptionResolveId || !exceptionResolutionNote.trim()) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await resolveInventoryException(
+        devUser,
+        exceptionResolveId,
+        exceptionResolutionNote.trim(),
+      );
+      setExceptionResolveId(null);
+      setExceptionResolutionNote("");
+      await refresh();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to resolve inventory exception.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createDiscrepancy() {
     if (!writable) return;
     setBusy(true);
@@ -559,13 +587,72 @@ export function InventoryArchitecture({
                     <td><strong>{item.title}</strong><span className="cell-subtext">{item.detail}</span></td>
                     <td>{item.status}</td>
                     <td>{new Date(item.lastDetectedAt).toLocaleString()}</td>
-                    <td>{item.status === "OPEN" && writable && <button type="button" className="secondary-button table-action" disabled={busy} onClick={() => void acknowledge(item.id)}>Acknowledge</button>}</td>
+                    <td>
+                      <div className="table-action-stack">
+                        {item.status === "OPEN" && writable && (
+                          <button
+                            type="button"
+                            className="secondary-button table-action"
+                            disabled={busy}
+                            onClick={() => void acknowledge(item.id)}
+                          >
+                            Acknowledge
+                          </button>
+                        )}
+                        {item.status !== "RESOLVED" && correctable && (
+                          <button
+                            type="button"
+                            className="secondary-button table-action"
+                            disabled={busy}
+                            onClick={() => {
+                              setExceptionResolveId(item.id);
+                              setExceptionResolutionNote("");
+                            }}
+                          >
+                            Resolve
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
                 {exceptions.length === 0 && <tr><td colSpan={6} className="empty-state">No automated inventory exceptions are currently detected.</td></tr>}
               </tbody>
             </table>
           </div>
+          {exceptionResolveId && correctable && (
+            <div className="inventory-operation-resolution">
+              <label>
+                Required resolution note
+                <textarea
+                  rows={3}
+                  value={exceptionResolutionNote}
+                  onChange={(event) =>
+                    setExceptionResolutionNote(event.target.value)
+                  }
+                  placeholder="Document the physical count/reconciliation outcome."
+                />
+              </label>
+              <div className="action-row">
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={busy || !exceptionResolutionNote.trim()}
+                  onClick={() => void resolveException()}
+                >
+                  Resolve inventory exception
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => setExceptionResolveId(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </article>
 
         <article className="inventory-architecture-card architecture-wide">

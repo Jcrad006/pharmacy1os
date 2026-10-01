@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   Prisma,
+  type FillInterruptionReason,
   type FillStatus,
   type PrescriptionStatus,
 } from "@prisma/client";
@@ -74,6 +75,7 @@ type CreateFillBody = {
 type CreatePartialFillBody = {
   dispenseQuantity?: number;
   completionScheduledFor?: string;
+  interruptionReason?: FillInterruptionReason;
   reason?: string;
 };
 
@@ -96,6 +98,14 @@ type ScanProductBody = {
 type ScanBarcodeBody = {
   rawBarcode?: string;
 };
+
+const fillInterruptionReasons = new Set<FillInterruptionReason>([
+  "INSUFFICIENT_PHYSICAL_STOCK",
+  "DAMAGED_PRODUCT",
+  "EXPIRED_PRODUCT",
+  "STOCK_DISCREPANCY",
+  "OTHER",
+]);
 
 const validStatuses = new Set<PrescriptionStatus>([
   "RECEIVED",
@@ -175,6 +185,8 @@ function activeFill(
     status: FillStatus;
     consumesRefill?: boolean;
     kind?: string;
+    quantity?: Prisma.Decimal | null;
+    billingAnchorFillId?: string | null;
     productId?: string | null;
     productLotId?: string | null;
     productExpirationId?: string | null;
@@ -948,13 +960,42 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           body.status === "SOLD" &&
           currentActiveFill
         ) {
+          const soldAt = new Date();
+          const physicalQuantity =
+            currentActiveFill.quantity ?? new Prisma.Decimal(0);
+
           await tx.prescriptionFill.update({
             where: { id: currentActiveFill.id },
             data: {
               status: "SOLD",
-              soldAt: new Date(),
+              soldAt,
+              physicalDispensedQuantity: physicalQuantity,
             },
           });
+
+          if (currentActiveFill.billingAnchorFillId) {
+            const billingAnchor = await tx.prescriptionFill.findUnique({
+              where: { id: currentActiveFill.billingAnchorFillId },
+              select: {
+                id: true,
+                remainingOwedQuantity: true,
+              },
+            });
+
+            if (billingAnchor) {
+              await tx.prescriptionFill.update({
+                where: { id: billingAnchor.id },
+                data: {
+                  remainingOwedQuantity: Prisma.Decimal.max(
+                    billingAnchor.remainingOwedQuantity.minus(
+                      physicalQuantity,
+                    ),
+                    new Prisma.Decimal(0),
+                  ),
+                },
+              });
+            }
+          }
 
           if (currentActiveFill.consumesRefill) {
             prescriptionData.refillsUsed = Math.max(
@@ -1136,6 +1177,21 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             data: {
               scheduledFor: scheduledFor instanceof Date ? scheduledFor : null,
               quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
+              authorizedQuantity:
+                body.quantity ?? prescription.quantityWritten ?? undefined,
+              intendedQuantity:
+                body.quantity ?? prescription.quantityWritten ?? undefined,
+              payerIntendedQuantity:
+                body.quantity ?? prescription.quantityWritten ?? undefined,
+              physicalDispensedQuantity: 0,
+              remainingOwedQuantity: 0,
+              billingRole: "PRIMARY_CLAIM",
+              billingAnchorFillId: null,
+              kind: "STANDARD",
+              interruptionReason: null,
+              interruptionNote: null,
+              interruptedAt: null,
+              interruptedById: null,
               status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
               productId: null,
               productLotId: null,
@@ -1203,6 +1259,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
             authorizedQuantity:
               body.quantity ?? prescription.quantityWritten ?? undefined,
+            intendedQuantity:
+              body.quantity ?? prescription.quantityWritten ?? undefined,
+            payerIntendedQuantity:
+              body.quantity ?? prescription.quantityWritten ?? undefined,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity: 0,
+            billingRole: "PRIMARY_CLAIM",
             status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
           },
         });
@@ -1272,6 +1335,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (
+        body.interruptionReason &&
+        !fillInterruptionReasons.has(body.interruptionReason)
+      ) {
+        return reply.code(400).send({
+          error: "A valid fill interruption reason is required.",
+        });
+      }
+
       const fill = await db.prescriptionFill.findUnique({
         where: { id },
         include: {
@@ -1295,15 +1367,23 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
-      if (
-        fill.productVerifiedAt ||
-        fill.inventoryReservedAt ||
-        fill.inventoryCommittedAt
-      ) {
+      if (fill.inventoryCommittedAt) {
         return reply.code(409).send({
           error:
-            "Enter the partial quantity before scanning/reserving product inventory.",
-          code: "PARTIAL_BEFORE_PRODUCT_SCAN_REQUIRED",
+            "A fill cannot be converted to a partial after pharmacist verification has committed inventory.",
+          code: "PARTIAL_AFTER_INVENTORY_COMMIT_NOT_ALLOWED",
+        });
+      }
+
+      const interruptedAfterScan = Boolean(
+        fill.productVerifiedAt || fill.inventoryReservedAt,
+      );
+
+      if (interruptedAfterScan && !body.interruptionReason) {
+        return reply.code(400).send({
+          error:
+            "A structured interruption reason is required when converting a fill after product scanning/reservation.",
+          code: "FILL_INTERRUPTION_REASON_REQUIRED",
         });
       }
 
@@ -1313,22 +1393,41 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (fill.kind === "PARTIAL") {
+        return reply.code(409).send({
+          error:
+            "This dispense part is already a partial. Resolve its scheduled completion before changing it again.",
+          code: "FILL_ALREADY_PARTIAL",
+        });
+      }
+
       if (fill.quantity === null) {
         return reply.code(409).send({
-          error: "The current fill has no intended quantity.",
+          error: "The current dispense part has no planned physical quantity.",
         });
       }
 
-      const intended = fill.quantity;
+      const plannedPartQuantity = fill.quantity;
+      const intendedQuantity =
+        fill.intendedQuantity ??
+        fill.authorizedQuantity ??
+        plannedPartQuantity;
+      const payerIntendedQuantity =
+        fill.payerIntendedQuantity ?? intendedQuantity;
       const partial = new Prisma.Decimal(dispenseQuantity);
-      if (partial.gte(intended)) {
+
+      if (partial.gte(plannedPartQuantity)) {
         return reply.code(400).send({
           error:
-            "Partial quantity must be less than the current intended fill quantity.",
+            "Partial quantity must be less than the current planned physical dispense quantity.",
         });
       }
 
-      const remainder = intended.minus(partial);
+      const remainder = plannedPartQuantity.minus(partial);
+      const billingAnchorFillId = fill.billingAnchorFillId ?? fill.id;
+      const wasReserved = Boolean(
+        fill.inventoryBalanceId && fill.inventoryReservedAt,
+      );
 
       const result = await db.$transaction(async (tx) => {
         const existingParts = await tx.prescriptionFill.findMany({
@@ -1340,16 +1439,53 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           orderBy: { partNumber: "desc" },
         });
 
-        const nextPartNumber = (existingParts[0]?.partNumber ?? fill.partNumber) + 1;
-        const rootAuthorizedQuantity =
-          fill.authorizedQuantity ?? intended;
+        const nextPartNumber =
+          (existingParts[0]?.partNumber ?? fill.partNumber) + 1;
+
+        const balanceBefore = fill.inventoryBalanceId
+          ? await tx.inventoryBalance.findUnique({
+              where: { id: fill.inventoryBalanceId },
+            })
+          : null;
+
+        if (wasReserved) {
+          await releaseInventoryReservation(tx, {
+            fillId: fill.id,
+            siteId: actor.siteId,
+            actorId: actor.id,
+            reason:
+              "Fill interrupted and reservation resized for physical partial dispense",
+          });
+        }
+
+        const interruptionReason =
+          body.interruptionReason ??
+          (interruptedAfterScan
+            ? ("INSUFFICIENT_PHYSICAL_STOCK" as FillInterruptionReason)
+            : null);
+        const interruptedAt = interruptionReason ? new Date() : null;
 
         const partialFill = await tx.prescriptionFill.update({
           where: { id: fill.id },
           data: {
             kind: "PARTIAL",
             quantity: partial,
-            authorizedQuantity: rootAuthorizedQuantity,
+            authorizedQuantity: intendedQuantity,
+            intendedQuantity,
+            payerIntendedQuantity,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity:
+              fill.billingAnchorFillId === null
+                ? intendedQuantity.minus(partial)
+                : fill.remainingOwedQuantity,
+            billingRole:
+              fill.billingAnchorFillId === null
+                ? "PRIMARY_CLAIM"
+                : "COMPLETION_OF_PRIMARY",
+            interruptionReason,
+            interruptionNote: body.reason?.trim() || null,
+            interruptedAt,
+            interruptedById: interruptionReason ? actor.id : null,
           },
         });
 
@@ -1359,14 +1495,43 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             fillNumber: fill.fillNumber,
             partNumber: nextPartNumber,
             kind: "COMPLETION",
+            billingRole: "COMPLETION_OF_PRIMARY",
+            billingAnchorFillId,
             consumesRefill: false,
             completionOfFillId: fill.id,
             scheduledFor: completionScheduledFor,
             quantity: remainder,
-            authorizedQuantity: rootAuthorizedQuantity,
+            authorizedQuantity: intendedQuantity,
+            intendedQuantity,
+            payerIntendedQuantity,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity: 0,
             status: "SCHEDULED",
           },
         });
+
+        if (wasReserved) {
+          if (
+            !fill.productId ||
+            !fill.productLotId ||
+            !fill.productExpirationId
+          ) {
+            throw new InventoryError(
+              409,
+              "PARTIAL_RESERVATION_TRACEABILITY_MISSING",
+              "The existing reservation cannot be resized because its product traceability is incomplete.",
+            );
+          }
+
+          await reserveInventoryForFill(tx, {
+            fillId: fill.id,
+            siteId: actor.siteId,
+            actorId: actor.id,
+            productId: fill.productId,
+            productLotId: fill.productLotId,
+            productExpirationId: fill.productExpirationId,
+          });
+        }
 
         await createOrUpdateFillDemand(tx, {
           fillId: completion.id,
@@ -1376,10 +1541,65 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             "Remaining quantity required to complete a partial fill.",
         });
 
+        let inventoryException = null;
+        if (
+          balanceBefore &&
+          interruptionReason &&
+          ["INSUFFICIENT_PHYSICAL_STOCK", "STOCK_DISCREPANCY"].includes(
+            interruptionReason,
+          )
+        ) {
+          const systemAvailableBefore = balanceBefore.onHandQuantity
+            .minus(balanceBefore.reservedQuantity)
+            .minus(balanceBefore.quarantinedQuantity)
+            .plus(wasReserved ? plannedPartQuantity : 0);
+
+          inventoryException = await tx.inventoryException.upsert({
+            where: {
+              siteId_fingerprint: {
+                siteId: actor.siteId,
+                fingerprint: `physical-stock-shortage:${fill.id}`,
+              },
+            },
+            update: {
+              type: "PHYSICAL_STOCK_SHORTAGE",
+              status: "OPEN",
+              severity: "HIGH",
+              entityType: "PrescriptionFill",
+              entityId: fill.id,
+              title: "Physical stock shortage reported during Product Fill",
+              detail:
+                `Technician reported only ${partial.toString()} units dispensable while the dispense part expected ${plannedPartQuantity.toString()} units. ` +
+                `System balance before reservation resize: on hand ${balanceBefore.onHandQuantity.toString()}, reserved ${balanceBefore.reservedQuantity.toString()}, quarantined ${balanceBefore.quarantinedQuantity.toString()}. Reconcile physical stock before relying on this balance.`,
+              lastDetectedAt: new Date(),
+              acknowledgedById: null,
+              acknowledgedAt: null,
+              resolvedAt: null,
+              resolvedById: null,
+              resolutionNote: null,
+            },
+            create: {
+              siteId: actor.siteId,
+              fingerprint: `physical-stock-shortage:${fill.id}`,
+              type: "PHYSICAL_STOCK_SHORTAGE",
+              status: "OPEN",
+              severity: "HIGH",
+              entityType: "PrescriptionFill",
+              entityId: fill.id,
+              title: "Physical stock shortage reported during Product Fill",
+              detail:
+                `Technician reported only ${partial.toString()} units dispensable while the dispense part expected ${plannedPartQuantity.toString()} units. ` +
+                `System-available quantity before resize was approximately ${systemAvailableBefore.toString()}. Reconcile physical stock before relying on this balance.`,
+            },
+          });
+        }
+
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
-          action: "PRESCRIPTION_PARTIAL_FILL_CREATED",
+          action: interruptedAfterScan
+            ? "PRESCRIPTION_FILL_INTERRUPTED_TO_PARTIAL"
+            : "PRESCRIPTION_PARTIAL_FILL_CREATED",
           entityType: "PrescriptionFill",
           entityId: fill.id,
           requestId: request.id,
@@ -1387,12 +1607,19 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
             partNumber: fill.partNumber,
-            intendedQuantity: intended.toString(),
-            dispensedQuantity: partial.toString(),
-            remainingQuantity: remainder.toString(),
+            priorPlannedPhysicalQuantity: plannedPartQuantity.toString(),
+            physicalQuantityThisPart: partial.toString(),
+            logicalIntendedQuantity: intendedQuantity.toString(),
+            payerIntendedQuantity: payerIntendedQuantity.toString(),
+            completionQuantity: remainder.toString(),
             completionFillId: completion.id,
             completionScheduledFor:
               completionScheduledFor.toISOString(),
+            billingAnchorFillId,
+            billingRole: partialFill.billingRole,
+            reservationResized: wasReserved,
+            interruptionReason,
+            inventoryExceptionId: inventoryException?.id ?? null,
             reason: body.reason?.trim() || null,
           },
         });
@@ -1409,12 +1636,24 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             fillNumber: fill.fillNumber,
             partNumber: completion.partNumber,
             completionOfFillId: fill.id,
-            quantity: remainder.toString(),
+            billingAnchorFillId,
+            physicalCompletionQuantity: remainder.toString(),
+            logicalIntendedQuantity: intendedQuantity.toString(),
+            payerIntendedQuantity: payerIntendedQuantity.toString(),
             scheduledFor: completionScheduledFor.toISOString(),
           },
         });
 
-        return { partialFill, completion };
+        const finalizedPartialFill =
+          await tx.prescriptionFill.findUniqueOrThrow({
+            where: { id: fill.id },
+          });
+
+        return {
+          partialFill: finalizedPartialFill,
+          completion,
+          inventoryException,
+        };
       });
 
       const prescription = await db.prescription.findUniqueOrThrow({
@@ -1425,6 +1664,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       return {
         partialFill: result.partialFill,
         completionFill: result.completion,
+        inventoryException: result.inventoryException,
         prescription: presentPrescription(prescription),
       };
     } catch (error) {
@@ -1530,9 +1770,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             fillNumber: latestAccountingFill.fillNumber,
             partNumber,
             kind: "EMERGENCY_SUPPLY",
+            billingRole: "EMERGENCY_SUPPLY",
             consumesRefill: false,
             quantity: body.quantity,
             authorizedQuantity: body.quantity,
+            intendedQuantity: body.quantity,
+            payerIntendedQuantity: body.quantity,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity: 0,
             status: "IN_PROGRESS",
             emergencyReason: reason,
             emergencyAuthorizedById: actor.id,

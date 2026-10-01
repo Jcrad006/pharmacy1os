@@ -137,6 +137,11 @@ describe("Phase 3I dispensing continuity", () => {
     expect(partial.json().partialFill.fillNumber).toBe(0);
     expect(partial.json().partialFill.partNumber).toBe(1);
     expect(partial.json().partialFill.consumesRefill).toBe(true);
+    expect(partial.json().partialFill.billingRole).toBe("PRIMARY_CLAIM");
+    expect(Number(partial.json().partialFill.intendedQuantity)).toBe(90);
+    expect(Number(partial.json().partialFill.payerIntendedQuantity)).toBe(90);
+    expect(Number(partial.json().partialFill.physicalDispensedQuantity)).toBe(0);
+    expect(Number(partial.json().partialFill.remainingOwedQuantity)).toBe(87);
 
     const completion = partial.json().completionFill;
     expect(completion.kind).toBe("COMPLETION");
@@ -145,6 +150,10 @@ describe("Phase 3I dispensing continuity", () => {
     expect(completion.partNumber).toBe(2);
     expect(completion.consumesRefill).toBe(false);
     expect(completion.completionOfFillId).toBe(fillId);
+    expect(completion.billingRole).toBe("COMPLETION_OF_PRIMARY");
+    expect(completion.billingAnchorFillId).toBe(fillId);
+    expect(Number(completion.intendedQuantity)).toBe(90);
+    expect(Number(completion.payerIntendedQuantity)).toBe(90);
 
     const demand = await db.inventoryDemand.findUnique({
       where: { fillId: completion.id },
@@ -180,6 +189,13 @@ describe("Phase 3I dispensing continuity", () => {
 
     const soldPartial = await moveToSoldWithoutCatalog(prescriptionId);
     expect(soldPartial.refillsUsed).toBe(0);
+
+    const partialAfterSale = await db.prescriptionFill.findUniqueOrThrow({
+      where: { id: fillId },
+    });
+    expect(partialAfterSale.physicalDispensedQuantity.toNumber()).toBe(3);
+    expect(partialAfterSale.payerIntendedQuantity?.toNumber()).toBe(90);
+    expect(partialAfterSale.remainingOwedQuantity.toNumber()).toBe(87);
 
     await db.prescriptionFill.update({
       where: { id: completion.id },
@@ -232,6 +248,245 @@ describe("Phase 3I dispensing continuity", () => {
       "COMPLETION",
     ]);
     expect(parts.map((item) => item.status)).toEqual(["SOLD", "SOLD"]);
+    expect(parts[0]?.remainingOwedQuantity.toNumber()).toBe(0);
+    expect(parts[1]?.physicalDispensedQuantity.toNumber()).toBe(87);
+    expect(parts[0]?.payerIntendedQuantity?.toNumber()).toBe(90);
+    expect(parts[1]?.payerIntendedQuantity?.toNumber()).toBe(90);
+  });
+
+  it("interrupts a scanned 90-unit fill to 3 physical units while preserving the 90-unit payer intent", async () => {
+    const suffix = numericSuffix();
+    const gtin = "0066666" + suffix + "0";
+    const lotNumber = "PARTIAL-" + suffix;
+    const rawBarcode =
+      "(01)" + gtin + "(17)270630(10)" + lotNumber;
+
+    const assigned = await app.inject({
+      method: "POST",
+      url: "/api/receiving/assign",
+      headers: technicianHeaders,
+      payload: {
+        rawBarcode,
+        productId: "product-demo-lisinopril-a",
+        isPrimary: false,
+      },
+    });
+    expect(assigned.statusCode).toBe(201);
+
+    const received = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: technicianHeaders,
+      payload: {
+        rawBarcode,
+        quantity: 120,
+        source: "Interrupted partial fill test",
+      },
+    });
+    expect(received.statusCode).toBe(201);
+    const balanceId = received.json().balance.id as string;
+
+    const prescriptionId = await createPrescription({
+      quantity: 90,
+      medicationId: "medication-demo-lisinopril-10",
+    });
+    await moveToDur(prescriptionId);
+
+    const createdFill = await app.inject({
+      method: "POST",
+      url: "/api/prescriptions/" + prescriptionId + "/fills",
+      headers: technicianHeaders,
+      payload: { quantity: 90 },
+    });
+    expect(createdFill.statusCode).toBe(201);
+    const fillId = createdFill.json().fill.id as string;
+
+    const scanned = await app.inject({
+      method: "POST",
+      url: "/api/fills/" + fillId + "/scan-barcode",
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(scanned.statusCode).toBe(200);
+
+    let balance = await db.inventoryBalance.findUniqueOrThrow({
+      where: { id: balanceId },
+    });
+    expect(balance.reservedQuantity.toNumber()).toBe(90);
+
+    const completionDate = new Date(Date.now() + 86_400_000);
+    const interrupted = await app.inject({
+      method: "POST",
+      url: "/api/fills/" + fillId + "/partial",
+      headers: technicianHeaders,
+      payload: {
+        dispenseQuantity: 3,
+        completionScheduledFor: completionDate.toISOString(),
+        interruptionReason: "INSUFFICIENT_PHYSICAL_STOCK",
+        reason:
+          "Physical count found only three tablets available for this fill.",
+      },
+    });
+
+    expect(interrupted.statusCode).toBe(200);
+    const partialFill = interrupted.json().partialFill;
+    const completionFill = interrupted.json().completionFill;
+    const inventoryException = interrupted.json().inventoryException;
+
+    expect(partialFill.kind).toBe("PARTIAL");
+    expect(partialFill.billingRole).toBe("PRIMARY_CLAIM");
+    expect(Number(partialFill.quantity)).toBe(3);
+    expect(Number(partialFill.intendedQuantity)).toBe(90);
+    expect(Number(partialFill.payerIntendedQuantity)).toBe(90);
+    expect(Number(partialFill.remainingOwedQuantity)).toBe(87);
+    expect(partialFill.interruptionReason).toBe(
+      "INSUFFICIENT_PHYSICAL_STOCK",
+    );
+    expect(partialFill.inventoryReservedAt).toBeTruthy();
+
+    expect(completionFill.kind).toBe("COMPLETION");
+    expect(completionFill.billingRole).toBe("COMPLETION_OF_PRIMARY");
+    expect(completionFill.billingAnchorFillId).toBe(fillId);
+    expect(Number(completionFill.quantity)).toBe(87);
+    expect(Number(completionFill.intendedQuantity)).toBe(90);
+    expect(Number(completionFill.payerIntendedQuantity)).toBe(90);
+    expect(completionFill.consumesRefill).toBe(false);
+
+    balance = await db.inventoryBalance.findUniqueOrThrow({
+      where: { id: balanceId },
+    });
+    expect(balance.reservedQuantity.toNumber()).toBe(3);
+
+    const allocations = await db.inventoryAllocation.findMany({
+      where: { fillId },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(allocations).toHaveLength(2);
+    expect(allocations[0]?.status).toBe("RELEASED");
+    expect(allocations[0]?.quantity.toNumber()).toBe(90);
+    expect(allocations[1]?.status).toBe("ACTIVE");
+    expect(allocations[1]?.quantity.toNumber()).toBe(3);
+
+    expect(inventoryException).toBeTruthy();
+    expect(inventoryException.type).toBe("PHYSICAL_STOCK_SHORTAGE");
+    expect(inventoryException.status).toBe("OPEN");
+
+    const refreshedExceptions = await app.inject({
+      method: "GET",
+      url: "/api/inventory/exceptions",
+      headers: technicianHeaders,
+    });
+    expect(refreshedExceptions.statusCode).toBe(200);
+    expect(
+      refreshedExceptions
+        .json()
+        .exceptions.some(
+          (item: { id: string; type: string; status: string }) =>
+            item.id === inventoryException.id &&
+            item.type === "PHYSICAL_STOCK_SHORTAGE" &&
+            item.status === "OPEN",
+        ),
+    ).toBe(true);
+
+    const soldPartial = await moveToSoldWithoutCatalog(prescriptionId);
+    expect(soldPartial.refillsUsed).toBe(0);
+
+    const rootAfterPartialSale =
+      await db.prescriptionFill.findUniqueOrThrow({
+        where: { id: fillId },
+      });
+    expect(
+      rootAfterPartialSale.physicalDispensedQuantity.toNumber(),
+    ).toBe(3);
+    expect(rootAfterPartialSale.payerIntendedQuantity?.toNumber()).toBe(
+      90,
+    );
+    expect(rootAfterPartialSale.remainingOwedQuantity.toNumber()).toBe(
+      87,
+    );
+
+    await db.prescriptionFill.update({
+      where: { id: completionFill.id },
+      data: { scheduledFor: new Date(Date.now() - 1_000) },
+    });
+
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/fills/" + completionFill.id + "/start",
+      headers: technicianHeaders,
+    });
+    expect(started.statusCode).toBe(200);
+
+    const completionScan = await app.inject({
+      method: "POST",
+      url: "/api/fills/" + completionFill.id + "/scan-barcode",
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(completionScan.statusCode).toBe(200);
+
+    const soldCompletion =
+      await moveToSoldWithoutCatalog(prescriptionId);
+    expect(soldCompletion.refillsUsed).toBe(0);
+
+    const rootAfterCompletion =
+      await db.prescriptionFill.findUniqueOrThrow({
+        where: { id: fillId },
+      });
+    const completionAfterSale =
+      await db.prescriptionFill.findUniqueOrThrow({
+        where: { id: completionFill.id },
+      });
+
+    expect(rootAfterCompletion.remainingOwedQuantity.toNumber()).toBe(0);
+    expect(rootAfterCompletion.payerIntendedQuantity?.toNumber()).toBe(
+      90,
+    );
+    expect(
+      completionAfterSale.physicalDispensedQuantity.toNumber(),
+    ).toBe(87);
+    expect(
+      completionAfterSale.payerIntendedQuantity?.toNumber(),
+    ).toBe(90);
+
+    const technicianResolve = await app.inject({
+      method: "POST",
+      url:
+        "/api/inventory/exceptions/" +
+        inventoryException.id +
+        "/resolve",
+      headers: technicianHeaders,
+      payload: {
+        resolutionNote:
+          "Technician should not be permitted to resolve the discrepancy.",
+      },
+    });
+    expect(technicianResolve.statusCode).toBe(403);
+
+    const pharmacistResolve = await app.inject({
+      method: "POST",
+      url:
+        "/api/inventory/exceptions/" +
+        inventoryException.id +
+        "/resolve",
+      headers: pharmacistHeaders,
+      payload: {
+        resolutionNote:
+          "Physical inventory was reconciled and a separate count/adjustment was documented.",
+      },
+    });
+    expect(pharmacistResolve.statusCode).toBe(200);
+    expect(pharmacistResolve.json().exception.status).toBe("RESOLVED");
+
+    const audits = await db.auditEvent.findMany({
+      where: {
+        entityType: "PrescriptionFill",
+        entityId: fillId,
+      },
+    });
+    expect(
+      audits.map((event) => event.action),
+    ).toContain("PRESCRIPTION_FILL_INTERRUPTED_TO_PARTIAL");
   });
 
   it("restricts emergency supply authorization to pharmacists and keeps it outside refill accounting", async () => {

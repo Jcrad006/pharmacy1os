@@ -18,6 +18,7 @@ import {
 import type {
   AuditEvent,
   DevUser,
+  FillInterruptionReason,
   Medication,
   Prescriber,
   PrescriptionQueueItem,
@@ -126,6 +127,8 @@ export function PrescriptionDetail({
   const [scheduledFor, setScheduledFor] = useState("");
   const [partialQuantity, setPartialQuantity] = useState("");
   const [completionScheduledFor, setCompletionScheduledFor] = useState("");
+  const [partialInterruptionReason, setPartialInterruptionReason] =
+    useState<FillInterruptionReason | "">("");
   const [partialReason, setPartialReason] = useState("");
   const [emergencyQuantity, setEmergencyQuantity] = useState("");
   const [emergencyReason, setEmergencyReason] = useState("");
@@ -316,13 +319,15 @@ export function PrescriptionDetail({
         completionScheduledFor: new Date(
           completionScheduledFor,
         ).toISOString(),
+        interruptionReason: partialInterruptionReason || undefined,
         reason: partialReason.trim() || undefined,
       });
       setPartialQuantity("");
       setCompletionScheduledFor("");
+      setPartialInterruptionReason("");
       setPartialReason("");
       await onMutated(
-        `Partial fill recorded: ${String(result.partialFill.quantity)} now; ${String(result.completionFill.quantity)} scheduled for completion.`,
+        `Partial fill recorded: ${String(result.partialFill.quantity)} physically today; ${String(result.completionFill.quantity)} owed for completion. Payer-intended quantity remains ${String(result.partialFill.payerIntendedQuantity ?? result.partialFill.intendedQuantity ?? "—")}.`,
       );
       await load();
     } catch (error) {
@@ -650,19 +655,49 @@ export function PrescriptionDetail({
                 </small>
               </div>
 
-              {!currentFill.productVerifiedAt &&
-                currentFill.kind !== "EMERGENCY_SUPPLY" && (
+              {currentFill.kind !== "EMERGENCY_SUPPLY" &&
+                currentFill.kind !== "PARTIAL" && (
                   <details className="partial-fill-panel">
-                    <summary>Only part of this fill is available</summary>
+                    <summary>
+                      {currentFill.productVerifiedAt
+                        ? "Stop current fill / convert to partial"
+                        : "Only part of this fill is available"}
+                    </summary>
                     <form
                       className="continuity-form"
                       onSubmit={submitPartialFill}
                     >
                       <p className="catalog-help">
-                        Record the quantity dispensed today. The remainder will
-                        be scheduled as a linked completion of the same fill
-                        number and will not consume another refill.
+                        {currentFill.productVerifiedAt
+                          ? "The product has already been scanned and reserved. Pharmacy1OS will release the current reservation, re-reserve only the physical quantity dispensed today, and create a linked completion for the remainder. The payer-intended full-fill quantity is preserved."
+                          : "Record the physical quantity to dispense today. The remainder will be scheduled as a linked completion of the same fill number and will not consume another refill. The payer-intended quantity remains the full intended fill quantity."}
                       </p>
+                      <div className="fill-quantity-summary">
+                        <span>
+                          Planned physical part
+                          <strong>{String(currentFill.quantity ?? "—")}</strong>
+                        </span>
+                        <span>
+                          Payer intended
+                          <strong>
+                            {String(
+                              currentFill.payerIntendedQuantity ??
+                                currentFill.intendedQuantity ??
+                                currentFill.authorizedQuantity ??
+                                currentFill.quantity ??
+                                "—",
+                            )}
+                          </strong>
+                        </span>
+                        <span>
+                          Currently reserved
+                          <strong>
+                            {currentFill.inventoryReservedAt
+                              ? String(currentFill.quantity ?? "—")
+                              : "0"}
+                          </strong>
+                        </span>
+                      </div>
                       <label>
                         Dispense now
                         <input
@@ -693,6 +728,35 @@ export function PrescriptionDetail({
                           required
                         />
                       </label>
+                      <label>
+                        Interruption reason
+                        <select
+                          value={partialInterruptionReason}
+                          onChange={(event) =>
+                            setPartialInterruptionReason(
+                              event.target.value as
+                                | FillInterruptionReason
+                                | "",
+                            )
+                          }
+                          required={Boolean(currentFill.productVerifiedAt)}
+                        >
+                          <option value="">Select reason</option>
+                          <option value="INSUFFICIENT_PHYSICAL_STOCK">
+                            Insufficient physical stock
+                          </option>
+                          <option value="DAMAGED_PRODUCT">
+                            Damaged product
+                          </option>
+                          <option value="EXPIRED_PRODUCT">
+                            Expired product discovered
+                          </option>
+                          <option value="STOCK_DISCREPANCY">
+                            Stock discrepancy
+                          </option>
+                          <option value="OTHER">Other</option>
+                        </select>
+                      </label>
                       <label className="wide">
                         Reason / inventory note
                         <input
@@ -711,6 +775,8 @@ export function PrescriptionDetail({
                           !processAllowed ||
                           !partialQuantity ||
                           !completionScheduledFor ||
+                          (Boolean(currentFill.productVerifiedAt) &&
+                            !partialInterruptionReason) ||
                           !Number.isFinite(Number(partialQuantity)) ||
                           Number(partialQuantity) <= 0 ||
                           (currentFill.quantity !== null &&
@@ -718,7 +784,9 @@ export function PrescriptionDetail({
                               Number(currentFill.quantity))
                         }
                       >
-                        Create partial + completion
+                        {currentFill.productVerifiedAt
+                          ? "Interrupt fill + create partial"
+                          : "Create partial + completion"}
                       </button>
                     </form>
                   </details>
@@ -1015,7 +1083,7 @@ export function PrescriptionDetail({
         </div>
         <div className="table-wrap">
           <table className="compact-table">
-            <thead><tr><th>Fill</th><th>Type</th><th>Status</th><th>Quantity</th><th>NDC / Lot / Exp</th><th>Scheduled / follow-up</th><th>Filled</th><th>Sold</th></tr></thead>
+            <thead><tr><th>Fill</th><th>Type</th><th>Status</th><th>Quantities</th><th>NDC / Lot / Exp</th><th>Scheduled / follow-up</th><th>Filled</th><th>Sold</th></tr></thead>
             <tbody>
               {rx.fills.map((fill) => (
                 <tr key={fill.id}>
@@ -1025,12 +1093,37 @@ export function PrescriptionDetail({
                   </td>
                   <td>
                     {fill.kind.replaceAll("_", " ")}
+                    <span className="cell-subtext">
+                      {fill.billingRole.replaceAll("_", " ")}
+                    </span>
                     {!fill.consumesRefill && (
                       <span className="cell-subtext">No refill consumed</span>
                     )}
                   </td>
                   <td>{fill.status.replaceAll("_", " ")}</td>
-                  <td>{String(fill.quantity ?? "—")}</td>
+                  <td>
+                    <strong>
+                      Physical part: {String(fill.quantity ?? "—")}
+                    </strong>
+                    <span className="cell-subtext">
+                      Payer intended:{" "}
+                      {String(
+                        fill.payerIntendedQuantity ??
+                          fill.intendedQuantity ??
+                          "—",
+                      )}
+                    </span>
+                    <span className="cell-subtext">
+                      Physically dispensed:{" "}
+                      {String(fill.physicalDispensedQuantity ?? 0)}
+                    </span>
+                    {Number(fill.remainingOwedQuantity ?? 0) > 0 && (
+                      <span className="cell-subtext">
+                        Remaining owed:{" "}
+                        {String(fill.remainingOwedQuantity)}
+                      </span>
+                    )}
+                  </td>
                   <td>
                     {fill.productVerifiedAt ? (
                       <span className="fill-product-trace">

@@ -32,6 +32,18 @@ export type FillKind =
   | "COMPLETION"
   | "EMERGENCY_SUPPLY";
 
+export type FillBillingRole =
+  | "PRIMARY_CLAIM"
+  | "COMPLETION_OF_PRIMARY"
+  | "EMERGENCY_SUPPLY";
+
+export type FillInterruptionReason =
+  | "INSUFFICIENT_PHYSICAL_STOCK"
+  | "DAMAGED_PRODUCT"
+  | "EXPIRED_PRODUCT"
+  | "STOCK_DISCREPANCY"
+  | "OTHER";
+
 export type DurSeverity = "INFO" | "WARNING" | "HIGH";
 export type DurIssueStatus = "OPEN" | "RESOLVED";
 
@@ -102,6 +114,16 @@ export type PrescriptionFill = {
   scheduledFor: string | null;
   quantity: string | number | null;
   authorizedQuantity: string | number | null;
+  intendedQuantity: string | number | null;
+  payerIntendedQuantity: string | number | null;
+  physicalDispensedQuantity: string | number;
+  remainingOwedQuantity: string | number;
+  billingRole: FillBillingRole;
+  billingAnchorFillId: string | null;
+  interruptionReason: FillInterruptionReason | null;
+  interruptionNote: string | null;
+  interruptedAt: string | null;
+  interruptedById: string | null;
   consumesRefill: boolean;
   completionOfFillId: string | null;
   emergencyReason: string | null;
@@ -572,7 +594,8 @@ export type InventoryExceptionType =
   | "PURCHASE_ORDER_OVERDUE"
   | "UNALLOCATED_DEMAND"
   | "POSITION_IMBALANCE"
-  | "MISSING_ACQUISITION_COST";
+  | "MISSING_ACQUISITION_COST"
+  | "PHYSICAL_STOCK_SHORTAGE";
 
 export type InventoryException = {
   id: string;

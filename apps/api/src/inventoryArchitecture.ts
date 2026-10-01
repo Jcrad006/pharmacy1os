@@ -834,8 +834,22 @@ export async function refreshInventoryExceptions(
   const openExceptions = await tx.inventoryException.findMany({
     where: { siteId, status: { in: ["OPEN", "ACKNOWLEDGED"] } },
   });
+  const automaticallyManagedTypes: InventoryExceptionType[] = [
+    "BELOW_REORDER_POINT",
+    "EXPIRING_SOON",
+    "STALE_RESERVATION",
+    "TRANSFER_STUCK",
+    "PURCHASE_ORDER_OVERDUE",
+    "UNALLOCATED_DEMAND",
+    "POSITION_IMBALANCE",
+    "MISSING_ACQUISITION_COST",
+  ];
+
   for (const exception of openExceptions) {
-    if (!fingerprints.has(exception.fingerprint)) {
+    if (
+      automaticallyManagedTypes.includes(exception.type) &&
+      !fingerprints.has(exception.fingerprint)
+    ) {
       await tx.inventoryException.update({
         where: { id: exception.id },
         data: {
