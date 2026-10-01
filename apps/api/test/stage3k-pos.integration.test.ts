@@ -293,7 +293,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(staged.status).toBe("STAGED");
     expect(staged.bagBarcode).toBe("WC-BAG-CASH-3K");
     expect(staged.location.code).toBe("WILL-CALL");
-    expect(staged.location.barcode).toBe(`WC-DEFAULT-${siteId}`);
+    expect(staged.location.barcode).toBe(`WC-DEFAULT-${siteId}`.toUpperCase());
 
     const quote = await app.inject({
       method: "POST",
