@@ -52,6 +52,7 @@ import type {
   PosQuote,
   PointOfSaleTransaction,
   PaymentMethod,
+  PickupFulfillmentMode,
   PickupIdentityMethod,
   PickupSignatureMethod,
   WillCallPackage,
@@ -143,11 +144,12 @@ export async function stageWillCallPackage(
 export async function quotePosCheckout(
   devUser: string,
   fillIds: string[],
+  pickupFulfillmentMode: PickupFulfillmentMode = "WILL_CALL",
 ) {
   const result = await request<{ quote: PosQuote }>("/api/pos/quote", {
     method: "POST",
     devUser,
-    body: JSON.stringify({ fillIds }),
+    body: JSON.stringify({ fillIds, pickupFulfillmentMode }),
   });
   return result.quote;
 }
@@ -165,6 +167,7 @@ export async function checkoutPos(
       fillId: string;
       bagBarcode: string;
     }>;
+    pickupFulfillmentMode: PickupFulfillmentMode;
     pickup: {
       recipientName: string;
       relationship?: string | null;
