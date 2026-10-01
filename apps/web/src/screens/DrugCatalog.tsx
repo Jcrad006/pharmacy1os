@@ -3,6 +3,7 @@ import {
   createMedication,
   createProduct,
   createProductExpiration,
+  assignProductBarcode,
   createProductLot,
   getMedications,
 } from "../api";
@@ -203,6 +204,16 @@ export function DrugCatalog({
       setPackagePrice("");
       setSelectedLotProductId(result.product.id);
       setSelectedExpirationProductId(result.product.id);
+
+      const pendingBarcode = localStorage.getItem("pharmacy1os.pendingBarcode");
+      if (pendingBarcode) {
+        await assignProductBarcode(devUser, result.product.id, pendingBarcode, {
+          isPrimary: true,
+          note: "Assigned while creating a new product from Receiving.",
+        });
+        localStorage.removeItem("pharmacy1os.pendingBarcode");
+      }
+
       setQuery("");
       await load("");
     } catch (error) {
@@ -256,6 +267,28 @@ export function DrugCatalog({
     } catch (error) {
       onError(
         error instanceof Error ? error.message : "Unable to record expiration date.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function assignBarcodeToProduct(productId: string) {
+    const rawBarcode = window.prompt(
+      "Scan or enter the barcode identifier to assign to this NDC.",
+    );
+    if (!rawBarcode?.trim()) return;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await assignProductBarcode(devUser, productId, rawBarcode, {
+        isPrimary: true,
+        note: "Assigned from Drug / Product catalog.",
+      });
+      await load("");
+    } catch (error) {
+      onError(
+        error instanceof Error ? error.message : "Unable to assign barcode.",
       );
       setLoading(false);
     }
@@ -374,7 +407,31 @@ export function DrugCatalog({
                           >
                             Add expiration
                           </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={!writable}
+                            onClick={() => void assignBarcodeToProduct(product.id)}
+                          >
+                            Assign barcode
+                          </button>
                         </div>
+                      </div>
+
+                      <div className="catalog-barcode-strip">
+                        <strong>Registered barcodes</strong>
+                        {product.barcodes.length === 0 ? (
+                          <span className="muted">No barcode identifiers assigned.</span>
+                        ) : (
+                          <div className="catalog-barcode-list">
+                            {product.barcodes.map((barcode) => (
+                              <span className="barcode-chip" key={barcode.id}>
+                                {barcode.type}: {barcode.identifier}
+                                {barcode.isPrimary ? " · primary" : ""}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       <div className="catalog-ndc-children">
