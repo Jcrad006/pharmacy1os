@@ -169,6 +169,13 @@ enum InventoryDemandStatus {
   CANCELLED
 }
 
+enum InventoryAllocationStatus {
+  RESERVED
+  COMMITTED
+  RELEASED
+  RETURNED
+}
+
 enum ReceivingDiscrepancyType {
   SHORT_SHIPMENT
   OVERAGE
@@ -225,6 +232,7 @@ model PharmacySite {
   inventoryOperationKeys InventoryOperationKey[]
   inventoryCostLayers   InventoryCostLayer[]
   inventoryLocationMovements InventoryLocationMovement[]
+  inventoryAllocations InventoryAllocation[]
   auditEvents           AuditEvent[]
 }
 
@@ -557,6 +565,7 @@ model PrescriptionFill {
   recallAffectedFills RecallAffectedFill[]
   inventoryDemand     InventoryDemand?
   inventoryCostConsumptions InventoryCostConsumption[]
+  inventoryAllocations InventoryAllocation[]
   filledAt            DateTime?
   soldAt              DateTime?
   createdAt           DateTime           @default(now())
@@ -599,6 +608,7 @@ model InventoryBalance {
   locationMovements     InventoryLocationMovement[]
   inventoryCostLayers   InventoryCostLayer[]
   inventoryCostConsumptions InventoryCostConsumption[]
+  inventoryAllocations InventoryAllocation[]
 
   @@unique([siteId, productId, productLotId, productExpirationId])
   @@index([siteId, productId])
@@ -944,6 +954,26 @@ model InventoryPolicy {
   @@unique([siteId, policyKey])
   @@index([siteId, medicationId])
   @@index([siteId, productId])
+}
+
+model InventoryAllocation {
+  id                 String                    @id @default(uuid())
+  siteId             String
+  site               PharmacySite              @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  inventoryBalanceId String
+  inventoryBalance   InventoryBalance          @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  fillId             String
+  fill               PrescriptionFill          @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  quantity           Decimal                   @db.Decimal(14, 3)
+  status             InventoryAllocationStatus @default(RESERVED)
+  reservedAt         DateTime                  @default(now())
+  committedAt        DateTime?
+  releasedAt         DateTime?
+  returnedAt         DateTime?
+
+  @@index([siteId, status, reservedAt])
+  @@index([inventoryBalanceId, status])
+  @@index([fillId, status])
 }
 
 model InventoryDemand {
