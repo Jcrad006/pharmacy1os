@@ -18,6 +18,34 @@ function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
 }
 
+export async function resolveEffectiveInventoryPolicy(
+  tx: Prisma.TransactionClient,
+  input: {
+    siteId: string;
+    medicationId?: string | null;
+    productId?: string | null;
+  },
+) {
+  const keys = [
+    input.productId ? `PRODUCT:${input.productId}` : null,
+    input.medicationId ? `MEDICATION:${input.medicationId}` : null,
+    "SITE",
+  ].filter(Boolean) as string[];
+
+  const policies = await tx.inventoryPolicy.findMany({
+    where: {
+      siteId: input.siteId,
+      policyKey: { in: keys },
+    },
+  });
+
+  return (
+    keys
+      .map((key) => policies.find((policy) => policy.policyKey === key))
+      .find(Boolean) ?? null
+  );
+}
+
 export async function resolveInventoryLocation(
   tx: Prisma.TransactionClient,
   input: {
