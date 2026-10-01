@@ -1154,6 +1154,12 @@ export type WillCallPackageStatus =
   | "STAGED"
   | "PICKED_UP"
   | "RETURNED_TO_STOCK";
+export type WillCallEventType =
+  | "STAGED"
+  | "RELOCATED"
+  | "REBAGGED"
+  | "PICKED_UP"
+  | "RETURNED_TO_STOCK";
 
 export type WillCallPackage = {
   id: string;
@@ -1168,6 +1174,31 @@ export type WillCallPackage = {
   returnedAt: string | null;
   updatedAt: string;
   location: InventoryLocation;
+};
+
+export type WillCallEvent = {
+  id: string;
+  siteId: string;
+  packageId: string;
+  eventType: WillCallEventType;
+  actorId: string;
+  oldBagBarcode: string | null;
+  newBagBarcode: string | null;
+  fromLocationId: string | null;
+  toLocationId: string | null;
+  occurredAt: string;
+  actor?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  fromLocation?: Pick<InventoryLocation, "id" | "code" | "name" | "barcode"> | null;
+  toLocation?: Pick<InventoryLocation, "id" | "code" | "name" | "barcode"> | null;
+};
+
+export type WillCallScanResult = {
+  scanType: "BAG" | "LOCATION";
+  packages: WillCallPackage[];
 };
 
 export type PosQuoteLine = {
