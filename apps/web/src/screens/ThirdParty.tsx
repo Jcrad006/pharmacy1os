@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  adjudicateFill,
   createPayer,
   getThirdPartyWorkspace,
+  markLabelPrintJobPrinted,
   removePatientCoverage,
   savePatientCoverage,
 } from "../api";
@@ -85,6 +87,12 @@ export function ThirdParty({
     }>
   >([]);
   const [payers, setPayers] = useState<Payer[]>([]);
+  const [claimIssues, setClaimIssues] = useState<
+    Awaited<ReturnType<typeof getThirdPartyWorkspace>>["claimIssues"]
+  >([]);
+  const [printQueue, setPrintQueue] = useState<
+    Awaited<ReturnType<typeof getThirdPartyWorkspace>>["printQueue"]
+  >([]);
   const [selectedPatientId, setSelectedPatientId] = useState("");
   const [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState<Record<number, CoverageDraft>>({
@@ -114,6 +122,8 @@ export function ThirdParty({
       const result = await getThirdPartyWorkspace(devUser, search);
       setPatients(result.patients);
       setPayers(result.payers);
+      setClaimIssues(result.claimIssues);
+      setPrintQueue(result.printQueue);
       if (
         selectedPatientId &&
         !result.patients.some((patient) => patient.id === selectedPatientId)
@@ -246,6 +256,77 @@ export function ThirdParty({
     }
   }
 
+  async function retryClaim(fillId: string) {
+    if (!editable) return;
+    setBusy(true);
+    onError(null);
+    try {
+      const result = await adjudicateFill(devUser, fillId);
+      await load(query);
+      onError(
+        result.adjudication.state === "PAID_LABEL_READY"
+          ? "Claim paid. Dispensing label is queued for printing."
+          : result.adjudication.state === "REJECTED"
+            ? "Claim remains rejected. Review the payer response below."
+            : result.adjudication.state === "ERROR"
+              ? "Claim transmission still has an error."
+              : `Adjudication state: ${result.adjudication.state.replaceAll("_", " ")}.`,
+      );
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Unable to retry claim.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openPrintableLabel(
+    job: (typeof printQueue)[number],
+  ) {
+    const label = job.label;
+    const popup = window.open("", "_blank", "noopener,noreferrer,width=720,height=720");
+    if (!popup) {
+      onError("The browser blocked the print window. Allow pop-ups for Pharmacy1OS and try again.");
+      return;
+    }
+
+    popup.document.title = `Rx label ${label.rxNumberSnapshot ?? label.id}`;
+    const sheet = popup.document.createElement("pre");
+    sheet.style.whiteSpace = "pre-wrap";
+    sheet.style.fontFamily = "system-ui, sans-serif";
+    sheet.style.fontSize = "16px";
+    sheet.style.padding = "24px";
+    sheet.textContent = [
+      `Rx ${label.rxNumberSnapshot ?? "—"} · label v${label.version}`,
+      label.patientNameSnapshot,
+      label.medicationSnapshot,
+      `SIG: ${label.sigSnapshot}`,
+      `Qty: ${String(label.physicalQuantity)}`,
+      `Days supply: ${label.daysSupply ?? "—"}`,
+      `Prescriber: ${label.prescriberNameSnapshot}`,
+      label.billedNdcSnapshot ? `Billed NDC: ${label.billedNdcSnapshot}` : "",
+    ].filter(Boolean).join("\n");
+    popup.document.body.appendChild(sheet);
+    popup.focus();
+    popup.print();
+  }
+
+  async function markPrinted(printJobId: string) {
+    if (!editable) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await markLabelPrintJobPrinted(devUser, printJobId, "Browser / local print");
+      await load(query);
+      onError("Label print job marked printed.");
+    } catch (error) {
+      onError(
+        error instanceof Error ? error.message : "Unable to update print job.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="third-party-layout">
       <section className="panel">
@@ -316,6 +397,129 @@ export function ThirdParty({
       </section>
 
       <div className="third-party-work-stack">
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Adjudication exceptions</p>
+              <h2>Rejected / error claims</h2>
+            </div>
+            <span className="queue-count">{claimIssues.length}</span>
+          </div>
+          <p className="directory-help">
+            Paid claims never appear here. Rejected and transmission-error claims
+            do not create a dispensing label.
+          </p>
+          <div className="coverage-slot-list">
+            {claimIssues.map((claim) => (
+              <article className="coverage-slot" key={claim.id}>
+                <div className="coverage-slot-heading">
+                  <div>
+                    <span className="coverage-position">P{claim.coveragePosition}</span>
+                    <strong>
+                      {claim.fill.prescription.patient.lastName},{" "}
+                      {claim.fill.prescription.patient.firstName} ·{" "}
+                      {claim.fill.prescription.rxNumber ?? "Rx pending"}
+                    </strong>
+                  </div>
+                  <span className="status-chip muted">{claim.outcome}</span>
+                </div>
+                <div className="coverage-payer-metadata">
+                  <span>{claim.payer.name}</span>
+                  <span>NDC {claim.billedNdc}</span>
+                  <span>
+                    Qty billed {String(claim.payerIntendedQuantity)} · physical{" "}
+                    {String(claim.physicalPartQuantity)}
+                  </span>
+                  <span>Days {claim.daysSupply}</span>
+                </div>
+                {claim.rejectCodes.length > 0 && (
+                  <p className="directory-help">
+                    Reject code{claim.rejectCodes.length === 1 ? "" : "s"}:{" "}
+                    {claim.rejectCodes.join(", ")}
+                  </p>
+                )}
+                {claim.messages.length > 0 && (
+                  <p className="directory-help">{claim.messages.join(" · ")}</p>
+                )}
+                {editable && (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={busy}
+                    onClick={() => void retryClaim(claim.fillId)}
+                  >
+                    Retry adjudication
+                  </button>
+                )}
+              </article>
+            ))}
+            {claimIssues.length === 0 && (
+              <p className="empty-state">No unresolved third-party claim exceptions.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Prescription labels</p>
+              <h2>Print queue</h2>
+            </div>
+            <span className="queue-count">{printQueue.length}</span>
+          </div>
+          <p className="directory-help">
+            Labels enter this queue only after an eligible paid claim, a linked
+            completion of that paid claim, or a cash fill. Quantity shown is the
+            physical dispense quantity, not the payer-intended claim quantity.
+          </p>
+          <div className="coverage-slot-list">
+            {printQueue.map((job) => (
+              <article className="coverage-slot" key={job.id}>
+                <div className="coverage-slot-heading">
+                  <div>
+                    <span className="coverage-position">v{job.label.version}</span>
+                    <strong>
+                      {job.label.patientNameSnapshot} ·{" "}
+                      {job.label.rxNumberSnapshot ?? "Rx pending"}
+                    </strong>
+                  </div>
+                  <span className="status-chip">QUEUED</span>
+                </div>
+                <div className="coverage-payer-metadata">
+                  <span>{job.label.medicationSnapshot}</span>
+                  <span>Physical qty {String(job.label.physicalQuantity)}</span>
+                  <span>Days {job.label.daysSupply ?? "—"}</span>
+                  <span>NDC {job.label.billedNdcSnapshot ?? "cash / none"}</span>
+                </div>
+                <p className="directory-help">SIG: {job.label.sigSnapshot}</p>
+                {editable && (
+                  <div className="action-row">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={busy}
+                      onClick={() => openPrintableLabel(job)}
+                    >
+                      Open print dialog
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => void markPrinted(job.id)}
+                    >
+                      Mark printed
+                    </button>
+                  </div>
+                )}
+              </article>
+            ))}
+            {printQueue.length === 0 && (
+              <p className="empty-state">No labels waiting to print.</p>
+            )}
+          </div>
+        </section>
+
         <section className="panel">
           <p className="eyebrow">Payer chain</p>
           <h2>

@@ -10,6 +10,13 @@ import {
   AccessError,
   resolveDevelopmentActor,
 } from "../security/devIdentity.js";
+import {
+  adjudicateFillClaims,
+  assertNoActivePaidClaimsForPatientCoverageMutation,
+  ClaimError,
+  markLabelPrintJobPrinted,
+  reverseClaimTransaction,
+} from "../claims/service.js";
 
 const claimStandards = new Set<ClaimStandard>(["D0", "F6"]);
 const billingStrategies = new Set<BillingNdcStrategy>([
@@ -279,6 +286,11 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "Active payer not found." });
       }
 
+      await assertNoActivePaidClaimsForPatientCoverageMutation(
+        patient.id,
+        actor.siteId,
+      );
+
       const coverage = await db.$transaction(async (tx) => {
         const existing = await tx.patientCoverage.findUnique({
           where: {
@@ -352,8 +364,13 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
 
       return { coverage };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -383,6 +400,11 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "Coverage not found." });
       }
 
+      await assertNoActivePaidClaimsForPatientCoverageMutation(
+        coverage.patientId,
+        actor.siteId,
+      );
+
       await db.$transaction(async (tx) => {
         await tx.patientCoverage.delete({ where: { id: coverage.id } });
         await writeAuditEvent(tx, {
@@ -402,8 +424,13 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
       });
       return reply.code(204).send();
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -442,14 +469,200 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         orderBy: { name: "asc" },
       });
 
+      const recentClaims = await db.claimTransaction.findMany({
+        where: { siteId: actor.siteId },
+        include: {
+          payer: true,
+          fill: {
+            include: {
+              prescription: { include: { patient: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 300,
+      });
+      const reversedIds = new Set(
+        recentClaims
+          .filter(
+            (claim) =>
+              claim.operation === "REVERSAL" &&
+              claim.outcome === "REVERSED" &&
+              claim.originalTransactionId,
+          )
+          .map((claim) => claim.originalTransactionId as string),
+      );
+      const latestByCoverage = new Map<string, (typeof recentClaims)[number]>();
+      for (const claim of recentClaims) {
+        if (
+          claim.operation !== "SUBMIT" ||
+          reversedIds.has(claim.id)
+        ) {
+          continue;
+        }
+        const key = `${claim.fillId}:${claim.coveragePosition}`;
+        if (!latestByCoverage.has(key)) {
+          latestByCoverage.set(key, claim);
+        }
+      }
+      const claimIssues = Array.from(latestByCoverage.values())
+        .filter(
+          (claim) =>
+            claim.outcome === "REJECTED" || claim.outcome === "ERROR",
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      const printQueue = await db.labelPrintJob.findMany({
+        where: { siteId: actor.siteId, status: "QUEUED" },
+        include: {
+          label: {
+            include: {
+              fill: {
+                include: {
+                  prescription: { include: { patient: true } },
+                },
+              },
+            },
+          },
+        },
+        orderBy: { queuedAt: "asc" },
+        take: 100,
+      });
+
       return {
         patients,
         payers,
+        claimIssues,
+        printQueue,
         maxCoveragePositions: 4,
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/fills/:id/claims", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:read");
+      const fillId = (request.params as { id: string }).id;
+      const fill = await db.prescriptionFill.findFirst({
+        where: { id: fillId, prescription: { siteId: actor.siteId } },
+        select: { id: true },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+
+      const transactions = await db.claimTransaction.findMany({
+        where: { fillId, siteId: actor.siteId },
+        include: {
+          payer: true,
+          createdBy: {
+            select: { id: true, displayName: true, role: true },
+          },
+        },
+        orderBy: [
+          { coveragePosition: "asc" },
+          { createdAt: "asc" },
+        ],
+      });
+      const labels = await db.prescriptionLabel.findMany({
+        where: { fillId, siteId: actor.siteId },
+        include: { printJobs: { orderBy: { queuedAt: "asc" } } },
+        orderBy: { version: "asc" },
+      });
+      return { transactions, labels };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/adjudicate", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:write");
+      const fillId = (request.params as { id: string }).id;
+      const result = await adjudicateFillClaims(fillId, {
+        siteId: actor.siteId,
+        actorId: actor.id,
+        requestId: request.id,
+        retryRejected: true,
+      });
+      return { adjudication: result };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/third-party/claims/:id/reverse", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:override");
+      const claimId = (request.params as { id: string }).id;
+      const result = await reverseClaimTransaction(claimId, {
+        siteId: actor.siteId,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+      return result;
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/third-party/print-jobs/:id/printed", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const printJobId = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as { printerName?: string | null };
+      const printJob = await markLabelPrintJobPrinted(
+        printJobId,
+        {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          requestId: request.id,
+        },
+        body.printerName,
+      );
+      return { printJob };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }

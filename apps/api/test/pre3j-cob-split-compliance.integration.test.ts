@@ -382,6 +382,14 @@ async function sell(prescriptionId: string) {
 
 describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => {
   it("supports four ordered COB coverages and rejects a fifth position", async () => {
+    const cobPatient = await db.patient.create({
+      data: {
+        siteId,
+        firstName: "COB",
+        lastName: `Regression-${randomUUID().slice(0, 8)}`,
+        dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
+      },
+    });
     const payerIds: string[] = [];
     for (let position = 1; position <= 4; position += 1) {
       const created = await app.inject({
@@ -403,7 +411,7 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
 
       const coverage = await app.inject({
         method: "PUT",
-        url: `/api/patients/${ids.patientId}/coverages/${position}`,
+        url: `/api/patients/${cobPatient.id}/coverages/${position}`,
         headers: technicianHeaders,
         payload: {
           payerId: payerIds[position - 1],
@@ -418,7 +426,7 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
 
     const invalid = await app.inject({
       method: "PUT",
-      url: `/api/patients/${ids.patientId}/coverages/5`,
+      url: `/api/patients/${cobPatient.id}/coverages/5`,
       headers: technicianHeaders,
       payload: { payerId: payerIds[0], memberId: "TOO-MANY" },
     });
@@ -426,7 +434,7 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
 
     const listed = await app.inject({
       method: "GET",
-      url: `/api/patients/${ids.patientId}/coverages`,
+      url: `/api/patients/${cobPatient.id}/coverages`,
       headers: technicianHeaders,
     });
     expect(listed.statusCode).toBe(200);
@@ -443,7 +451,7 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
     expect(workspace.json().maxCoveragePositions).toBe(4);
     const patient = workspace
       .json()
-      .patients.find((item: { id: string }) => item.id === ids.patientId);
+      .patients.find((item: { id: string }) => item.id === cobPatient.id);
     expect(patient).toBeTruthy();
     expect(patient.coverages).toHaveLength(4);
     expect(patient.coverages[3].payer.claimStandard).toBe("F6");

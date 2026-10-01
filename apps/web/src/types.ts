@@ -126,6 +126,7 @@ export type PrescriptionFill = {
   partNumber: number;
   kind: FillKind;
   scheduledFor: string | null;
+  daysSupply: number | null;
   quantity: string | number | null;
   authorizedQuantity: string | number | null;
   intendedQuantity: string | number | null;
@@ -989,4 +990,116 @@ export type PatientCoverage = {
   createdAt: string;
   updatedAt: string;
   payer: Payer;
+};
+
+export type ClaimOperation = "SUBMIT" | "REVERSAL";
+export type ClaimOutcome = "PAID" | "REJECTED" | "ERROR" | "REVERSED";
+export type PrescriptionLabelStatus = "ACTIVE" | "VOID";
+export type LabelPrintStatus =
+  | "QUEUED"
+  | "PRINTED"
+  | "FAILED"
+  | "CANCELLED";
+
+export type ClaimTransaction = {
+  id: string;
+  siteId: string;
+  fillId: string;
+  payerId: string;
+  coverageIdSnapshot: string;
+  coveragePosition: number;
+  operation: ClaimOperation;
+  outcome: ClaimOutcome;
+  idempotencyKey: string;
+  originalTransactionId: string | null;
+  claimStandard: ClaimStandard;
+  adapterName: string;
+  adapterVersion: string;
+  billedProductId: string;
+  billedNdc: string;
+  memberIdSnapshot: string;
+  personCodeSnapshot: string | null;
+  groupIdSnapshot: string | null;
+  payerIntendedQuantity: string | number;
+  physicalPartQuantity: string | number;
+  daysSupply: number;
+  requestSnapshot: unknown;
+  responseSnapshot: unknown;
+  transactionReference: string | null;
+  authorizationNumber: string | null;
+  amountPaid: string | number | null;
+  patientResponsibility: string | number | null;
+  rejectCodes: string[];
+  messages: string[];
+  createdById: string;
+  adjudicatedAt: string;
+  createdAt: string;
+  payer?: Payer;
+  createdBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  fill?: PrescriptionFill & {
+    prescription?: PrescriptionQueueItem;
+  };
+};
+
+export type LabelPrintJob = {
+  id: string;
+  siteId: string;
+  labelId: string;
+  status: LabelPrintStatus;
+  copies: number;
+  printerName: string | null;
+  actorId: string | null;
+  queuedAt: string;
+  printedAt: string | null;
+  failedAt: string | null;
+  failureReason: string | null;
+  label?: PrescriptionLabel;
+};
+
+export type PrescriptionLabel = {
+  id: string;
+  siteId: string;
+  fillId: string;
+  version: number;
+  status: PrescriptionLabelStatus;
+  claimTransactionId: string | null;
+  rxNumberSnapshot: string | null;
+  patientNameSnapshot: string;
+  prescriberNameSnapshot: string;
+  medicationSnapshot: string;
+  sigSnapshot: string;
+  physicalQuantity: string | number;
+  payerIntendedQuantity: string | number | null;
+  daysSupply: number | null;
+  billedNdcSnapshot: string | null;
+  sourceSummarySnapshot: unknown;
+  generatedAt: string;
+  voidedAt: string | null;
+  voidReason: string | null;
+  printJobs?: LabelPrintJob[];
+  fill?: PrescriptionFill & {
+    prescription?: PrescriptionQueueItem;
+  };
+};
+
+export type ClaimAdjudicationState =
+  | "PAID_LABEL_READY"
+  | "CASH_LABEL_READY"
+  | "COMPLETION_LABEL_READY"
+  | "REJECTED"
+  | "ERROR"
+  | "BLOCKED";
+
+export type ClaimAdjudicationResult = {
+  state: ClaimAdjudicationState;
+  code?: string;
+  error?: string;
+  details?: Record<string, unknown>;
+  transactions: ClaimTransaction[];
+  label: PrescriptionLabel | null;
+  printJob: LabelPrintJob | null;
 };
