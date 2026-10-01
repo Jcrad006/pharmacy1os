@@ -226,7 +226,8 @@ export function CycleCounts({
       <p className="catalog-help">
         Physical counts do not change inventory immediately. Staff submit the
         completed count, then a pharmacist/admin reviews discrepancies before
-        any ledger adjustment is posted.
+        any ledger adjustment is posted. Physical counts should include all
+        units physically present, including segregated/quarantined stock.
       </p>
 
       <div className="cycle-count-layout">
