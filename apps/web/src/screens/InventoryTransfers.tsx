@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  addTransferCustodyEvent,
   cancelInventoryTransfer,
   createInventoryTransfer,
   getInventorySites,
@@ -57,6 +58,14 @@ export function InventoryTransfers({
   const [destinationSiteId, setDestinationSiteId] = useState("");
   const [quantity, setQuantity] = useState("");
   const [note, setNote] = useState("");
+  const [carrier, setCarrier] = useState("");
+  const [trackingNumber, setTrackingNumber] = useState("");
+  const [sealIdentifier, setSealIdentifier] = useState("");
+  const [custodyReference, setCustodyReference] = useState("");
+  const [custodyTransferId, setCustodyTransferId] = useState<string | null>(null);
+  const [custodyType, setCustodyType] =
+    useState<"VERIFIED" | "HANDED_OFF" | "EXCEPTION">("VERIFIED");
+  const [custodyNote, setCustodyNote] = useState("");
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -111,11 +120,20 @@ export function InventoryTransfers({
         sourceInventoryBalanceId: balanceId,
         quantity: amount,
         note: note.trim() || undefined,
+        carrier: carrier.trim() || undefined,
+        trackingNumber: trackingNumber.trim() || undefined,
+        sealIdentifier: sealIdentifier.trim() || undefined,
+        custodyReference: custodyReference.trim() || undefined,
+        idempotencyKey: crypto.randomUUID(),
       });
       setBalanceId("");
       setDestinationSiteId("");
       setQuantity("");
       setNote("");
+      setCarrier("");
+      setTrackingNumber("");
+      setSealIdentifier("");
+      setCustodyReference("");
       await Promise.all([refresh(), onBalancesChanged()]);
     } catch (error) {
       onError(
@@ -139,6 +157,32 @@ export function InventoryTransfers({
         error instanceof Error
           ? error.message
           : "Unable to receive inventory transfer.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recordCustody() {
+    if (!custodyTransferId) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await addTransferCustodyEvent(devUser, custodyTransferId, {
+        type: custodyType,
+        carrier: carrier.trim() || undefined,
+        trackingNumber: trackingNumber.trim() || undefined,
+        sealIdentifier: sealIdentifier.trim() || undefined,
+        note: custodyNote.trim() || undefined,
+      });
+      setCustodyTransferId(null);
+      setCustodyNote("");
+      await refresh();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to record transfer custody event.",
       );
     } finally {
       setBusy(false);
@@ -234,6 +278,42 @@ export function InventoryTransfers({
               disabled={busy}
             />
           </label>
+          <label>
+            Carrier / courier
+            <input
+              value={carrier}
+              onChange={(event) => setCarrier(event.target.value)}
+              placeholder="Optional"
+              disabled={busy}
+            />
+          </label>
+          <label>
+            Tracking number
+            <input
+              value={trackingNumber}
+              onChange={(event) => setTrackingNumber(event.target.value)}
+              placeholder="Optional"
+              disabled={busy}
+            />
+          </label>
+          <label>
+            Seal / tamper ID
+            <input
+              value={sealIdentifier}
+              onChange={(event) => setSealIdentifier(event.target.value)}
+              placeholder="Optional"
+              disabled={busy}
+            />
+          </label>
+          <label>
+            Custody reference
+            <input
+              value={custodyReference}
+              onChange={(event) => setCustodyReference(event.target.value)}
+              placeholder="Optional manifest/reference"
+              disabled={busy}
+            />
+          </label>
           <div className="wide">
             <button
               type="button"
@@ -268,6 +348,7 @@ export function InventoryTransfers({
               <th>From → To</th>
               <th>Shipped</th>
               <th>Received / cancelled</th>
+              <th>Custody</th>
               <th></th>
             </tr>
           </thead>
@@ -328,6 +409,27 @@ export function InventoryTransfers({
                   )}
                 </td>
                 <td>
+                  <div className="custody-summary">
+                    {transfer.carrier && <span>{transfer.carrier}</span>}
+                    {transfer.trackingNumber && (
+                      <span>Tracking {transfer.trackingNumber}</span>
+                    )}
+                    {transfer.sealIdentifier && (
+                      <span>Seal {transfer.sealIdentifier}</span>
+                    )}
+                    {(transfer.custodyEvents ?? []).slice(-2).map((event) => (
+                      <small key={event.id}>
+                        {event.type.replaceAll("_", " ")} ·{" "}
+                        {event.actor?.displayName ?? "Staff"} ·{" "}
+                        {new Date(event.occurredAt).toLocaleString()}
+                      </small>
+                    ))}
+                    {!transfer.carrier &&
+                      !transfer.trackingNumber &&
+                      !(transfer.custodyEvents?.length) && <span>—</span>}
+                  </div>
+                </td>
+                <td>
                   <div className="table-action-stack">
                     {transfer.status === "IN_TRANSIT" &&
                       transfer.destinationSiteId === user?.siteId &&
@@ -360,13 +462,27 @@ export function InventoryTransfers({
                           Cancel
                         </button>
                       )}
+                    {transfer.status === "IN_TRANSIT" &&
+                      writable && (
+                        <button
+                          type="button"
+                          className="secondary-button table-action"
+                          disabled={busy}
+                          onClick={() => {
+                            setCustodyTransferId(transfer.id);
+                            setCustodyNote("");
+                          }}
+                        >
+                          Custody event
+                        </button>
+                      )}
                   </div>
                 </td>
               </tr>
             ))}
             {transfers.length === 0 && (
               <tr>
-                <td colSpan={7} className="empty-state">
+                <td colSpan={8} className="empty-state">
                   No inter-site inventory transfers have been recorded.
                 </td>
               </tr>
@@ -374,6 +490,58 @@ export function InventoryTransfers({
           </tbody>
         </table>
       </div>
+
+      {custodyTransferId && writable && (
+        <div className="inventory-operation-resolution">
+          <label>
+            Custody event
+            <select
+              value={custodyType}
+              onChange={(event) =>
+                setCustodyType(
+                  event.target.value as
+                    | "VERIFIED"
+                    | "HANDED_OFF"
+                    | "EXCEPTION",
+                )
+              }
+              disabled={busy}
+            >
+              <option value="VERIFIED">Verified</option>
+              <option value="HANDED_OFF">Handed off</option>
+              <option value="EXCEPTION">Exception / discrepancy</option>
+            </select>
+          </label>
+          <label>
+            Note
+            <textarea
+              rows={3}
+              value={custodyNote}
+              onChange={(event) => setCustodyNote(event.target.value)}
+              placeholder="Optional custody or discrepancy note"
+              disabled={busy}
+            />
+          </label>
+          <div className="action-row">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busy}
+              onClick={() => void recordCustody()}
+            >
+              Record custody event
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => setCustodyTransferId(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {cancelId && correctable && (
         <div className="inventory-operation-resolution">
