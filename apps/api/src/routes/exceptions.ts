@@ -254,6 +254,9 @@ export async function exceptionRoutes(app: FastifyInstance) {
               item.kind === "SCHEDULED_FILL" ||
               item.kind === "COMPLETION_FILL",
           ).length,
+          emergencyFollowUp: filtered.filter(
+            (item) => item.kind === "EMERGENCY_FOLLOW_UP",
+          ).length,
         },
       };
     } catch (error) {
