@@ -243,6 +243,11 @@ enum PaymentMethod {
   OTHER
 }
 
+enum PickupFulfillmentMode {
+  WILL_CALL
+  IMMEDIATE
+}
+
 enum PickupIdentityMethod {
   DATE_OF_BIRTH
   ADDRESS
@@ -967,6 +972,7 @@ model PointOfSaleTransaction {
   totalTendered   Decimal              @db.Decimal(12, 2)
   changeDue       Decimal              @default(0) @db.Decimal(12, 2)
   idempotencyKey  String               @unique
+  pickupFulfillmentMode PickupFulfillmentMode @default(WILL_CALL)
   pickupRecipientName String
   pickupRelationship String?
   pickupIdentityMethod PickupIdentityMethod
