@@ -2081,43 +2081,77 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const verified = await db.$transaction(async (tx) => {
-        const reservation = await reserveInventoryForFill(tx, {
+        await validateFillProductSourceCompliance(tx, {
+          fillId: id,
+          productId: product.id,
+        });
+
+        const before = await getFillSourceReservationSummary(tx, id);
+        const requestedSourceQuantity =
+          body.sourceQuantity === undefined
+            ? before.remainingQuantity
+            : new Prisma.Decimal(body.sourceQuantity);
+
+        if (
+          requestedSourceQuantity.lte(0) ||
+          requestedSourceQuantity.gt(before.remainingQuantity)
+        ) {
+          throw new InventoryError(
+            400,
+            "INVALID_FILL_SOURCE_QUANTITY",
+            "Source quantity must be positive and cannot exceed the remaining physical dispense quantity.",
+            {
+              remainingQuantity: before.remainingQuantity.toString(),
+              requestedQuantity: requestedSourceQuantity.toString(),
+            },
+          );
+        }
+
+        const reservation = await reserveInventorySourceForFill(tx, {
           fillId: id,
           siteId: actor.siteId,
           actorId: actor.id,
           productId: product.id,
           productLotId: lot.id,
           productExpirationId: expiration.id,
+          quantity: requestedSourceQuantity,
         });
-        const verifiedAt = new Date();
-        const updated = await tx.prescriptionFill.update({
+
+        const updated = await tx.prescriptionFill.findUniqueOrThrow({
           where: { id },
-          data: {
-            productId: product.id,
-            productLotId: lot.id,
-            productExpirationId: expiration.id,
-            scannedNdc: product.ndc,
-            scannedLotNumber: lot.lotNumber,
-            scannedExpiration: expiration.expirationDate,
-            productVerifiedAt: verifiedAt,
-          },
           include: {
             product: { include: { manufacturer: true } },
             productLot: true,
             productExpiration: true,
+            inventoryBalance: true,
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+            biologicCommunicationTask: true,
           },
         });
 
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
-          action: "FILL_BARCODE_SCAN_VERIFIED",
+          action: reservation.complete
+            ? "FILL_PRODUCT_SOURCES_COMPLETE"
+            : "FILL_PRODUCT_SOURCE_ADDED",
           entityType: "PrescriptionFill",
           entityId: id,
           requestId: request.id,
           metadata: {
             prescriptionId: fill.prescriptionId,
             medicationId: fill.prescription.medicationId,
+            sourceId: reservation.source.id,
+            sourceSequence: reservation.source.sequence,
             productId: product.id,
             productBarcodeId: registered.id,
             barcodeType: registered.type,
@@ -2127,7 +2161,11 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             expirationDate: expiration.expirationDate.toISOString(),
             manufacturerName: product.manufacturer.name,
             inventoryBalanceId: reservation.balance.id,
-            reservedQuantity: reservation.quantity.toString(),
+            sourceQuantity: reservation.sourceQuantity.toString(),
+            totalReservedQuantity: reservation.totalReserved.toString(),
+            remainingQuantity: reservation.remainingQuantity.toString(),
+            sourceCount: updated.productSources.length,
+            complete: reservation.complete,
           },
         });
 
@@ -2289,50 +2327,88 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const result = await db.$transaction(async (tx) => {
-        const reservation = await reserveInventoryForFill(tx, {
+        await validateFillProductSourceCompliance(tx, {
+          fillId: id,
+          productId: product.id,
+        });
+
+        const before = await getFillSourceReservationSummary(tx, id);
+        const requestedSourceQuantity =
+          body.sourceQuantity === undefined
+            ? before.remainingQuantity
+            : new Prisma.Decimal(body.sourceQuantity);
+
+        if (
+          requestedSourceQuantity.lte(0) ||
+          requestedSourceQuantity.gt(before.remainingQuantity)
+        ) {
+          throw new InventoryError(
+            400,
+            "INVALID_FILL_SOURCE_QUANTITY",
+            "Source quantity must be positive and cannot exceed the remaining physical dispense quantity.",
+            {
+              remainingQuantity: before.remainingQuantity.toString(),
+              requestedQuantity: requestedSourceQuantity.toString(),
+            },
+          );
+        }
+
+        const reservation = await reserveInventorySourceForFill(tx, {
           fillId: id,
           siteId: actor.siteId,
           actorId: actor.id,
           productId: product.id,
           productLotId: lot.id,
           productExpirationId: expiration.id,
+          quantity: requestedSourceQuantity,
         });
-        const verifiedAt = new Date();
-        const verified = await tx.prescriptionFill.update({
+
+        const verified = await tx.prescriptionFill.findUniqueOrThrow({
           where: { id },
-          data: {
-            productId: product.id,
-            productLotId: lot.id,
-            productExpirationId: expiration.id,
-            scannedNdc: product.ndc,
-            scannedLotNumber: lot.lotNumber,
-            scannedExpiration: expiration.expirationDate,
-            productVerifiedAt: verifiedAt,
-          },
           include: {
             product: { include: { manufacturer: true } },
             productLot: true,
             productExpiration: true,
+            inventoryBalance: true,
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+            biologicCommunicationTask: true,
           },
         });
 
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
-          action: "FILL_PRODUCT_SCAN_VERIFIED",
+          action: reservation.complete
+            ? "FILL_PRODUCT_SOURCES_COMPLETE"
+            : "FILL_PRODUCT_SOURCE_ADDED",
           entityType: "PrescriptionFill",
           entityId: id,
           requestId: request.id,
           metadata: {
             prescriptionId: fill.prescriptionId,
             medicationId: fill.prescription.medicationId,
+            sourceId: reservation.source.id,
+            sourceSequence: reservation.source.sequence,
             productId: product.id,
             ndc: product.ndc,
             lotNumber: lot.lotNumber,
             expirationDate: expiration.expirationDate.toISOString(),
             manufacturerName: product.manufacturer.name,
             inventoryBalanceId: reservation.balance.id,
-            reservedQuantity: reservation.quantity.toString(),
+            sourceQuantity: reservation.sourceQuantity.toString(),
+            totalReservedQuantity: reservation.totalReserved.toString(),
+            remainingQuantity: reservation.remainingQuantity.toString(),
+            sourceCount: verified.productSources.length,
+            complete: reservation.complete,
           },
         });
 
