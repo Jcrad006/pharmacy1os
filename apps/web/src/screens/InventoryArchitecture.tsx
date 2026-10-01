@@ -86,6 +86,7 @@ export function InventoryArchitecture({
 
   const [locationCode, setLocationCode] = useState("");
   const [locationName, setLocationName] = useState("");
+  const [locationBarcode, setLocationBarcode] = useState("");
   const [locationType, setLocationType] = useState<InventoryLocationType>("SHELF");
   const [defaultReceiving, setDefaultReceiving] = useState(false);
   const [defaultDispensing, setDefaultDispensing] = useState(false);
@@ -203,12 +204,14 @@ export function InventoryArchitecture({
         code: locationCode.trim(),
         name: locationName.trim(),
         type: locationType,
+        barcode: locationBarcode.trim() || undefined,
         isDefaultReceiving: defaultReceiving,
         isDefaultDispensing: defaultDispensing,
         isQuarantine: locationType === "QUARANTINE",
       });
       setLocationCode("");
       setLocationName("");
+      setLocationBarcode("");
       setDefaultReceiving(false);
       setDefaultDispensing(false);
       await refresh();
@@ -442,6 +445,7 @@ export function InventoryArchitecture({
                   {location.isDefaultReceiving ? " · receiving default" : ""}
                   {location.isDefaultDispensing ? " · dispensing default" : ""}
                   {location.isQuarantine ? " · quarantine" : ""}
+                  {location.barcode ? ` · barcode ${location.barcode}` : ""}
                 </small>
               </div>
             ))}
@@ -450,6 +454,7 @@ export function InventoryArchitecture({
             <div className="architecture-form">
               <input value={locationCode} onChange={(e) => setLocationCode(e.target.value)} placeholder="Code" />
               <input value={locationName} onChange={(e) => setLocationName(e.target.value)} placeholder="Location name" />
+              <input value={locationBarcode} onChange={(e) => setLocationBarcode(e.target.value)} placeholder="Barcode (recommended for Will Call)" />
               <select value={locationType} onChange={(e) => setLocationType(e.target.value as InventoryLocationType)}>
                 {locationTypes.map((type) => <option key={type} value={type}>{type.replaceAll("_", " ")}</option>)}
               </select>
