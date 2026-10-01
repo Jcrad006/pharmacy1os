@@ -4,6 +4,10 @@ import {
   quarantineInventory,
   receiveInventory,
 } from "./inventory.js";
+import {
+  adjustStockPosition,
+  reconcileDemandAvailability,
+} from "./inventoryArchitecture.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -155,6 +159,11 @@ export async function createInventoryTransfer(
     actorId: string;
     quantity: Prisma.Decimal | number | string;
     note?: string | null;
+    carrier?: string | null;
+    trackingNumber?: string | null;
+    sealIdentifier?: string | null;
+    custodyReference?: string | null;
+    idempotencyKey?: string | null;
   },
 ) {
   if (input.sourceSiteId === input.destinationSiteId) {
@@ -163,6 +172,30 @@ export async function createInventoryTransfer(
       "TRANSFER_SAME_SITE",
       "Source and destination pharmacy sites must be different.",
     );
+  }
+
+  if (input.idempotencyKey) {
+    const existing = await tx.inventoryTransaction.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+      include: { inventoryTransfer: true },
+    });
+    if (existing?.inventoryTransfer) {
+      return {
+        transfer: existing.inventoryTransfer,
+        sourceBalance: await tx.inventoryBalance.findUniqueOrThrow({
+          where: { id: existing.inventoryBalanceId },
+        }),
+        transaction: existing,
+        replayed: true,
+      };
+    }
+    if (existing) {
+      throw new InventoryError(
+        409,
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "This idempotency key was already used for another inventory operation.",
+      );
+    }
   }
 
   const destination = await tx.pharmacySite.findUnique({
@@ -214,6 +247,10 @@ export async function createInventoryTransfer(
       expirationDate: balance.productExpiration.expirationDate,
       quantity,
       note: input.note?.trim() || null,
+      carrier: input.carrier?.trim() || null,
+      trackingNumber: input.trackingNumber?.trim() || null,
+      sealIdentifier: input.sealIdentifier?.trim() || null,
+      custodyReference: input.custodyReference?.trim() || null,
       initiatedById: input.actorId,
     },
   });
@@ -223,6 +260,13 @@ export async function createInventoryTransfer(
     data: {
       onHandQuantity: balance.onHandQuantity.minus(quantity),
     },
+  });
+
+  await adjustStockPosition(tx, {
+    siteId: input.sourceSiteId,
+    inventoryBalanceId: balance.id,
+    state: "AVAILABLE",
+    delta: quantity.negated(),
   });
 
   const transaction = await tx.inventoryTransaction.create({
@@ -238,10 +282,36 @@ export async function createInventoryTransfer(
       reason: input.note?.trim() || `Transfer to ${destination.name}`,
       source: "SITE_TRANSFER",
       reference: transfer.id,
+      idempotencyKey: input.idempotencyKey?.trim() || null,
     },
   });
 
-  return { transfer, sourceBalance: updatedSource, transaction };
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      transferId: transfer.id,
+      siteId: input.sourceSiteId,
+      actorId: input.actorId,
+      type: "PACKED",
+      carrier: input.carrier?.trim() || null,
+      trackingNumber: input.trackingNumber?.trim() || null,
+      sealIdentifier: input.sealIdentifier?.trim() || null,
+      note: input.note?.trim() || null,
+    },
+  });
+
+  const sourceProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (sourceProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.sourceSiteId,
+      sourceProduct.medicationId,
+    );
+  }
+
+  return { transfer, sourceBalance: updatedSource, transaction, replayed: false };
 }
 
 export async function receiveInventoryTransfer(
@@ -250,6 +320,10 @@ export async function receiveInventoryTransfer(
     transferId: string;
     destinationSiteId: string;
     actorId: string;
+    receiptNote?: string | null;
+    carrier?: string | null;
+    trackingNumber?: string | null;
+    sealIdentifier?: string | null;
   },
 ) {
   const transfer = await lockTransfer(tx, input.transferId);
@@ -288,6 +362,7 @@ export async function receiveInventoryTransfer(
     source: "SITE_TRANSFER",
     reference: transfer.id,
     reason: `Received site transfer from ${transfer.sourceSite.name}`,
+    idempotencyKey: `TRANSFER_RECEIVE:${transfer.id}`,
   });
 
   const transferTransaction = await tx.inventoryTransaction.update({
@@ -305,6 +380,22 @@ export async function receiveInventoryTransfer(
       destinationInventoryBalanceId: received.balance.id,
       receivedById: input.actorId,
       receivedAt: new Date(),
+      carrier: input.carrier?.trim() || transfer.carrier,
+      trackingNumber: input.trackingNumber?.trim() || transfer.trackingNumber,
+      sealIdentifier: input.sealIdentifier?.trim() || transfer.sealIdentifier,
+    },
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      transferId: transfer.id,
+      siteId: transfer.destinationSiteId,
+      actorId: input.actorId,
+      type: "RECEIVED",
+      carrier: input.carrier?.trim() || transfer.carrier,
+      trackingNumber: input.trackingNumber?.trim() || transfer.trackingNumber,
+      sealIdentifier: input.sealIdentifier?.trim() || transfer.sealIdentifier,
+      note: input.receiptNote?.trim() || null,
     },
   });
 
@@ -351,6 +442,13 @@ export async function cancelInventoryTransfer(
     },
   });
 
+  await adjustStockPosition(tx, {
+    siteId: transfer.sourceSiteId,
+    inventoryBalanceId: source.id,
+    state: "AVAILABLE",
+    delta: transfer.quantity,
+  });
+
   const transaction = await tx.inventoryTransaction.create({
     data: {
       siteId: transfer.sourceSiteId,
@@ -364,6 +462,16 @@ export async function cancelInventoryTransfer(
       reason: input.reason.trim(),
       source: "SITE_TRANSFER",
       reference: transfer.id,
+    },
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      transferId: transfer.id,
+      siteId: transfer.sourceSiteId,
+      actorId: input.actorId,
+      type: "EXCEPTION",
+      note: input.reason.trim(),
     },
   });
 
@@ -649,8 +757,31 @@ export async function receivePurchaseOrderLine(
     lotNumber: string;
     expirationDate: Date;
     invoiceReference?: string | null;
+    locationId?: string | null;
+    idempotencyKey?: string | null;
   },
 ) {
+  if (input.idempotencyKey) {
+    const existingReceipt = await tx.purchaseOrderReceipt.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+      include: {
+        inventoryBalance: true,
+        purchaseOrderLine: { include: { purchaseOrder: true } },
+        inventoryTransaction: true,
+      },
+    });
+    if (existingReceipt) {
+      return {
+        purchaseOrder: existingReceipt.purchaseOrderLine.purchaseOrder,
+        receipt: existingReceipt,
+        balance: existingReceipt.inventoryBalance,
+        transaction: existingReceipt.inventoryTransaction,
+        traceability: null,
+        replayed: true,
+      };
+    }
+  }
+
   await tx.$queryRaw(
     Prisma.sql`SELECT "id" FROM "PurchaseOrderLine" WHERE "id" = ${input.lineId} FOR UPDATE`,
   );
@@ -724,6 +855,9 @@ export async function receivePurchaseOrderLine(
     source: "PURCHASE_ORDER",
     reference: line.purchaseOrder.orderNumber,
     reason: `PO ${line.purchaseOrder.orderNumber} receipt from ${line.purchaseOrder.supplierName}`,
+    locationId: input.locationId,
+    idempotencyKey: input.idempotencyKey?.trim() || null,
+    unitCost: line.unitCost,
   });
 
   const receipt = await tx.purchaseOrderReceipt.create({
@@ -736,6 +870,9 @@ export async function receivePurchaseOrderLine(
       lotNumber: input.lotNumber.trim(),
       expirationDate: input.expirationDate,
       invoiceReference: input.invoiceReference?.trim() || null,
+      unitCost: line.unitCost,
+      extendedCost: line.unitCost ? line.unitCost.mul(quantity) : null,
+      idempotencyKey: input.idempotencyKey?.trim() || null,
     },
   });
 
@@ -773,6 +910,7 @@ export async function receivePurchaseOrderLine(
     balance: received.balance,
     transaction: received.transaction,
     traceability,
+    replayed: false,
   };
 }
 
