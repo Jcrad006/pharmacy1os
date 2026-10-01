@@ -14,6 +14,7 @@ import {
 } from "../inventory.js";
 import { writeAuditEvent } from "../audit.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
+import { resolveEffectiveInventoryPolicy } from "../inventoryArchitecture.js";
 
 type AdjustBody = {
   delta?: number;
@@ -252,7 +253,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
 
   app.post("/inventory/balances/:id/adjust", async (request, reply) => {
     try {
-      const actor = await resolveDevelopmentActor(request, "inventory:correct");
+      const actor = await resolveDevelopmentActor(request, "inventory:write");
       const id = (request.params as { id: string }).id;
       const body = (request.body ?? {}) as AdjustBody;
       const reason = body.reason?.trim();
@@ -266,6 +267,53 @@ export async function inventoryRoutes(app: FastifyInstance) {
         return reply.code(400).send({
           error: "A finite non-zero delta and adjustment reason are required.",
         });
+      }
+
+      const balanceForPolicy = await db.inventoryBalance.findFirst({
+        where: { id, siteId: actor.siteId },
+        include: {
+          product: {
+            select: {
+              id: true,
+              medicationId: true,
+            },
+          },
+        },
+      });
+
+      if (!balanceForPolicy) {
+        return reply.code(404).send({ error: "Inventory balance not found." });
+      }
+
+      const policy = await resolveEffectiveInventoryPolicy(db, {
+        siteId: actor.siteId,
+        medicationId: balanceForPolicy.product.medicationId,
+        productId: balanceForPolicy.productId,
+      });
+
+      const pharmacistControlled = ["ADMIN", "PHARMACIST"].includes(actor.role);
+      if (!pharmacistControlled) {
+        if (!policy?.allowTechnicianAdjustments) {
+          return reply.code(403).send({
+            error:
+              "This inventory policy requires pharmacist/admin authorization for manual adjustments.",
+            code: "PHARMACIST_ADJUSTMENT_REQUIRED",
+          });
+        }
+
+        if (
+          policy.adjustmentApprovalThreshold !== null &&
+          new Prisma.Decimal(Math.abs(delta)).gt(
+            policy.adjustmentApprovalThreshold,
+          )
+        ) {
+          return reply.code(403).send({
+            error:
+              "This adjustment exceeds the policy threshold and requires pharmacist/admin authorization.",
+            code: "ADJUSTMENT_THRESHOLD_EXCEEDED",
+            threshold: policy.adjustmentApprovalThreshold.toString(),
+          });
+        }
       }
 
       const result = await db.$transaction(async (tx) => {
