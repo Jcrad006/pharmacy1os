@@ -5,6 +5,7 @@ import { db } from "../src/db.js";
 import { receiveInventory } from "../src/inventory.js";
 
 process.env.ALLOW_DEV_IDENTITY = "true";
+process.env.ALLOW_LEGACY_DIRECT_SALE = "true";
 process.env.CLAIM_SANDBOX_ENABLED = "true";
 
 const app = buildApp();
