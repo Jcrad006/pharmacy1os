@@ -625,6 +625,7 @@ model CycleCountSession {
   lines         CycleCountLine[]
 
   @@index([siteId, status, createdAt])
+  @@index([siteId, expectedDeliveryAt, status])
   @@index([createdById, createdAt])
   @@index([submittedById, submittedAt])
   @@index([reviewedById, reviewedAt])
@@ -799,6 +800,7 @@ model PurchaseOrder {
   supplierName  String
   status        PurchaseOrderStatus @default(OPEN)
   note          String?
+  expectedDeliveryAt DateTime?
   createdById   String
   createdBy     User                @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   cancelledById String?
