@@ -235,6 +235,30 @@ export type Manufacturer = {
 };
 
 export type ProductUnit = "EACH" | "GRAM" | "MILLILITER";
+export type ProductBarcodeType = "GTIN_14" | "UPC_A" | "EAN_13" | "OTHER";
+
+export type ProductBarcode = {
+  id: string;
+  productId: string;
+  type: ProductBarcodeType;
+  identifier: string;
+  identifierSearch: string;
+  isPrimary: boolean;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ParsedBarcode = {
+  raw: string;
+  type: ProductBarcodeType;
+  identifier: string;
+  identifierSearch: string;
+  gtin: string | null;
+  lotNumber: string | null;
+  expirationDate: string | null;
+  format: "GS1" | "PLAIN";
+};
 
 export type Product = {
   id: string;
@@ -252,6 +276,7 @@ export type Product = {
   manufacturer: Manufacturer;
   lots: ProductLot[];
   expirations: ProductExpiration[];
+  barcodes: ProductBarcode[];
 };
 
 export type Medication = {

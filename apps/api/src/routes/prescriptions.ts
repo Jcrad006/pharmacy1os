@@ -12,6 +12,7 @@ import {
   canTransitionPrescription,
   permissionForTransition,
 } from "../workflow/prescriptionWorkflow.js";
+import { parseBarcode } from "../barcode.js";
 import {
   evaluateDispensingDateRules,
   reconcileDateRuleIssues,
@@ -63,6 +64,10 @@ type ScanProductBody = {
   ndc?: string;
   lotNumber?: string;
   expirationDate?: string;
+};
+
+type ScanBarcodeBody = {
+  rawBarcode?: string;
 };
 
 const validStatuses = new Set<PrescriptionStatus>([
@@ -1066,6 +1071,222 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         fill: result.fill,
         prescription: presentPrescription(result.prescription),
       });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/scan-barcode", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as ScanBarcodeBody;
+      const parsed = parseBarcode(body.rawBarcode ?? "");
+
+      if (!parsed) {
+        return reply.code(400).send({ error: "A barcode scan is required." });
+      }
+
+      if (!parsed.lotNumber || !parsed.expirationDate) {
+        return reply.code(409).send({
+          error:
+            "The scanned barcode does not contain both lot and expiration information. Use a traceability barcode or the manual development fallback.",
+          code: "BARCODE_TRACEABILITY_REQUIRED",
+          parsed,
+        });
+      }
+
+      const registered = await db.productBarcode.findUnique({
+        where: {
+          type_identifierSearch: {
+            type: parsed.type,
+            identifierSearch: parsed.identifierSearch,
+          },
+        },
+        include: {
+          product: {
+            include: {
+              manufacturer: true,
+              medication: true,
+            },
+          },
+        },
+      });
+
+      if (!registered || !registered.product.active) {
+        return reply.code(409).send({
+          error:
+            "This barcode identifier is not assigned to an active product in the Drug/Product catalog.",
+          code: "BARCODE_UNKNOWN",
+          parsed,
+        });
+      }
+
+      const fill = await db.prescriptionFill.findUnique({
+        where: { id },
+        include: {
+          prescription: { include: { medication: true } },
+        },
+      });
+
+      if (!fill || fill.prescription.siteId !== actor.siteId) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+
+      if (
+        fill.status !== "IN_PROGRESS" ||
+        fill.prescription.status !== "PRODUCT_FILL"
+      ) {
+        return reply.code(409).send({
+          error: "Barcode verification is only allowed during an in-progress Product Fill.",
+        });
+      }
+
+      if (!fill.prescription.medicationId || !fill.prescription.medication) {
+        return reply.code(409).send({
+          error:
+            "This legacy prescription has no catalog drug selection. Select a drug before product verification.",
+          code: "DRUG_SELECTION_REQUIRED",
+        });
+      }
+
+      const product = registered.product;
+
+      if (product.medicationId !== fill.prescription.medicationId) {
+        return reply.code(409).send({
+          error:
+            "The scanned barcode resolves to a product under a different drug than the drug selected during Data Entry.",
+          code: "BARCODE_DRUG_MISMATCH",
+          expectedDrug: {
+            id: fill.prescription.medication.id,
+            genericName: fill.prescription.medication.genericName,
+            strength: fill.prescription.medication.strength,
+            dosageForm: fill.prescription.medication.dosageForm,
+          },
+          scannedDrug: {
+            id: product.medication.id,
+            genericName: product.medication.genericName,
+            strength: product.medication.strength,
+            dosageForm: product.medication.dosageForm,
+          },
+          parsed,
+        });
+      }
+
+      const lotNumberSearch = parsed.lotNumber
+        .replace(/[^A-Za-z0-9]/g, "")
+        .toUpperCase();
+
+      const [lot, expiration] = await Promise.all([
+        db.productLot.findFirst({
+          where: {
+            siteId: actor.siteId,
+            productId: product.id,
+            lotNumberSearch,
+            active: true,
+          },
+        }),
+        db.productExpiration.findFirst({
+          where: {
+            siteId: actor.siteId,
+            productId: product.id,
+            expirationDate: parsed.expirationDate,
+            active: true,
+          },
+        }),
+      ]);
+
+      if (!lot) {
+        return reply.code(409).send({
+          error:
+            "The barcode lot has not been received/cataloged under this NDC at this pharmacy site.",
+          code: "BARCODE_LOT_NOT_RECEIVED",
+          parsed,
+        });
+      }
+
+      if (!expiration) {
+        return reply.code(409).send({
+          error:
+            "The barcode expiration has not been received/cataloged under this NDC at this pharmacy site.",
+          code: "BARCODE_EXPIRATION_NOT_RECEIVED",
+          parsed,
+        });
+      }
+
+      const expirationEnd = new Date(expiration.expirationDate);
+      expirationEnd.setUTCHours(23, 59, 59, 999);
+      if (expirationEnd.getTime() < Date.now()) {
+        return reply.code(409).send({
+          error: "The scanned product is expired.",
+          code: "PRODUCT_EXPIRED",
+          parsed,
+        });
+      }
+
+      const verified = await db.$transaction(async (tx) => {
+        const verifiedAt = new Date();
+        const updated = await tx.prescriptionFill.update({
+          where: { id },
+          data: {
+            productId: product.id,
+            productLotId: lot.id,
+            productExpirationId: expiration.id,
+            scannedNdc: product.ndc,
+            scannedLotNumber: lot.lotNumber,
+            scannedExpiration: expiration.expirationDate,
+            productVerifiedAt: verifiedAt,
+          },
+          include: {
+            product: { include: { manufacturer: true } },
+            productLot: true,
+            productExpiration: true,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_BARCODE_SCAN_VERIFIED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            prescriptionId: fill.prescriptionId,
+            medicationId: fill.prescription.medicationId,
+            productId: product.id,
+            productBarcodeId: registered.id,
+            barcodeType: registered.type,
+            identifier: registered.identifier,
+            ndc: product.ndc,
+            lotNumber: lot.lotNumber,
+            expirationDate: expiration.expirationDate.toISOString(),
+            manufacturerName: product.manufacturer.name,
+          },
+        });
+
+        return updated;
+      });
+
+      return {
+        fill: verified,
+        parsed,
+        barcode: registered,
+        verifiedProduct: {
+          drug: product.medication,
+          product: {
+            id: product.id,
+            ndc: product.ndc,
+            descriptor: product.descriptor,
+            manufacturer: product.manufacturer,
+          },
+          lot,
+          expiration,
+        },
+      };
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });

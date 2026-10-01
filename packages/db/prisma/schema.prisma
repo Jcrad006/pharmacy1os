@@ -66,6 +66,13 @@ enum ProductUnit {
   MILLILITER
 }
 
+enum ProductBarcodeType {
+  GTIN_14
+  UPC_A
+  EAN_13
+  OTHER
+}
+
 model PharmacySite {
   id            String         @id @default(uuid())
   name          String
@@ -242,11 +249,29 @@ model Product {
   lots                ProductLot[]
   expirations         ProductExpiration[]
   prescriptionFills   PrescriptionFill[]
+  barcodes             ProductBarcode[]
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
   @@index([ndc])
   @@index([descriptor])
+}
+
+model ProductBarcode {
+  id               String             @id @default(uuid())
+  productId        String
+  product          Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type             ProductBarcodeType
+  identifier       String
+  identifierSearch String
+  isPrimary        Boolean            @default(false)
+  note             String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([type, identifierSearch])
+  @@index([productId, isPrimary])
+  @@index([identifierSearch])
 }
 
 model ProductLot {

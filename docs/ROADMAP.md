@@ -124,7 +124,16 @@
 - [x] Verify scanned expiration belongs to the scanned NDC at the pharmacy site
 - [x] Block Product Fill → Pharmacist Review until NDC/lot/expiration verification succeeds
 - [x] Store verified NDC/lot/expiration on the specific prescription fill
-- [ ] Parse raw GS1/2D barcode payloads directly into NDC/lot/expiration fields
+- [x] Parse raw GS1/2D barcode payloads into stable product identifier + lot + expiration
+- [x] Product barcode registry with multiple barcode identifiers per NDC
+- [x] F8 receiving workflow recognizes known barcodes
+- [x] Unknown receiving barcode can be assigned to an existing NDC
+- [x] Unknown receiving barcode can be carried into F7 and attached while creating a new NDC
+- [x] Receiving scan registers newly observed lot/expiration data under the recognized NDC
+- [x] Product Fill verifies a single raw registered barcode against the Data Entry Drug
+- [x] Registered barcode identifiers are searchable in the Drug/Product catalog
+- [ ] Third-party claim billing/adjudication during Product Fill
+- [ ] Prescription label generation/printing after successful adjudication
 
 ## Phase 3 — Pharmacy utilities
 - Inventory

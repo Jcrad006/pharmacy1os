@@ -46,6 +46,9 @@ const ids = {
   expirationLisinoprilA2: "expiration-demo-lisinopril-a2",
   expirationLisinoprilB1: "expiration-demo-lisinopril-b1",
   expirationAtorvastatinA1: "expiration-demo-atorvastatin-a1",
+  barcodeLisinoprilA: "barcode-demo-lisinopril-a",
+  barcodeLisinoprilB: "barcode-demo-lisinopril-b",
+  barcodeAtorvastatinA: "barcode-demo-atorvastatin-a",
   rx1: "rx-demo-001",
   rx2: "rx-demo-002",
 };
@@ -423,6 +426,44 @@ async function main() {
       packagePrice: 3.6,
     },
   });
+
+  const productBarcodes = [
+    {
+      id: ids.barcodeLisinoprilA,
+      productId: ids.productLisinoprilA,
+      type: "GTIN_14" as const,
+      identifier: "00999990001015",
+      identifierSearch: "00999990001015",
+      isPrimary: true,
+      note: "Synthetic GS1 GTIN for Demo Generics lisinopril.",
+    },
+    {
+      id: ids.barcodeLisinoprilB,
+      productId: ids.productLisinoprilB,
+      type: "GTIN_14" as const,
+      identifier: "00999980101015",
+      identifierSearch: "00999980101015",
+      isPrimary: true,
+      note: "Synthetic GS1 GTIN for Sample Pharma lisinopril.",
+    },
+    {
+      id: ids.barcodeAtorvastatinA,
+      productId: ids.productAtorvastatinA,
+      type: "GTIN_14" as const,
+      identifier: "00999990020016",
+      identifierSearch: "00999990020016",
+      isPrimary: true,
+      note: "Synthetic GS1 GTIN for Demo Generics atorvastatin.",
+    },
+  ];
+
+  for (const barcode of productBarcodes) {
+    await db.productBarcode.upsert({
+      where: { id: barcode.id },
+      update: barcode,
+      create: barcode,
+    });
+  }
 
   const productLots = [
     {

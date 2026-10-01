@@ -979,3 +979,137 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+.catalog-barcode-strip {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid #dfe8e3;
+  border-radius: 10px;
+  background: #f8fbf9;
+}
+.catalog-barcode-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.barcode-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: #e9f3ee;
+  color: #315947;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.receiving-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, .9fr);
+  gap: 20px;
+  align-items: start;
+}
+.receiving-scan-form {
+  display: grid;
+  gap: 12px;
+}
+.receiving-scan-form label,
+.receiving-assignment label,
+.raw-barcode-form label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+.receiving-scan-form textarea,
+.receiving-assignment select,
+.raw-barcode-form input {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: white;
+  color: #1c2924;
+  font: inherit;
+}
+.receiving-result {
+  display: grid;
+  gap: 14px;
+}
+.receiving-known {
+  border-color: #a9d0bb;
+}
+.receiving-unknown {
+  border-color: #d9b36d;
+}
+.receiving-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.receiving-result-grid div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #e2e9e5;
+  border-radius: 9px;
+  padding: 10px;
+  background: #fbfdfc;
+}
+.receiving-result-grid span {
+  color: #718079;
+  font-size: 11px;
+}
+.receiving-result-grid strong {
+  color: #263a31;
+  overflow-wrap: anywhere;
+}
+.receiving-success {
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: #eef8f2;
+  color: #2d6848;
+  font-weight: 700;
+}
+.receiving-assignment {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+}
+.product-scan-stack {
+  display: grid;
+  gap: 12px;
+}
+.raw-barcode-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+.manual-scan-fallback {
+  border: 1px solid #dfe8e3;
+  border-radius: 9px;
+  padding: 10px 12px;
+  background: #fafcfb;
+}
+.manual-scan-fallback summary {
+  cursor: pointer;
+  color: #64736d;
+  font-size: 12px;
+  font-weight: 700;
+}
+.manual-scan-fallback .product-scan-form {
+  margin-top: 12px;
+}
+@media (max-width: 950px) {
+  .receiving-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 700px) {
+  .receiving-result-grid,
+  .raw-barcode-form {
+    grid-template-columns: 1fr;
+  }
+}
