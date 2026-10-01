@@ -326,6 +326,25 @@ export async function receivingRoutes(app: FastifyInstance) {
         });
       }
 
+      const originalAssignment = await db.auditEvent.findFirst({
+        where: {
+          siteId: actor.siteId,
+          action: "RECEIVING_BARCODE_ASSIGNED",
+          entityType: "ProductBarcode",
+          entityId: barcode.id,
+        },
+        orderBy: { occurredAt: "asc" },
+        include: {
+          actor: {
+            select: {
+              id: true,
+              displayName: true,
+              role: true,
+            },
+          },
+        },
+      });
+
       const historicalUseEvents = await db.auditEvent.findMany({
         where: {
           siteId: actor.siteId,
@@ -434,6 +453,21 @@ export async function receivingRoutes(app: FastifyInstance) {
           requestId: request.id,
           metadata: {
             reason,
+            originalAssignment: {
+              auditEventId: originalAssignment?.id ?? null,
+              actorId: originalAssignment?.actorId ?? null,
+              actorDisplayName: originalAssignment?.actor?.displayName ?? null,
+              actorRole: originalAssignment?.actor?.role ?? null,
+              occurredAt: (
+                originalAssignment?.occurredAt ?? barcode.createdAt
+              ).toISOString(),
+              source: originalAssignment ? "AUDIT_EVENT" : "BARCODE_CREATED_AT",
+            },
+            correctingActor: {
+              id: actor.id,
+              displayName: actor.displayName,
+              role: actor.role,
+            },
             oldProductId,
             oldMedicationId: oldProduct.medicationId,
             oldDrug: `${oldProduct.medication.genericName} ${oldProduct.medication.strength} ${oldProduct.medication.dosageForm}`,
@@ -461,6 +495,16 @@ export async function receivingRoutes(app: FastifyInstance) {
         traceability: result.traceability,
         safetyReview: {
           oldProduct: barcode.product,
+          originalAssignment: {
+            auditEventId: originalAssignment?.id ?? null,
+            actorId: originalAssignment?.actorId ?? null,
+            actorDisplayName: originalAssignment?.actor?.displayName ?? null,
+            actorRole: originalAssignment?.actor?.role ?? null,
+            occurredAt: (
+              originalAssignment?.occurredAt ?? barcode.createdAt
+            ).toISOString(),
+            source: originalAssignment ? "AUDIT_EVENT" : "BARCODE_CREATED_AT",
+          },
           historicalUseCount,
           oldTraceabilityMatches,
           message:
