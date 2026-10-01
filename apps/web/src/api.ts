@@ -36,6 +36,7 @@ import type {
   RecallCase,
   PurchaseOrder,
   PrescriptionFill,
+  FillInterruptionReason,
   PrescriptionQueueItem,
   PrescriptionStatus,
 } from "./types";
