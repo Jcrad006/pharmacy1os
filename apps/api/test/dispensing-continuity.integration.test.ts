@@ -137,6 +137,11 @@ describe("Phase 3I dispensing continuity", () => {
     expect(partial.json().partialFill.fillNumber).toBe(0);
     expect(partial.json().partialFill.partNumber).toBe(1);
     expect(partial.json().partialFill.consumesRefill).toBe(true);
+    expect(partial.json().partialFill.billingRole).toBe("PRIMARY_CLAIM");
+    expect(Number(partial.json().partialFill.intendedQuantity)).toBe(90);
+    expect(Number(partial.json().partialFill.payerIntendedQuantity)).toBe(90);
+    expect(Number(partial.json().partialFill.physicalDispensedQuantity)).toBe(0);
+    expect(Number(partial.json().partialFill.remainingOwedQuantity)).toBe(87);
 
     const completion = partial.json().completionFill;
     expect(completion.kind).toBe("COMPLETION");
@@ -145,6 +150,10 @@ describe("Phase 3I dispensing continuity", () => {
     expect(completion.partNumber).toBe(2);
     expect(completion.consumesRefill).toBe(false);
     expect(completion.completionOfFillId).toBe(fillId);
+    expect(completion.billingRole).toBe("COMPLETION_OF_PRIMARY");
+    expect(completion.billingAnchorFillId).toBe(fillId);
+    expect(Number(completion.intendedQuantity)).toBe(90);
+    expect(Number(completion.payerIntendedQuantity)).toBe(90);
 
     const demand = await db.inventoryDemand.findUnique({
       where: { fillId: completion.id },
@@ -180,6 +189,13 @@ describe("Phase 3I dispensing continuity", () => {
 
     const soldPartial = await moveToSoldWithoutCatalog(prescriptionId);
     expect(soldPartial.refillsUsed).toBe(0);
+
+    const partialAfterSale = await db.prescriptionFill.findUniqueOrThrow({
+      where: { id: fillId },
+    });
+    expect(partialAfterSale.physicalDispensedQuantity.toNumber()).toBe(3);
+    expect(partialAfterSale.payerIntendedQuantity?.toNumber()).toBe(90);
+    expect(partialAfterSale.remainingOwedQuantity.toNumber()).toBe(87);
 
     await db.prescriptionFill.update({
       where: { id: completion.id },
@@ -232,6 +248,10 @@ describe("Phase 3I dispensing continuity", () => {
       "COMPLETION",
     ]);
     expect(parts.map((item) => item.status)).toEqual(["SOLD", "SOLD"]);
+    expect(parts[0]?.remainingOwedQuantity.toNumber()).toBe(0);
+    expect(parts[1]?.physicalDispensedQuantity.toNumber()).toBe(87);
+    expect(parts[0]?.payerIntendedQuantity?.toNumber()).toBe(90);
+    expect(parts[1]?.payerIntendedQuantity?.toNumber()).toBe(90);
   });
 
   it("restricts emergency supply authorization to pharmacists and keeps it outside refill accounting", async () => {
