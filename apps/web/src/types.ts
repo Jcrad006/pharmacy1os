@@ -26,6 +26,12 @@ export type FillStatus =
   | "RETURNED_TO_STOCK"
   | "CANCELLED";
 
+export type FillKind =
+  | "STANDARD"
+  | "PARTIAL"
+  | "COMPLETION"
+  | "EMERGENCY_SUPPLY";
+
 export type DurSeverity = "INFO" | "WARNING" | "HIGH";
 export type DurIssueStatus = "OPEN" | "RESOLVED";
 
@@ -91,8 +97,19 @@ export type Prescriber = {
 export type PrescriptionFill = {
   id: string;
   fillNumber: number;
+  partNumber: number;
+  kind: FillKind;
   scheduledFor: string | null;
   quantity: string | number | null;
+  authorizedQuantity: string | number | null;
+  consumesRefill: boolean;
+  completionOfFillId: string | null;
+  emergencyReason: string | null;
+  emergencyAuthorizedById: string | null;
+  emergencyAuthorizedAt: string | null;
+  followUpDueAt: string | null;
+  followUpCompletedAt: string | null;
+  followUpNote: string | null;
   status: FillStatus;
   productId: string | null;
   productLotId: string | null;
@@ -188,7 +205,9 @@ export type ExceptionKind =
   | "CLINICAL_ISSUE"
   | "ON_HOLD"
   | "PHARMACIST_REVIEW"
-  | "SCHEDULED_FILL";
+  | "SCHEDULED_FILL"
+  | "COMPLETION_FILL"
+  | "EMERGENCY_FOLLOW_UP";
 
 export type ExceptionItem = {
   id: string;
