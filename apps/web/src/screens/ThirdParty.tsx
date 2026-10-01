@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   adjudicateFill,
   createPayer,
+  getPayerHistory,
   getThirdPartyWorkspace,
   markLabelPrintJobPrinted,
   removePatientCoverage,
   savePatientCoverage,
+  updatePayer,
 } from "../api";
 import type {
   BillingNdcStrategy,
@@ -28,6 +30,37 @@ type CoverageDraft = {
   terminationDate: string;
   active: boolean;
 };
+
+type PayerProfileDraft = {
+  name: string;
+  bin: string;
+  pcn: string;
+  defaultGroupId: string;
+  claimStandard: ClaimStandard;
+  billingNdcStrategy: BillingNdcStrategy;
+  autoReversePaidClaimOnSourceCorrection: boolean;
+  notes: string;
+  active: boolean;
+};
+
+function payerProfileDraft(payer?: Payer): PayerProfileDraft {
+  return {
+    name: payer?.name ?? "",
+    bin: payer?.bin ?? "",
+    pcn: payer?.pcn ?? "",
+    defaultGroupId: payer?.defaultGroupId ?? "",
+    claimStandard: payer?.claimStandard ?? "D0",
+    billingNdcStrategy:
+      payer?.billingProfile?.billingNdcStrategy ??
+      payer?.billingNdcStrategy ??
+      "MAJORITY_SOURCE",
+    autoReversePaidClaimOnSourceCorrection:
+      payer?.billingProfile?.autoReversePaidClaimOnSourceCorrection ??
+      (payer?.billingNdcStrategy ?? "MAJORITY_SOURCE") === "MAJORITY_SOURCE",
+    notes: payer?.billingProfile?.notes ?? "",
+    active: payer?.active ?? true,
+  };
+}
 
 function blankDraft(): CoverageDraft {
   return {
@@ -110,11 +143,22 @@ export function ThirdParty({
   const [claimStandard, setClaimStandard] = useState<ClaimStandard>("D0");
   const [billingNdcStrategy, setBillingNdcStrategy] =
     useState<BillingNdcStrategy>("MAJORITY_SOURCE");
+  const [payerAutoReverse, setPayerAutoReverse] = useState(true);
+  const [payerNotes, setPayerNotes] = useState("");
+  const [selectedPayerId, setSelectedPayerId] = useState("");
+  const [payerProfile, setPayerProfile] = useState<PayerProfileDraft>(
+    payerProfileDraft(),
+  );
+  const [payerHistory, setPayerHistory] = useState<
+    Awaited<ReturnType<typeof getPayerHistory>>["events"]
+  >([]);
 
   const editable =
     user?.role === "ADMIN" ||
     user?.role === "PHARMACIST" ||
     user?.role === "TECHNICIAN";
+  const canManagePayers =
+    user?.role === "ADMIN" || user?.role === "PHARMACIST";
 
   async function load(search = query) {
     if (!devUser) return;
@@ -147,6 +191,21 @@ export function ThirdParty({
     () => patients.find((patient) => patient.id === selectedPatientId),
     [patients, selectedPatientId],
   );
+  const selectedPayer = useMemo(
+    () => payers.find((payer) => payer.id === selectedPayerId),
+    [payers, selectedPayerId],
+  );
+
+  useEffect(() => {
+    setPayerProfile(payerProfileDraft(selectedPayer));
+    if (!selectedPayerId || !canManagePayers) {
+      setPayerHistory([]);
+      return;
+    }
+    void getPayerHistory(devUser, selectedPayerId)
+      .then((result) => setPayerHistory(result.events))
+      .catch(() => setPayerHistory([]));
+  }, [devUser, selectedPayerId, selectedPayer, canManagePayers]);
 
   useEffect(() => {
     const next: Record<number, CoverageDraft> = {
@@ -230,7 +289,7 @@ export function ThirdParty({
   }
 
   async function addPayer() {
-    if (!editable || !payerName.trim()) return;
+    if (!canManagePayers || !payerName.trim()) return;
     setBusy(true);
     onError(null);
     try {
@@ -241,6 +300,8 @@ export function ThirdParty({
         defaultGroupId: payerGroup.trim() || undefined,
         claimStandard,
         billingNdcStrategy,
+        autoReversePaidClaimOnSourceCorrection: payerAutoReverse,
+        billingProfileNotes: payerNotes.trim() || null,
       });
       setPayerName("");
       setPayerBin("");
@@ -248,9 +309,46 @@ export function ThirdParty({
       setPayerGroup("");
       setClaimStandard("D0");
       setBillingNdcStrategy("MAJORITY_SOURCE");
+      setPayerAutoReverse(true);
+      setPayerNotes("");
       await load("");
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to add payer.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePayerProfile() {
+    if (!canManagePayers || !selectedPayerId || !payerProfile.name.trim()) return;
+    setBusy(true);
+    onError(null);
+    try {
+      const result = await updatePayer(devUser, selectedPayerId, {
+        name: payerProfile.name.trim(),
+        bin: payerProfile.bin.trim() || null,
+        pcn: payerProfile.pcn.trim() || null,
+        defaultGroupId: payerProfile.defaultGroupId.trim() || null,
+        claimStandard: payerProfile.claimStandard,
+        billingNdcStrategy: payerProfile.billingNdcStrategy,
+        autoReversePaidClaimOnSourceCorrection:
+          payerProfile.autoReversePaidClaimOnSourceCorrection,
+        billingProfileNotes: payerProfile.notes.trim() || null,
+        active: payerProfile.active,
+      });
+      await load(query);
+      const history = await getPayerHistory(devUser, selectedPayerId);
+      setPayerHistory(history.events);
+      setPayerProfile(payerProfileDraft(result.payer));
+      onError(
+        `Billing profile saved for ${result.payer.name} · version ${result.payer.billingProfile?.version ?? "—"}.`,
+      );
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to save payer billing profile.",
+      );
     } finally {
       setBusy(false);
     }
@@ -601,7 +699,7 @@ export function ThirdParty({
                         }}
                       >
                         <option value="">Select payer</option>
-                        {payers.map((item) => (
+                        {payers.filter((item) => item.active).map((item) => (
                           <option key={item.id} value={item.id}>
                             {item.name}
                             {item.bin ? ` · BIN ${item.bin}` : ""}
@@ -702,7 +800,9 @@ export function ThirdParty({
                       <span>Standard: {payer.claimStandard}</span>
                       <span>
                         Billing NDC:{" "}
-                        {payer.billingNdcStrategy.replaceAll("_", " ")}
+                        {(payer.billingProfile?.billingNdcStrategy ??
+                          payer.billingNdcStrategy
+                        ).replaceAll("_", " ")}
                       </span>
                       <span>BIN {payer.bin ?? "—"} / PCN {payer.pcn ?? "—"}</span>
                     </div>
@@ -754,7 +854,7 @@ export function ThirdParty({
               Name
               <input
                 value={payerName}
-                disabled={!editable}
+                disabled={!canManagePayers}
                 onChange={(event) => setPayerName(event.target.value)}
               />
             </label>
@@ -762,7 +862,7 @@ export function ThirdParty({
               BIN
               <input
                 value={payerBin}
-                disabled={!editable}
+                disabled={!canManagePayers}
                 onChange={(event) => setPayerBin(event.target.value)}
               />
             </label>
@@ -770,7 +870,7 @@ export function ThirdParty({
               PCN
               <input
                 value={payerPcn}
-                disabled={!editable}
+                disabled={!canManagePayers}
                 onChange={(event) => setPayerPcn(event.target.value)}
               />
             </label>
@@ -778,7 +878,7 @@ export function ThirdParty({
               Default group
               <input
                 value={payerGroup}
-                disabled={!editable}
+                disabled={!canManagePayers}
                 onChange={(event) => setPayerGroup(event.target.value)}
               />
             </label>
@@ -786,7 +886,7 @@ export function ThirdParty({
               Claim standard
               <select
                 value={claimStandard}
-                disabled={!editable}
+                disabled={!canManagePayers}
                 onChange={(event) =>
                   setClaimStandard(event.target.value as ClaimStandard)
                 }
@@ -799,12 +899,12 @@ export function ThirdParty({
               Split-fill billing NDC rule
               <select
                 value={billingNdcStrategy}
-                disabled={!editable}
-                onChange={(event) =>
-                  setBillingNdcStrategy(
-                    event.target.value as BillingNdcStrategy,
-                  )
-                }
+                disabled={!canManagePayers}
+                onChange={(event) => {
+                  const strategy = event.target.value as BillingNdcStrategy;
+                  setBillingNdcStrategy(strategy);
+                  setPayerAutoReverse(strategy === "MAJORITY_SOURCE");
+                }}
               >
                 <option value="MAJORITY_SOURCE">
                   Automatically bill majority physical NDC
@@ -820,8 +920,30 @@ export function ThirdParty({
                 </option>
               </select>
             </label>
+            <label>
+              <span>Source correction after paid claim</span>
+              <select
+                value={payerAutoReverse ? "AUTO" : "MANUAL"}
+                disabled={!canManagePayers}
+                onChange={(event) =>
+                  setPayerAutoReverse(event.target.value === "AUTO")
+                }
+              >
+                <option value="AUTO">Auto-reverse and re-adjudicate</option>
+                <option value="MANUAL">Require explicit reversal</option>
+              </select>
+            </label>
+            <label>
+              Billing profile notes
+              <input
+                value={payerNotes}
+                disabled={!canManagePayers}
+                onChange={(event) => setPayerNotes(event.target.value)}
+                placeholder="Contract or payer-specific billing notes"
+              />
+            </label>
           </div>
-          {editable && (
+          {canManagePayers ? (
             <button
               type="button"
               className="primary-button"
@@ -830,6 +952,255 @@ export function ThirdParty({
             >
               Add payer
             </button>
+          ) : (
+            <p className="directory-help">
+              Payer billing profiles can be created or changed by a pharmacist
+              or administrator. Technicians can use configured payers and edit
+              patient-specific coverage information.
+            </p>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Billing profiles</p>
+              <h2>Manage payer rules</h2>
+            </div>
+            {selectedPayer?.billingProfile && (
+              <span className="queue-count">
+                v{selectedPayer.billingProfile.version}
+              </span>
+            )}
+          </div>
+          <p className="directory-help">
+            Routing data and adjudication behavior are stored per payer. Claims
+            snapshot the billing profile version used so later rule changes do
+            not alter historical claim records.
+          </p>
+
+          <div className="coverage-grid">
+            <label>
+              Payer / PBM
+              <select
+                value={selectedPayerId}
+                onChange={(event) => setSelectedPayerId(event.target.value)}
+              >
+                <option value="">Select payer</option>
+                {payers.map((payer) => (
+                  <option key={payer.id} value={payer.id}>
+                    {payer.name}{payer.active ? "" : " · inactive"}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Name
+              <input
+                value={payerProfile.name}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    name: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              BIN
+              <input
+                value={payerProfile.bin}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    bin: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              PCN
+              <input
+                value={payerProfile.pcn}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    pcn: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Default group
+              <input
+                value={payerProfile.defaultGroupId}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    defaultGroupId: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Claim standard
+              <select
+                value={payerProfile.claimStandard}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    claimStandard: event.target.value as ClaimStandard,
+                  }))
+                }
+              >
+                <option value="D0">NCPDP D.0</option>
+                <option value="F6">NCPDP F6</option>
+              </select>
+            </label>
+            <label>
+              Split-fill billing NDC rule
+              <select
+                value={payerProfile.billingNdcStrategy}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) => {
+                  const strategy = event.target.value as BillingNdcStrategy;
+                  setPayerProfile((current) => ({
+                    ...current,
+                    billingNdcStrategy: strategy,
+                    autoReversePaidClaimOnSourceCorrection:
+                      strategy === "MAJORITY_SOURCE"
+                        ? current.autoReversePaidClaimOnSourceCorrection
+                        : false,
+                  }));
+                }}
+              >
+                <option value="MAJORITY_SOURCE">
+                  Automatically bill majority physical NDC
+                </option>
+                <option value="REQUIRE_MANUAL_SELECTION">
+                  Require explicit billing NDC
+                </option>
+                <option value="SINGLE_SOURCE_ONLY">
+                  Single physical product only
+                </option>
+                <option value="PAYER_CONFIGURED">
+                  Payer-specific adapter rule
+                </option>
+              </select>
+            </label>
+            <label>
+              Source correction after paid claim
+              <select
+                value={
+                  payerProfile.autoReversePaidClaimOnSourceCorrection
+                    ? "AUTO"
+                    : "MANUAL"
+                }
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    autoReversePaidClaimOnSourceCorrection:
+                      event.target.value === "AUTO",
+                  }))
+                }
+              >
+                <option value="AUTO">Auto-reverse and re-adjudicate</option>
+                <option value="MANUAL">Require explicit reversal</option>
+              </select>
+            </label>
+            <label>
+              Profile status
+              <select
+                value={payerProfile.active ? "ACTIVE" : "INACTIVE"}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    active: event.target.value === "ACTIVE",
+                  }))
+                }
+              >
+                <option value="ACTIVE">Active</option>
+                <option value="INACTIVE">Inactive</option>
+              </select>
+            </label>
+            <label>
+              Billing profile notes
+              <input
+                value={payerProfile.notes}
+                disabled={!canManagePayers || !selectedPayer}
+                onChange={(event) =>
+                  setPayerProfile((current) => ({
+                    ...current,
+                    notes: event.target.value,
+                  }))
+                }
+                placeholder="Contract or implementation notes"
+              />
+            </label>
+          </div>
+
+          {selectedPayer && (
+            <div className="coverage-payer-metadata">
+              <span>
+                Profile version {selectedPayer.billingProfile?.version ?? "legacy"}
+              </span>
+              <span>
+                Updated{" "}
+                {new Date(
+                  selectedPayer.billingProfile?.updatedAt ??
+                    selectedPayer.updatedAt,
+                ).toLocaleString()}
+              </span>
+              <span>
+                Future payer-specific fields can be added through the profile's
+                structured custom-rules payload without changing the core payer
+                directory model.
+              </span>
+            </div>
+          )}
+
+          {canManagePayers && selectedPayer && (
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busy || !payerProfile.name.trim()}
+              onClick={() => void savePayerProfile()}
+            >
+              Save billing profile
+            </button>
+          )}
+
+          {canManagePayers && selectedPayer && (
+            <div className="coverage-slot-list">
+              <p className="directory-help">
+                Recent billing-profile audit history
+              </p>
+              {payerHistory.slice(0, 8).map((event) => (
+                <article className="coverage-slot" key={event.id}>
+                  <div className="coverage-slot-heading">
+                    <strong>{event.action.replaceAll("_", " ")}</strong>
+                    <span className="status-chip muted">
+                      {new Date(event.occurredAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="directory-help">
+                    {event.actor?.displayName ?? "System"} ·{" "}
+                    {event.actor?.role ?? "SYSTEM"}
+                  </p>
+                </article>
+              ))}
+              {payerHistory.length === 0 && (
+                <p className="empty-state">No profile changes recorded yet.</p>
+              )}
+            </div>
           )}
         </section>
       </div>
