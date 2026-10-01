@@ -1,4 +1,8 @@
-import type { BillingNdcStrategy, ClaimStandard } from "@prisma/client";
+import type {
+  BillingNdcStrategy,
+  ClaimOutcome,
+  ClaimStandard,
+} from "@prisma/client";
 
 export type CanonicalCobPriorPayer = {
   position: number;
@@ -30,7 +34,7 @@ export type CanonicalClaimRequest = {
 };
 
 export type CanonicalClaimResponse = {
-  status: "PAID" | "REJECTED" | "ERROR";
+  status: ClaimOutcome;
   transactionReference?: string | null;
   authorizationNumber?: string | null;
   amountPaid?: string | null;
@@ -47,6 +51,8 @@ export type ClaimAdapterContext = {
 
 export interface ClaimAdapter {
   readonly standard: ClaimStandard;
+  readonly name: string;
+  readonly version: string;
   submit(
     request: CanonicalClaimRequest,
     context: ClaimAdapterContext,
