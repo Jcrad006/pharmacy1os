@@ -3,6 +3,13 @@ import {
   type InventoryDispositionType,
   type InventoryHoldReason,
 } from "@prisma/client";
+import {
+  addInventoryPosition,
+  consumeInventoryCostLayers,
+  recordInventoryCostLayer,
+  removeInventoryPosition,
+  reverseInventoryCostConsumption,
+} from "./inventoryArchitecture.js";
 
 export class InventoryError extends Error {
   constructor(
