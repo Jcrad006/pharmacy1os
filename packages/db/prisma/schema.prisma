@@ -83,6 +83,9 @@ enum InventoryTransactionType {
   QUARANTINE
   RELEASE_QUARANTINE
   DISPOSE
+  TRANSFER_OUT
+  TRANSFER_IN
+  TRANSFER_CANCEL_RETURN
 }
 
 enum InventoryHoldStatus {
@@ -114,6 +117,24 @@ enum CycleCountStatus {
   REJECTED
 }
 
+enum InventoryTransferStatus {
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum RecallStatus {
+  ACTIVE
+  CLOSED
+}
+
+enum PurchaseOrderStatus {
+  OPEN
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
 model PharmacySite {
   id            String         @id @default(uuid())
   name          String
@@ -132,7 +153,11 @@ model PharmacySite {
   inventoryTransactions InventoryTransaction[]
   cycleCountSessions    CycleCountSession[]
   inventoryHolds        InventoryHold[]
-  auditEvents            AuditEvent[]
+  sourceInventoryTransfers      InventoryTransfer[] @relation("TransferSourceSite")
+  destinationInventoryTransfers InventoryTransfer[] @relation("TransferDestinationSite")
+  recallCases           RecallCase[]
+  purchaseOrders        PurchaseOrder[]
+  auditEvents           AuditEvent[]
 }
 
 model User {
@@ -155,6 +180,14 @@ model User {
   countedCycleCountLines CycleCountLine[]        @relation("CycleCountCountedBy")
   createdInventoryHolds  InventoryHold[]          @relation("InventoryHoldCreatedBy")
   resolvedInventoryHolds InventoryHold[]          @relation("InventoryHoldResolvedBy")
+  initiatedTransfers     InventoryTransfer[]        @relation("TransferInitiatedBy")
+  receivedTransfers      InventoryTransfer[]        @relation("TransferReceivedBy")
+  cancelledTransfers     InventoryTransfer[]        @relation("TransferCancelledBy")
+  createdRecallCases     RecallCase[]               @relation("RecallCreatedBy")
+  closedRecallCases      RecallCase[]               @relation("RecallClosedBy")
+  createdPurchaseOrders  PurchaseOrder[]            @relation("PurchaseOrderCreatedBy")
+  cancelledPurchaseOrders PurchaseOrder[]           @relation("PurchaseOrderCancelledBy")
+  purchaseOrderReceipts  PurchaseOrderReceipt[]     @relation("PurchaseOrderReceiptActor")
 
   @@index([siteId, role])
 }
@@ -303,6 +336,8 @@ model Product {
   prescriptionFills   PrescriptionFill[]
   barcodes             ProductBarcode[]
   inventoryBalances    InventoryBalance[]
+  recallCases           RecallCase[]
+  purchaseOrderLines    PurchaseOrderLine[]
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
@@ -427,6 +462,7 @@ model PrescriptionFill {
   inventoryCommittedAt DateTime?
   inventoryReturnedAt DateTime?
   inventoryTransactions InventoryTransaction[]
+  recallAffectedFills RecallAffectedFill[]
   filledAt            DateTime?
   soldAt              DateTime?
   createdAt           DateTime           @default(now())
@@ -459,6 +495,9 @@ model InventoryBalance {
   transactions        InventoryTransaction[]
   cycleCountLines      CycleCountLine[]
   holds                InventoryHold[]
+  sourceTransfers       InventoryTransfer[] @relation("TransferSourceBalance")
+  destinationTransfers  InventoryTransfer[] @relation("TransferDestinationBalance")
+  purchaseOrderReceipts PurchaseOrderReceipt[]
 
   @@unique([siteId, productId, productLotId, productExpirationId])
   @@index([siteId, productId])
@@ -534,12 +573,15 @@ model InventoryHold {
   resolvedAt         DateTime?
   updatedAt          DateTime                 @updatedAt
   transactions       InventoryTransaction[]
+  recallCaseId        String?
+  recallCase          RecallCase?               @relation(fields: [recallCaseId], references: [id], onDelete: Restrict)
 
   @@index([siteId, status, createdAt])
   @@index([inventoryBalanceId, status])
   @@index([reasonCode, status])
   @@index([createdById, createdAt])
   @@index([resolvedById, resolvedAt])
+  @@index([recallCaseId, status])
 }
 
 model InventoryTransaction {
@@ -563,12 +605,144 @@ model InventoryTransaction {
   reference          String?
   occurredAt         DateTime                 @default(now())
   cycleCountLine     CycleCountLine?          @relation("CycleCountReconciliation")
+  inventoryTransferId String?
+  inventoryTransfer   InventoryTransfer?       @relation(fields: [inventoryTransferId], references: [id], onDelete: Restrict)
+  purchaseOrderReceipt PurchaseOrderReceipt?   @relation("PurchaseOrderReceiptTransaction")
 
   @@index([siteId, occurredAt])
   @@index([inventoryBalanceId, occurredAt])
   @@index([fillId, occurredAt])
   @@index([actorId, occurredAt])
   @@index([inventoryHoldId, occurredAt])
+  @@index([inventoryTransferId, occurredAt])
+}
+
+model InventoryTransfer {
+  id                       String                  @id @default(uuid())
+  sourceSiteId             String
+  sourceSite               PharmacySite            @relation("TransferSourceSite", fields: [sourceSiteId], references: [id], onDelete: Restrict)
+  destinationSiteId        String
+  destinationSite          PharmacySite            @relation("TransferDestinationSite", fields: [destinationSiteId], references: [id], onDelete: Restrict)
+  sourceInventoryBalanceId String
+  sourceInventoryBalance   InventoryBalance        @relation("TransferSourceBalance", fields: [sourceInventoryBalanceId], references: [id], onDelete: Restrict)
+  destinationInventoryBalanceId String?
+  destinationInventoryBalance   InventoryBalance?   @relation("TransferDestinationBalance", fields: [destinationInventoryBalanceId], references: [id], onDelete: Restrict)
+  productId                String
+  lotNumber                String
+  expirationDate           DateTime
+  quantity                 Decimal                 @db.Decimal(14, 3)
+  status                   InventoryTransferStatus @default(IN_TRANSIT)
+  note                     String?
+  initiatedById            String
+  initiatedBy              User                    @relation("TransferInitiatedBy", fields: [initiatedById], references: [id], onDelete: Restrict)
+  receivedById             String?
+  receivedBy               User?                   @relation("TransferReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+  cancelledById            String?
+  cancelledBy              User?                   @relation("TransferCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
+  shippedAt                DateTime                 @default(now())
+  receivedAt               DateTime?
+  cancelledAt              DateTime?
+  transactions             InventoryTransaction[]
+
+  @@index([sourceSiteId, status, shippedAt])
+  @@index([destinationSiteId, status, shippedAt])
+  @@index([sourceInventoryBalanceId, status])
+}
+
+model RecallCase {
+  id               String       @id @default(uuid())
+  siteId           String
+  site             PharmacySite @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  productId        String
+  product          Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lotNumber        String?
+  lotNumberSearch  String?
+  reference        String
+  reason           String
+  status           RecallStatus @default(ACTIVE)
+  createdById      String
+  createdBy        User         @relation("RecallCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  closedById       String?
+  closedBy         User?        @relation("RecallClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
+  createdAt        DateTime     @default(now())
+  closedAt         DateTime?
+  closureNote      String?
+  holds            InventoryHold[]
+  affectedFills    RecallAffectedFill[]
+
+  @@index([siteId, status, createdAt])
+  @@index([siteId, productId, lotNumberSearch, status])
+  @@index([reference])
+}
+
+model RecallAffectedFill {
+  id           String           @id @default(uuid())
+  recallCaseId String
+  recallCase   RecallCase       @relation(fields: [recallCaseId], references: [id], onDelete: Cascade)
+  fillId       String
+  fill         PrescriptionFill @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  discoveredAt DateTime         @default(now())
+
+  @@unique([recallCaseId, fillId])
+  @@index([fillId])
+}
+
+model PurchaseOrder {
+  id            String              @id @default(uuid())
+  siteId        String
+  site          PharmacySite        @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  orderNumber   String
+  supplierName  String
+  status        PurchaseOrderStatus @default(OPEN)
+  note          String?
+  createdById   String
+  createdBy     User                @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  cancelledById String?
+  cancelledBy   User?               @relation("PurchaseOrderCancelledBy", fields: [cancelledById], references: [id], onDelete: Restrict)
+  createdAt     DateTime            @default(now())
+  cancelledAt   DateTime?
+  lines         PurchaseOrderLine[]
+
+  @@unique([siteId, orderNumber])
+  @@index([siteId, status, createdAt])
+  @@index([supplierName])
+}
+
+model PurchaseOrderLine {
+  id                 String        @id @default(uuid())
+  purchaseOrderId    String
+  purchaseOrder      PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId          String
+  product            Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantityOrdered    Decimal       @db.Decimal(14, 3)
+  quantityReceived   Decimal       @default(0) @db.Decimal(14, 3)
+  unitCost           Decimal?      @db.Decimal(12, 6)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  receipts           PurchaseOrderReceipt[]
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+model PurchaseOrderReceipt {
+  id                     String               @id @default(uuid())
+  purchaseOrderLineId    String
+  purchaseOrderLine      PurchaseOrderLine    @relation(fields: [purchaseOrderLineId], references: [id], onDelete: Restrict)
+  actorId                String
+  actor                  User                 @relation("PurchaseOrderReceiptActor", fields: [actorId], references: [id], onDelete: Restrict)
+  inventoryBalanceId     String
+  inventoryBalance       InventoryBalance     @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  inventoryTransactionId String                @unique
+  inventoryTransaction   InventoryTransaction @relation("PurchaseOrderReceiptTransaction", fields: [inventoryTransactionId], references: [id], onDelete: Restrict)
+  quantity               Decimal              @db.Decimal(14, 3)
+  lotNumber              String
+  expirationDate         DateTime
+  invoiceReference       String?
+  receivedAt             DateTime             @default(now())
+
+  @@index([purchaseOrderLineId, receivedAt])
+  @@index([inventoryBalanceId, receivedAt])
 }
 
 model DurIssue {

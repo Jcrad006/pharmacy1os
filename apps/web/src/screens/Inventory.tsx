@@ -7,6 +7,9 @@ import type { DevUser, InventoryBalance } from "../types";
 import { canCorrectInventory } from "../workflow";
 import { CycleCounts } from "./CycleCounts";
 import { InventoryHolds } from "./InventoryHolds";
+import { InventoryTransfers } from "./InventoryTransfers";
+import { InventoryRecalls } from "./InventoryRecalls";
+import { PurchaseOrders } from "./PurchaseOrders";
 
 function quantity(value: string | number) {
   return Number(value).toLocaleString(undefined, {
@@ -30,6 +33,7 @@ export function Inventory({
   const [delta, setDelta] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [operationsVersion, setOperationsVersion] = useState(0);
   const correctable = canCorrectInventory(user);
 
   async function refresh() {
@@ -41,6 +45,11 @@ export function Inventory({
         error instanceof Error ? error.message : "Unable to load inventory.",
       );
     }
+  }
+
+  async function refreshOperations() {
+    await refresh();
+    setOperationsVersion((value) => value + 1);
   }
 
   useEffect(() => {
@@ -264,19 +273,43 @@ export function Inventory({
           </div>
         </div>
       )}
-      <InventoryHolds
+      <InventoryTransfers
         devUser={devUser}
         user={user}
         balances={balances}
         onError={onError}
-        onBalancesChanged={refresh}
+        onBalancesChanged={refreshOperations}
+      />
+
+      <PurchaseOrders
+        devUser={devUser}
+        user={user}
+        onError={onError}
+        onInventoryChanged={refreshOperations}
+      />
+
+      <InventoryRecalls
+        devUser={devUser}
+        user={user}
+        balances={balances}
+        onError={onError}
+        onInventoryChanged={refreshOperations}
+      />
+
+      <InventoryHolds
+        key={operationsVersion}
+        devUser={devUser}
+        user={user}
+        balances={balances}
+        onError={onError}
+        onBalancesChanged={refreshOperations}
       />
 
       <CycleCounts
         devUser={devUser}
         user={user}
         onError={onError}
-        onBalancesChanged={refresh}
+        onBalancesChanged={refreshOperations}
       />
     </section>
   );

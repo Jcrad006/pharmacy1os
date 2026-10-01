@@ -59,6 +59,50 @@ async function lockBalance(tx: Prisma.TransactionClient, balanceId: string) {
   return balance;
 }
 
+async function ensureBalanceNotRecalled(
+  tx: Prisma.TransactionClient,
+  input: { siteId: string; balanceId: string },
+) {
+  const balance = await tx.inventoryBalance.findFirst({
+    where: { id: input.balanceId, siteId: input.siteId },
+    include: { productLot: true },
+  });
+
+  if (!balance) {
+    throw new InventoryError(
+      404,
+      "INVENTORY_NOT_FOUND",
+      "Inventory balance not found.",
+    );
+  }
+
+  const recall = await tx.recallCase.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: balance.productId,
+      status: "ACTIVE",
+      OR: [
+        { lotNumberSearch: null },
+        { lotNumberSearch: balance.productLot.lotNumberSearch },
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (recall) {
+    throw new InventoryError(
+      409,
+      "INVENTORY_RECALLED",
+      "This NDC/lot is under an active recall and cannot be dispensed.",
+      {
+        recallCaseId: recall.id,
+        reference: recall.reference,
+        lotNumber: balance.productLot.lotNumber,
+      },
+    );
+  }
+}
+
 export async function receiveInventory(
   tx: Prisma.TransactionClient,
   input: {
@@ -115,7 +159,45 @@ export async function receiveInventory(
     },
   });
 
-  return { balance: updated, transaction };
+  const lot = await tx.productLot.findUnique({
+    where: { id: input.productLotId },
+    select: { lotNumber: true, lotNumberSearch: true },
+  });
+
+  const recall = lot
+    ? await tx.recallCase.findFirst({
+        where: {
+          siteId: input.siteId,
+          productId: input.productId,
+          status: "ACTIVE",
+          OR: [
+            { lotNumberSearch: null },
+            { lotNumberSearch: lot.lotNumberSearch },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    : null;
+
+  if (recall) {
+    const held = await quarantineInventory(tx, {
+      balanceId: locked.id,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      quantity,
+      reasonCode: "RECALL",
+      note: `Automatically quarantined on receipt for recall ${recall.reference}`,
+      recallCaseId: recall.id,
+    });
+
+    return {
+      balance: held.balance,
+      transaction,
+      quarantineHold: held.hold,
+    };
+  }
+
+  return { balance: updated, transaction, quarantineHold: null };
 }
 
 export async function releaseInventoryReservation(
@@ -228,15 +310,6 @@ export async function reserveInventoryForFill(
 
   const quantity = positiveQuantity(fill.quantity);
 
-  if (fill.inventoryBalanceId && fill.inventoryReservedAt) {
-    await releaseInventoryReservation(tx, {
-      fillId: fill.id,
-      siteId: input.siteId,
-      actorId: input.actorId,
-      reason: "Product rescanned during Product Fill",
-    });
-  }
-
   const balance = await tx.inventoryBalance.findUnique({
     where: {
       siteId_productId_productLotId_productExpirationId: {
@@ -257,6 +330,32 @@ export async function reserveInventoryForFill(
   }
 
   const locked = await lockBalance(tx, balance.id);
+  await ensureBalanceNotRecalled(tx, {
+    siteId: input.siteId,
+    balanceId: locked.id,
+  });
+
+  if (
+    fill.inventoryBalanceId &&
+    fill.inventoryReservedAt &&
+    fill.inventoryBalanceId !== locked.id
+  ) {
+    await releaseInventoryReservation(tx, {
+      fillId: fill.id,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      reason: "Product rescanned during Product Fill",
+    });
+  } else if (
+    fill.inventoryBalanceId === locked.id &&
+    fill.inventoryReservedAt
+  ) {
+    return {
+      balance: locked,
+      quantity,
+      reservedAt: fill.inventoryReservedAt,
+    };
+  }
   const available = locked.onHandQuantity
     .minus(locked.reservedQuantity)
     .minus(locked.quarantinedQuantity);
@@ -349,6 +448,10 @@ export async function commitInventoryForFill(
 
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
+  await ensureBalanceNotRecalled(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+  });
 
   if (
     balance.reservedQuantity.lt(quantity) ||
@@ -536,6 +639,7 @@ export async function quarantineInventory(
     quantity: number | string | Prisma.Decimal;
     reasonCode: InventoryHoldReason;
     note?: string | null;
+    recallCaseId?: string | null;
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
@@ -575,6 +679,7 @@ export async function quarantineInventory(
       quantity,
       reasonCode: input.reasonCode,
       note: input.note?.trim() || null,
+      recallCaseId: input.recallCaseId ?? null,
       createdById: input.actorId,
     },
   });

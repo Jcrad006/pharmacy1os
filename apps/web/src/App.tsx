@@ -268,7 +268,8 @@ export function App() {
           <div className="header-actions">
             {selectedUser && (
               <span className="user-chip">
-                {selectedUser.displayName} · {roleLabel(selectedUser.role)}
+                {selectedUser.displayName} · {roleLabel(selectedUser.role)} ·{" "}
+                {selectedUser.siteName}
               </span>
             )}
             <span className="prototype-badge">Prototype — synthetic data only</span>

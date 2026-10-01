@@ -22,6 +22,10 @@ import type {
   InventoryHold,
   InventoryHoldReason,
   InventoryDispositionType,
+  PharmacySiteSummary,
+  InventoryTransfer,
+  RecallCase,
+  PurchaseOrder,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -807,4 +811,180 @@ export async function disposeInventoryHold(
     devUser,
     body: JSON.stringify(input),
   });
+}
+
+export async function getInventorySites(devUser: string) {
+  const result = await request<{ sites: PharmacySiteSummary[] }>(
+    "/api/inventory/sites",
+    { devUser },
+  );
+  return result.sites;
+}
+
+export async function getInventoryTransfers(devUser: string) {
+  const result = await request<{ transfers: InventoryTransfer[] }>(
+    "/api/inventory/transfers",
+    { devUser },
+  );
+  return result.transfers;
+}
+
+export async function createInventoryTransfer(
+  devUser: string,
+  input: {
+    destinationSiteId: string;
+    sourceInventoryBalanceId: string;
+    quantity: number;
+    note?: string;
+  },
+) {
+  return request<{ transfer: InventoryTransfer }>("/api/inventory/transfers", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function receiveInventoryTransfer(
+  devUser: string,
+  transferId: string,
+) {
+  return request<{ transfer: InventoryTransfer }>(
+    `/api/inventory/transfers/${transferId}/receive`,
+    {
+      method: "POST",
+      devUser,
+    },
+  );
+}
+
+export async function cancelInventoryTransfer(
+  devUser: string,
+  transferId: string,
+  reason: string,
+) {
+  return request<{ transfer: InventoryTransfer }>(
+    `/api/inventory/transfers/${transferId}/cancel`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export async function getRecallCases(devUser: string) {
+  const result = await request<{ recalls: RecallCase[] }>(
+    "/api/inventory/recalls",
+    { devUser },
+  );
+  return result.recalls;
+}
+
+export async function createRecallCase(
+  devUser: string,
+  input: {
+    productId: string;
+    lotNumber?: string;
+    reference: string;
+    reason: string;
+  },
+) {
+  return request<{
+    recall: RecallCase;
+    summary: {
+      matchedBalanceCount: number;
+      quarantinedHoldCount: number;
+      reservedAffectedQuantity: string;
+      affectedSoldFillCount: number;
+    };
+  }>("/api/inventory/recalls", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function closeRecallCase(
+  devUser: string,
+  recallCaseId: string,
+  closureNote: string,
+) {
+  return request<{ recall: RecallCase }>(
+    `/api/inventory/recalls/${recallCaseId}/close`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ closureNote }),
+    },
+  );
+}
+
+export async function getPurchaseOrders(devUser: string) {
+  const result = await request<{ purchaseOrders: PurchaseOrder[] }>(
+    "/api/inventory/purchase-orders",
+    { devUser },
+  );
+  return result.purchaseOrders;
+}
+
+export async function createPurchaseOrder(
+  devUser: string,
+  input: {
+    orderNumber: string;
+    supplierName: string;
+    note?: string;
+    lines: Array<{
+      productId: string;
+      quantityOrdered: number;
+      unitCost?: number;
+    }>;
+  },
+) {
+  return request<{ purchaseOrder: PurchaseOrder }>(
+    "/api/inventory/purchase-orders",
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function receivePurchaseOrderLine(
+  devUser: string,
+  purchaseOrderId: string,
+  lineId: string,
+  input: {
+    quantity: number;
+    lotNumber: string;
+    expirationDate: string;
+    invoiceReference?: string;
+  },
+) {
+  return request<{
+    purchaseOrder: PurchaseOrder;
+    receipt: unknown;
+    balance: InventoryBalance;
+  }>(
+    `/api/inventory/purchase-orders/${purchaseOrderId}/lines/${lineId}/receive`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function cancelPurchaseOrder(
+  devUser: string,
+  purchaseOrderId: string,
+) {
+  return request<{ purchaseOrder: PurchaseOrder }>(
+    `/api/inventory/purchase-orders/${purchaseOrderId}/cancel`,
+    {
+      method: "POST",
+      devUser,
+    },
+  );
 }
