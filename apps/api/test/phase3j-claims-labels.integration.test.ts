@@ -412,6 +412,35 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
     const original = await db.claimTransaction.findFirstOrThrow({
       where: { fillId, operation: "SUBMIT", outcome: "PAID" },
     });
+
+    const billingMutation = await app.inject({
+      method: "PUT",
+      url: `/api/fills/${fillId}/billing-details`,
+      headers: technicianHeaders,
+      payload: { daysSupply: 9 },
+    });
+    expect(billingMutation.statusCode).toBe(409);
+    expect(billingMutation.json().code).toBe("PAID_CLAIM_REVERSAL_REQUIRED");
+
+    const source = await db.fillProductSource.findFirstOrThrow({
+      where: { fillId },
+    });
+    const sourceMutation = await app.inject({
+      method: "DELETE",
+      url: `/api/fills/${fillId}/product-sources/${source.id}`,
+      headers: technicianHeaders,
+    });
+    expect(sourceMutation.statusCode).toBe(409);
+    expect(sourceMutation.json().code).toBe("PAID_CLAIM_REVERSAL_REQUIRED");
+
+    const coverageMutation = await app.inject({
+      method: "DELETE",
+      url: `/api/patients/${patient.id}/coverages/1`,
+      headers: technicianHeaders,
+    });
+    expect(coverageMutation.statusCode).toBe(409);
+    expect(coverageMutation.json().code).toBe("PAID_CLAIM_REVERSAL_REQUIRED");
+
     const reversal = await app.inject({
       method: "POST",
       url: `/api/third-party/claims/${original.id}/reverse`,
@@ -429,6 +458,13 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
     });
     expect(label.status).toBe("VOID");
     expect(label.printJobs[0]!.status).toBe("CANCELLED");
+
+    const coverageAfterReversal = await app.inject({
+      method: "DELETE",
+      url: `/api/patients/${patient.id}/coverages/1`,
+      headers: technicianHeaders,
+    });
+    expect(coverageAfterReversal.statusCode).toBe(204);
 
     const replay = await app.inject({
       method: "POST",
