@@ -2420,6 +2420,269 @@ export async function prescriptionRoutes(app: FastifyInstance) {
     }
   });
 
+  app.delete("/fills/:id/product-sources/:sourceId", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(
+        request,
+        "prescription:process",
+      );
+      const params = request.params as { id: string; sourceId: string };
+      const fill = await db.prescriptionFill.findFirst({
+        where: {
+          id: params.id,
+          prescription: { siteId: actor.siteId },
+        },
+        include: { prescription: true },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (
+        fill.status !== "IN_PROGRESS" ||
+        fill.prescription.status !== "PRODUCT_FILL"
+      ) {
+        return reply.code(409).send({
+          error:
+            "Product sources may only be removed during an in-progress Product Fill.",
+        });
+      }
+
+      const summary = await db.$transaction(async (tx) => {
+        const updated = await removeInventorySourceForFill(tx, {
+          fillId: params.id,
+          sourceId: params.sourceId,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          reason: "Product Fill source removed before pharmacist verification",
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_PRODUCT_SOURCE_REMOVED",
+          entityType: "PrescriptionFill",
+          entityId: params.id,
+          requestId: request.id,
+          metadata: {
+            sourceId: params.sourceId,
+            reservedQuantity: updated.reservedQuantity.toString(),
+            remainingQuantity: updated.remainingQuantity.toString(),
+            sourceCount: updated.sources.length,
+          },
+        });
+        return updated;
+      });
+
+      const updatedFill = await db.prescriptionFill.findUniqueOrThrow({
+        where: { id: params.id },
+        include: {
+          product: { include: { manufacturer: true } },
+          productLot: true,
+          productExpiration: true,
+          inventoryBalance: true,
+          productSources: {
+            include: {
+              product: { include: { manufacturer: true, medication: true } },
+              manufacturer: true,
+              productLot: true,
+              productExpiration: true,
+              inventoryBalance: true,
+            },
+            orderBy: { sequence: "asc" },
+          },
+          biologicCommunicationTask: true,
+        },
+      });
+
+      return {
+        fill: updatedFill,
+        sourceSummary: {
+          requiredQuantity: summary.requiredQuantity.toString(),
+          reservedQuantity: summary.reservedQuantity.toString(),
+          remainingQuantity: summary.remainingQuantity.toString(),
+          complete: summary.complete,
+        },
+      };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/nti-manufacturer-consent", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "product:compliance");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as {
+        priorManufacturerId?: string;
+        newManufacturerId?: string;
+        prescriberConsentAt?: string;
+        patientConsentAt?: string;
+        note?: string;
+      };
+      const prescriberConsentAt = parseDate(body.prescriberConsentAt);
+      const patientConsentAt = parseDate(body.patientConsentAt);
+      const note = body.note?.trim();
+
+      if (
+        !body.priorManufacturerId ||
+        !body.newManufacturerId ||
+        body.priorManufacturerId === body.newManufacturerId ||
+        !(prescriberConsentAt instanceof Date) ||
+        !(patientConsentAt instanceof Date) ||
+        !note
+      ) {
+        return reply.code(400).send({
+          error:
+            "Prior/new manufacturers, prescriber consent time, patient consent time, and a documentation note are required.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: {
+          id,
+          prescription: { siteId: actor.siteId },
+        },
+        include: {
+          prescription: { include: { medication: true } },
+        },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (!fill.prescription.medication?.ncNarrowTherapeuticIndex) {
+        return reply.code(409).send({
+          error: "This medication is not configured as a North Carolina NTI drug.",
+        });
+      }
+
+      const consent = await db.$transaction(async (tx) => {
+        const record = await tx.ntiManufacturerConsent.upsert({
+          where: {
+            fillId_priorManufacturerId_newManufacturerId: {
+              fillId: id,
+              priorManufacturerId: body.priorManufacturerId!,
+              newManufacturerId: body.newManufacturerId!,
+            },
+          },
+          update: {
+            prescriberConsentAt,
+            patientConsentAt,
+            documentedById: actor.id,
+            note,
+          },
+          create: {
+            fillId: id,
+            priorManufacturerId: body.priorManufacturerId!,
+            newManufacturerId: body.newManufacturerId!,
+            prescriberConsentAt,
+            patientConsentAt,
+            documentedById: actor.id,
+            note,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "NC_NTI_MANUFACTURER_CHANGE_CONSENT_DOCUMENTED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            priorManufacturerId: body.priorManufacturerId,
+            newManufacturerId: body.newManufacturerId,
+            prescriberConsentAt: prescriberConsentAt.toISOString(),
+            patientConsentAt: patientConsentAt.toISOString(),
+            note,
+          },
+        });
+        return record;
+      });
+
+      return reply.code(201).send({ consent });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/biologic-communication/complete", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "product:compliance");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as { note?: string };
+      const note = body.note?.trim();
+      if (!note) {
+        return reply.code(400).send({
+          error: "A prescriber-communication note is required.",
+        });
+      }
+
+      const task = await db.biologicCommunicationTask.findFirst({
+        where: {
+          fillId: id,
+          siteId: actor.siteId,
+        },
+      });
+      if (!task) {
+        return reply.code(404).send({
+          error: "No biologic prescriber-communication task exists for this fill.",
+        });
+      }
+      if (task.status === "COMPLETED") {
+        return reply.code(409).send({
+          error: "Biologic communication is already documented complete.",
+        });
+      }
+
+      const completedAt = new Date();
+      const completed = await db.$transaction(async (tx) => {
+        const updated = await tx.biologicCommunicationTask.update({
+          where: { id: task.id },
+          data: {
+            status: "COMPLETED",
+            completedById: actor.id,
+            completedAt,
+            note,
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "NC_BIOLOGIC_PRESCRIBER_COMMUNICATION_COMPLETED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            productName: task.productName,
+            manufacturerName: task.manufacturerName,
+            dueAt: task.dueAt.toISOString(),
+            completedAt: completedAt.toISOString(),
+            note,
+          },
+        });
+        return updated;
+      });
+
+      return { task: completed };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
   app.post("/fills/:id/start", async (request, reply) => {
     try {
       const actor = await resolveDevelopmentActor(request, "prescription:process");
