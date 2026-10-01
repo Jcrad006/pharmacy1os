@@ -36,6 +36,7 @@ export type PickupVerificationInput = {
   recipientName: string;
   relationship?: string | null;
   identityMethod: PickupIdentityMethod;
+  identityValue?: string | null;
   signatureMethod: PickupSignatureMethod;
   signatureName?: string | null;
   signatureReference?: string | null;
@@ -605,7 +606,10 @@ export async function quoteFillsForCheckout(
   );
 }
 
-function normalizePickup(input: PickupVerificationInput) {
+function normalizePickup(
+  input: PickupVerificationInput,
+  patient: { dateOfBirth: Date | null },
+) {
   const recipientName = input.recipientName?.trim();
   const relationship = input.relationship?.trim() || null;
   const signatureName = input.signatureName?.trim() || null;
@@ -624,6 +628,24 @@ function normalizePickup(input: PickupVerificationInput) {
       "INVALID_IDENTITY_METHOD",
       "A valid pickup identity verification method is required.",
     );
+  }
+  if (input.identityMethod === "DATE_OF_BIRTH") {
+    const entered = input.identityValue?.trim();
+    if (!patient.dateOfBirth || !entered) {
+      throw new PosError(
+        400,
+        "DOB_VERIFICATION_REQUIRED",
+        "Enter the patient's date of birth to verify pickup identity.",
+      );
+    }
+    const expected = patient.dateOfBirth.toISOString().slice(0, 10);
+    if (entered !== expected) {
+      throw new PosError(
+        409,
+        "PICKUP_IDENTITY_MISMATCH",
+        "The entered date of birth does not match the patient record.",
+      );
+    }
   }
   if (!pickupSignatureMethods.has(input.signatureMethod)) {
     throw new PosError(
@@ -866,7 +888,14 @@ export async function checkoutFills(
         context.siteId,
       );
       const payment = normalizeTenders(input.tenders ?? [], quote.totalDue);
-      const pickup = normalizePickup(input.pickup);
+      const patient = await tx.patient.findUnique({
+        where: { id: quote.patientId },
+        select: { dateOfBirth: true },
+      });
+      if (!patient) {
+        throw new PosError(404, "PATIENT_NOT_FOUND", "Patient not found.");
+      }
+      const pickup = normalizePickup(input.pickup, patient);
       validatePackageScans(quote.lines, input.pickupPackages);
       const pickupVerifiedAt = new Date();
       const receiptNumber =
