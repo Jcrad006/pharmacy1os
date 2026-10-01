@@ -212,6 +212,26 @@ export type ExceptionSummary = {
 
 
 
+export type PharmacySiteSummary = {
+  id: string;
+  name: string;
+  ncpdpId: string | null;
+  phone: string | null;
+};
+
+export type InventoryTransferStatus =
+  | "IN_TRANSIT"
+  | "RECEIVED"
+  | "CANCELLED";
+
+export type RecallStatus = "ACTIVE" | "CLOSED";
+
+export type PurchaseOrderStatus =
+  | "OPEN"
+  | "PARTIALLY_RECEIVED"
+  | "RECEIVED"
+  | "CANCELLED";
+
 export type InventoryTransactionType =
   | "RECEIVE"
   | "RESERVE"
@@ -221,7 +241,10 @@ export type InventoryTransactionType =
   | "ADJUSTMENT"
   | "QUARANTINE"
   | "RELEASE_QUARANTINE"
-  | "DISPOSE";
+  | "DISPOSE"
+  | "TRANSFER_OUT"
+  | "TRANSFER_IN"
+  | "TRANSFER_CANCEL_RETURN";
 
 export type InventoryTransaction = {
   id: string;
@@ -366,6 +389,147 @@ export type InventoryBalance = {
   productLot?: ProductLot;
   productExpiration?: ProductExpiration;
   transactions?: InventoryTransaction[];
+};
+
+export type InventoryTransfer = {
+  id: string;
+  sourceSiteId: string;
+  sourceSite: PharmacySiteSummary;
+  destinationSiteId: string;
+  destinationSite: PharmacySiteSummary;
+  sourceInventoryBalanceId: string;
+  sourceInventoryBalance: InventoryBalance;
+  destinationInventoryBalanceId: string | null;
+  destinationInventoryBalance: InventoryBalance | null;
+  productId: string;
+  lotNumber: string;
+  expirationDate: string;
+  quantity: string | number;
+  status: InventoryTransferStatus;
+  note: string | null;
+  initiatedById: string;
+  initiatedBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  receivedById: string | null;
+  receivedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  cancelledById: string | null;
+  cancelledBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  shippedAt: string;
+  receivedAt: string | null;
+  cancelledAt: string | null;
+  transactions: InventoryTransaction[];
+};
+
+export type RecallAffectedFill = {
+  id: string;
+  recallCaseId: string;
+  fillId: string;
+  discoveredAt: string;
+  fill: PrescriptionFill & {
+    productLot: ProductLot | null;
+    prescription: {
+      id: string;
+      rxNumber: string | null;
+      medicationName: string;
+      patient: Patient;
+    };
+  };
+};
+
+export type RecallCase = {
+  id: string;
+  siteId: string;
+  productId: string;
+  product: Product & { medication: Medication };
+  lotNumber: string | null;
+  lotNumberSearch: string | null;
+  reference: string;
+  reason: string;
+  status: RecallStatus;
+  createdById: string;
+  createdBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  closedById: string | null;
+  closedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  createdAt: string;
+  closedAt: string | null;
+  closureNote: string | null;
+  holds: InventoryHold[];
+  affectedFills: RecallAffectedFill[];
+};
+
+export type PurchaseOrderReceipt = {
+  id: string;
+  purchaseOrderLineId: string;
+  actorId: string;
+  actor: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  inventoryBalanceId: string;
+  inventoryBalance: InventoryBalance;
+  inventoryTransactionId: string;
+  quantity: string | number;
+  lotNumber: string;
+  expirationDate: string;
+  invoiceReference: string | null;
+  receivedAt: string;
+};
+
+export type PurchaseOrderLine = {
+  id: string;
+  purchaseOrderId: string;
+  productId: string;
+  product: Product & { medication: Medication };
+  quantityOrdered: string | number;
+  quantityReceived: string | number;
+  unitCost: string | number | null;
+  createdAt: string;
+  updatedAt: string;
+  receipts: PurchaseOrderReceipt[];
+};
+
+export type PurchaseOrder = {
+  id: string;
+  siteId: string;
+  orderNumber: string;
+  supplierName: string;
+  status: PurchaseOrderStatus;
+  note: string | null;
+  createdById: string;
+  createdBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  cancelledById: string | null;
+  cancelledBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  createdAt: string;
+  cancelledAt: string | null;
+  lines: PurchaseOrderLine[];
 };
 
 export type ProductLot = {
