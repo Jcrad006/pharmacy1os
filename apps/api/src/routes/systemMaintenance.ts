@@ -38,7 +38,7 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
       const actor = await resolveDevelopmentActor(request, "system:backup");
       const backup = await createBackupSet();
 
-      await writeAuditEvent(db, {
+      await db.$transaction((tx) =>\n        writeAuditEvent(tx, {
         siteId: actor.siteId,
         actorId: actor.id,
         action: "SYSTEM_BACKUP_CREATED",
@@ -53,7 +53,7 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
           integrityStatus: backup.integrityStatus,
           integrityReportId: backup.integrityReportId,
         },
-      });
+        }),\n      );
 
       return reply.code(201).send({ backup });
     } catch (error) {
@@ -67,7 +67,7 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
       const backupId = (request.params as { id: string }).id;
       const verification = await verifyBackupSet(backupId);
 
-      await writeAuditEvent(db, {
+      await db.$transaction((tx) =>\n        writeAuditEvent(tx, {
         siteId: actor.siteId,
         actorId: actor.id,
         action: "SYSTEM_BACKUP_VERIFIED",
@@ -79,7 +79,7 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
           status: verification.status,
           findingCount: verification.findings.length,
         },
-      });
+        }),\n      );
 
       return { verification };
     } catch (error) {
@@ -92,7 +92,7 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
       const actor = await resolveDevelopmentActor(request, "system:backup");
       const report = await scanDocumentVaultIntegrity();
 
-      await writeAuditEvent(db, {
+      await db.$transaction((tx) =>\n        writeAuditEvent(tx, {
         siteId: actor.siteId,
         actorId: actor.id,
         action: "DOCUMENT_VAULT_INTEGRITY_SCANNED",
@@ -107,7 +107,7 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
           orphanFileCount: report.orphanFileCount,
           findingCount: report.findings.length,
         },
-      });
+        }),\n      );
 
       return { report };
     } catch (error) {
