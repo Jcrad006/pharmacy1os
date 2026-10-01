@@ -332,7 +332,9 @@ export function PrescriptionDetail({
     onError(null);
     try {
       await removeFillProductSource(devUser, currentFill.id, sourceId);
-      await onMutated("Physical product source removed and reservation released.");
+      await onMutated(
+        "Physical product source removed and reservation released. Any active paid claim was reversed before the source correction; the corrected fill will re-adjudicate when sourcing is complete.",
+      );
       await load();
     } catch (error) {
       onError(
@@ -356,8 +358,8 @@ export function PrescriptionDetail({
       );
       await onMutated(
         productId
-          ? "Default billing NDC candidate selected."
-          : "Billing NDC candidate cleared; payer strategy must select it during adjudication.",
+          ? "Billing NDC override / tie-breaker selected."
+          : "Billing NDC override cleared; majority-source payers will calculate the billed NDC automatically.",
       );
       await load();
     } catch (error) {
@@ -650,6 +652,31 @@ export function PrescriptionDetail({
   const sourceProductIds = Array.from(
     new Set((currentFill?.productSources ?? []).map((source) => source.productId)),
   );
+  const majorityBillingSource = (() => {
+    const sources = currentFill?.productSources ?? [];
+    if (sources.length === 0) return null;
+    const totals = new Map<string, number>();
+    const representative = new Map<string, (typeof sources)[number]>();
+    for (const source of sources) {
+      totals.set(
+        source.productId,
+        (totals.get(source.productId) ?? 0) + Number(source.quantity),
+      );
+      if (!representative.has(source.productId)) {
+        representative.set(source.productId, source);
+      }
+    }
+    const max = Math.max(...totals.values());
+    const leaders = [...totals.entries()].filter(([, quantity]) => quantity === max);
+    if (leaders.length !== 1) return null;
+    const [productId, quantity] = leaders[0]!;
+    return {
+      source: representative.get(productId)!,
+      quantity,
+    };
+  })();
+  const majorityBillingTie =
+    sourceProductIds.length > 1 && majorityBillingSource === null;
   const complianceAllowed =
     user?.role === "ADMIN" || user?.role === "PHARMACIST";
   const medicationManufacturers = Array.from(
@@ -1214,8 +1241,20 @@ export function PrescriptionDetail({
                       placeholder="Required before third-party adjudication"
                     />
                   </label>
+                  <div>
+                    <strong>Automatic majority billing NDC</strong>
+                    <span>
+                      {majorityBillingSource
+                        ? `${majorityBillingSource.source.ndcSnapshot} · ${majorityBillingSource.quantity} units`
+                        : majorityBillingTie
+                          ? "Exact quantity tie — explicit billing NDC selection required"
+                          : sourceProductIds.length === 1
+                            ? currentFill.productSources[0]?.ndcSnapshot ?? "—"
+                            : "Waiting for physical sources"}
+                    </span>
+                  </div>
                   <label>
-                    Default billing NDC candidate
+                    Billing NDC override / tie-breaker
                     <select
                       value={currentFill.billingProductId ?? ""}
                       disabled={
@@ -1228,9 +1267,9 @@ export function PrescriptionDetail({
                       }
                     >
                       <option value="">
-                        {sourceProductIds.length > 1
-                          ? "Payer strategy / explicit selection required"
-                          : "Not selected"}
+                        {majorityBillingTie
+                          ? "Select one of the tied NDCs"
+                          : "Use automatic majority NDC"}
                       </option>
                       {Array.from(
                         new Map(
@@ -1253,10 +1292,15 @@ export function PrescriptionDetail({
                   <p className="catalog-help">
                     Days supply and the billed NDC are claim inputs. Once the
                     physical sources are complete, Pharmacy1OS automatically
-                    adjudicates active coverages in COB order. The claim uses
-                    the payer-intended full-fill quantity while the dispensing
-                    label uses the physical quantity in this part. Split-product
-                    fills never infer a first/majority NDC.
+                    adjudicates active coverages in COB order. For a
+                    majority-source payer, quantities are aggregated across all
+                    lots for each NDC and the unique highest-quantity NDC is
+                    billed automatically. An exact tie requires an explicit
+                    tie-break selection. If the physical source mix is corrected
+                    after payment, the active claim is reversed before the
+                    corrected fill is re-adjudicated. The claim still uses the
+                    payer-intended full-fill quantity while the dispensing label
+                    uses the physical quantity in this part.
                   </p>
                 </div>
 
