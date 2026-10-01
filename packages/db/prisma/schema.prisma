@@ -928,11 +928,14 @@ model InventoryPolicy {
   product                   Product?     @relation(fields: [productId], references: [id], onDelete: Restrict)
   reorderPoint              Decimal?     @db.Decimal(14, 3)
   parLevel                  Decimal?     @db.Decimal(14, 3)
+  maxStockLevel             Decimal?     @db.Decimal(14, 3)
   minShelfLifeDays          Int?
   expirationWarningDays     Int          @default(90)
   fefoEnabled               Boolean      @default(true)
   preferredSupplierName     String?
   adjustmentApprovalThreshold Decimal?   @db.Decimal(14, 3)
+  allowTechnicianAdjustments Boolean      @default(false)
+  requiredLocationType      InventoryLocationType?
   requireTransferSecondCheck Boolean     @default(false)
   staleReservationHours     Int          @default(24)
   createdAt                 DateTime     @default(now())
