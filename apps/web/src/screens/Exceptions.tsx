@@ -12,6 +12,8 @@ const kinds: Array<{ value: "" | ExceptionKind; label: string }> = [
   { value: "PHARMACIST_REVIEW", label: "Pharmacist Review" },
   { value: "ON_HOLD", label: "On Hold" },
   { value: "SCHEDULED_FILL", label: "Scheduled Fills" },
+  { value: "COMPLETION_FILL", label: "Completion Fills" },
+  { value: "EMERGENCY_FOLLOW_UP", label: "Emergency Follow-up" },
 ];
 
 const kindLabels: Record<ExceptionKind, string> = {
@@ -19,6 +21,8 @@ const kindLabels: Record<ExceptionKind, string> = {
   PHARMACIST_REVIEW: "Pharmacist Review",
   ON_HOLD: "On Hold",
   SCHEDULED_FILL: "Scheduled Fill",
+  COMPLETION_FILL: "Completion Fill",
+  EMERGENCY_FOLLOW_UP: "Emergency Follow-up",
 };
 
 export function Exceptions({
@@ -41,6 +45,7 @@ export function Exceptions({
     onHold: 0,
     pharmacistReview: 0,
     scheduled: 0,
+    emergencyFollowUp: 0,
   });
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<"" | ExceptionKind>("");
@@ -69,7 +74,8 @@ export function Exceptions({
     ["Clinical / DUR", summary.clinical],
     ["Pharmacist Review", summary.pharmacistReview],
     ["On Hold", summary.onHold],
-    ["Scheduled", summary.scheduled],
+    ["Scheduled / Completion", summary.scheduled],
+    ["Emergency Follow-up", summary.emergencyFollowUp],
   ] as const;
 
   return (
