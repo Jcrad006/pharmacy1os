@@ -115,9 +115,11 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
         isQuarantine?: boolean;
         temperatureMinC?: number;
         temperatureMaxC?: number;
+        barcode?: string;
       };
       const code = body.code?.trim().toUpperCase();
       const name = body.name?.trim();
+      const barcode = body.barcode?.trim().toUpperCase() || null;
 
       if (!code || !name || !body.type || !locationTypes.has(body.type)) {
         return reply.code(400).send({
@@ -166,6 +168,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             isQuarantine: body.isQuarantine ?? false,
             temperatureMinC: body.temperatureMinC,
             temperatureMaxC: body.temperatureMaxC,
+            barcode,
           },
         });
 
@@ -183,6 +186,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             isDefaultReceiving: created.isDefaultReceiving,
             isDefaultDispensing: created.isDefaultDispensing,
             isQuarantine: created.isQuarantine,
+            barcode: created.barcode,
           },
         });
         return created;
