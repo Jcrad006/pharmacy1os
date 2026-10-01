@@ -66,6 +66,51 @@ function activeOnDate(
   );
 }
 
+function effectiveBillingProfile(payer: {
+  billingNdcStrategy: BillingNdcStrategy;
+  billingProfile: {
+    billingNdcStrategy: BillingNdcStrategy;
+    autoReversePaidClaimOnSourceCorrection: boolean;
+    customRules: Prisma.JsonValue;
+    notes: string | null;
+    version: number;
+  } | null;
+}) {
+  return {
+    version: payer.billingProfile?.version ?? 0,
+    billingNdcStrategy:
+      payer.billingProfile?.billingNdcStrategy ?? payer.billingNdcStrategy,
+    autoReversePaidClaimOnSourceCorrection:
+      payer.billingProfile?.autoReversePaidClaimOnSourceCorrection ??
+      payer.billingNdcStrategy === "MAJORITY_SOURCE",
+    customRules: payer.billingProfile?.customRules ?? {},
+    notes: payer.billingProfile?.notes ?? null,
+  };
+}
+
+function billingStrategyFromSnapshot(
+  snapshot: Prisma.JsonValue | null,
+  fallback: BillingNdcStrategy,
+): BillingNdcStrategy {
+  if (
+    snapshot &&
+    typeof snapshot === "object" &&
+    !Array.isArray(snapshot) &&
+    "billingNdcStrategy" in snapshot
+  ) {
+    const value = (snapshot as Record<string, unknown>).billingNdcStrategy;
+    if (
+      value === "MAJORITY_SOURCE" ||
+      value === "REQUIRE_MANUAL_SELECTION" ||
+      value === "SINGLE_SOURCE_ONLY" ||
+      value === "PAYER_CONFIGURED"
+    ) {
+      return value;
+    }
+  }
+  return fallback;
+}
+
 function priorFromTransaction(transaction: {
   coveragePosition: number;
   payerId: string;
@@ -121,7 +166,9 @@ const fillForClaimsInclude = {
       patient: {
         include: {
           coverages: {
-            include: { payer: true },
+            include: {
+              payer: { include: { billingProfile: true } },
+            },
             orderBy: { position: "asc" as const },
           },
         },
@@ -485,6 +532,8 @@ async function persistClaimTransaction(input: {
   adapterVersion: string;
 }) {
   const adjudicatedAt = new Date();
+  const billingProfile = effectiveBillingProfile(input.coverage.payer);
+  const billingProfileSnapshot = jsonSnapshot(billingProfile);
   return db.$transaction(async (tx) => {
     const transaction = await tx.claimTransaction.create({
       data: {
@@ -512,6 +561,8 @@ async function persistClaimTransaction(input: {
           input.request.physicalPartQuantity,
         ),
         daysSupply: input.request.daysSupply,
+        billingProfileVersion: billingProfile.version,
+        billingProfileSnapshot,
         requestSnapshot: jsonSnapshot(input.request),
         responseSnapshot: jsonSnapshot(input.response),
         transactionReference: input.response.transactionReference ?? null,
@@ -545,6 +596,8 @@ async function persistClaimTransaction(input: {
         rejectCodes: input.response.rejectCodes,
         payerIntendedQuantity: input.request.payerIntendedQuantity,
         physicalPartQuantity: input.request.physicalPartQuantity,
+        billingProfileVersion: billingProfile.version,
+        billingNdcStrategy: billingProfile.billingNdcStrategy,
       },
     });
 
@@ -716,13 +769,13 @@ export async function adjudicateFillClaims(
       );
     }
 
+    const billingProfile = effectiveBillingProfile(coverage.payer);
     let billedProductId: string;
     try {
       billedProductId = requireBillingNdcSelection({
         physicalSources,
         billingProductId: fill.billingProductId,
-        billingNdcStrategy:
-          coverage.payer.billingNdcStrategy as BillingNdcStrategy,
+        billingNdcStrategy: billingProfile.billingNdcStrategy,
       });
     } catch (error) {
       throw new ClaimError(
@@ -788,7 +841,7 @@ export async function adjudicateFillClaims(
 
     const response = await adapter.submit(claimRequest, {
       standard: coverage.payer.claimStandard,
-      billingNdcStrategy: coverage.payer.billingNdcStrategy,
+      billingNdcStrategy: billingProfile.billingNdcStrategy,
     });
 
     const transaction = await persistClaimTransaction({
@@ -972,7 +1025,10 @@ export async function reverseClaimTransaction(
     },
     {
       standard: original.claimStandard,
-      billingNdcStrategy: coverage.payer.billingNdcStrategy,
+      billingNdcStrategy: billingStrategyFromSnapshot(
+        original.billingProfileSnapshot,
+        effectiveBillingProfile(coverage.payer).billingNdcStrategy,
+      ),
     },
   );
 
@@ -1044,7 +1100,20 @@ export async function reverseActivePaidClaimsForFill(
       id: true,
       coveragePosition: true,
       createdAt: true,
-      payer: { select: { billingNdcStrategy: true } },
+      payer: {
+        select: {
+          billingNdcStrategy: true,
+          billingProfile: {
+            select: {
+              billingNdcStrategy: true,
+              autoReversePaidClaimOnSourceCorrection: true,
+              customRules: true,
+              notes: true,
+              version: true,
+            },
+          },
+        },
+      },
     },
   });
   if (paidClaims.length === 0) return [];
@@ -1076,13 +1145,15 @@ export async function reverseActivePaidClaimsForFill(
   if (
     options?.requireMajoritySource &&
     activePaidClaims.some(
-      (claim) => claim.payer.billingNdcStrategy !== "MAJORITY_SOURCE",
+      (claim) =>
+        !effectiveBillingProfile(claim.payer)
+          .autoReversePaidClaimOnSourceCorrection,
     )
   ) {
     throw new ClaimError(
       409,
       "PAID_CLAIM_REVERSAL_REQUIRED",
-      "Reverse the active paid claim before changing product-source details for a payer that does not use automatic majority-NDC billing.",
+      "This payer billing profile requires explicit claim reversal before changing product-source details.",
       {
         claimTransactionIds: activePaidClaims.map((claim) => claim.id),
       },

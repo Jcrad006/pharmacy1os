@@ -959,6 +959,19 @@ export type BiologicCommunicationTask = {
   updatedAt: string;
 };
 
+export type PayerBillingProfile = {
+  id: string;
+  siteId: string;
+  payerId: string;
+  billingNdcStrategy: BillingNdcStrategy;
+  autoReversePaidClaimOnSourceCorrection: boolean;
+  customRules: Record<string, unknown> | unknown;
+  notes: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Payer = {
   id: string;
   siteId: string;
@@ -968,6 +981,7 @@ export type Payer = {
   defaultGroupId: string | null;
   claimStandard: ClaimStandard;
   billingNdcStrategy: BillingNdcStrategy;
+  billingProfile?: PayerBillingProfile | null;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1024,6 +1038,8 @@ export type ClaimTransaction = {
   payerIntendedQuantity: string | number;
   physicalPartQuantity: string | number;
   daysSupply: number;
+  billingProfileVersion: number | null;
+  billingProfileSnapshot: unknown;
   requestSnapshot: unknown;
   responseSnapshot: unknown;
   transactionReference: string | null;

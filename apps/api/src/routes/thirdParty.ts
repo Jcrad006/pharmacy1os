@@ -44,6 +44,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
       const actor = await resolveDevelopmentActor(request, "thirdparty:read");
       const payers = await db.payer.findMany({
         where: { siteId: actor.siteId },
+        include: { billingProfile: true },
         orderBy: [{ active: "desc" }, { name: "asc" }],
       });
       return { payers };
@@ -57,7 +58,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
 
   app.post("/third-party/payers", async (request, reply) => {
     try {
-      const actor = await resolveDevelopmentActor(request, "thirdparty:write");
+      const actor = await resolveDevelopmentActor(request, "thirdparty:override");
       const body = (request.body ?? {}) as {
         name?: string;
         bin?: string;
@@ -65,6 +66,8 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         defaultGroupId?: string;
         claimStandard?: ClaimStandard;
         billingNdcStrategy?: BillingNdcStrategy;
+        autoReversePaidClaimOnSourceCorrection?: boolean;
+        billingProfileNotes?: string | null;
       };
       const name = body.name?.trim();
       if (!name) {
@@ -81,6 +84,8 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
       }
 
       const payer = await db.$transaction(async (tx) => {
+        const billingNdcStrategy =
+          body.billingNdcStrategy ?? "MAJORITY_SOURCE";
         const created = await tx.payer.create({
           data: {
             siteId: actor.siteId,
@@ -89,8 +94,18 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
             pcn: body.pcn?.trim() || null,
             defaultGroupId: body.defaultGroupId?.trim() || null,
             claimStandard: body.claimStandard ?? "D0",
-            billingNdcStrategy:
-              body.billingNdcStrategy ?? "MAJORITY_SOURCE",
+            billingNdcStrategy,
+          },
+        });
+        const billingProfile = await tx.payerBillingProfile.create({
+          data: {
+            siteId: actor.siteId,
+            payerId: created.id,
+            billingNdcStrategy,
+            autoReversePaidClaimOnSourceCorrection:
+              body.autoReversePaidClaimOnSourceCorrection ??
+              billingNdcStrategy === "MAJORITY_SOURCE",
+            notes: body.billingProfileNotes?.trim() || null,
           },
         });
         await writeAuditEvent(tx, {
@@ -105,10 +120,33 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
             bin: created.bin,
             pcn: created.pcn,
             claimStandard: created.claimStandard,
-            billingNdcStrategy: created.billingNdcStrategy,
+            billingProfileVersion: billingProfile.version,
+            billingNdcStrategy: billingProfile.billingNdcStrategy,
+            autoReversePaidClaimOnSourceCorrection:
+              billingProfile.autoReversePaidClaimOnSourceCorrection,
           },
         });
-        return created;
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PAYER_BILLING_PROFILE_CREATED",
+          entityType: "PayerBillingProfile",
+          entityId: billingProfile.id,
+          requestId: request.id,
+          metadata: {
+            payerId: created.id,
+            payerName: created.name,
+            version: billingProfile.version,
+            billingNdcStrategy: billingProfile.billingNdcStrategy,
+            autoReversePaidClaimOnSourceCorrection:
+              billingProfile.autoReversePaidClaimOnSourceCorrection,
+            notes: billingProfile.notes,
+          },
+        });
+        return tx.payer.findUniqueOrThrow({
+          where: { id: created.id },
+          include: { billingProfile: true },
+        });
       });
 
       return reply.code(201).send({ payer });
@@ -131,6 +169,8 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         defaultGroupId?: string | null;
         claimStandard?: ClaimStandard;
         billingNdcStrategy?: BillingNdcStrategy;
+        autoReversePaidClaimOnSourceCorrection?: boolean;
+        billingProfileNotes?: string | null;
         active?: boolean;
       };
       if (body.claimStandard && !claimStandards.has(body.claimStandard)) {
@@ -145,12 +185,18 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
 
       const existing = await db.payer.findFirst({
         where: { id, siteId: actor.siteId },
+        include: { billingProfile: true },
       });
       if (!existing) {
         return reply.code(404).send({ error: "Payer not found." });
       }
 
       const payer = await db.$transaction(async (tx) => {
+        const profilePatchRequested =
+          body.billingNdcStrategy !== undefined ||
+          body.autoReversePaidClaimOnSourceCorrection !== undefined ||
+          body.billingProfileNotes !== undefined;
+
         const updated = await tx.payer.update({
           where: { id },
           data: {
@@ -168,6 +214,57 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
             active: body.active,
           },
         });
+
+        let billingProfile = existing.billingProfile;
+        if (profilePatchRequested) {
+          billingProfile = await tx.payerBillingProfile.upsert({
+            where: { payerId: id },
+            create: {
+              siteId: actor.siteId,
+              payerId: id,
+              billingNdcStrategy:
+                body.billingNdcStrategy ??
+                existing.billingNdcStrategy,
+              autoReversePaidClaimOnSourceCorrection:
+                body.autoReversePaidClaimOnSourceCorrection ??
+                (body.billingNdcStrategy ?? existing.billingNdcStrategy) ===
+                  "MAJORITY_SOURCE",
+              notes:
+                body.billingProfileNotes === undefined
+                  ? null
+                  : body.billingProfileNotes?.trim() || null,
+              version: 1,
+            },
+            update: {
+              billingNdcStrategy: body.billingNdcStrategy,
+              autoReversePaidClaimOnSourceCorrection:
+                body.autoReversePaidClaimOnSourceCorrection,
+              notes:
+                body.billingProfileNotes === undefined
+                  ? undefined
+                  : body.billingProfileNotes?.trim() || null,
+              version: { increment: 1 },
+            },
+          });
+
+          await writeAuditEvent(tx, {
+            siteId: actor.siteId,
+            actorId: actor.id,
+            action: "PAYER_BILLING_PROFILE_UPDATED",
+            entityType: "PayerBillingProfile",
+            entityId: billingProfile.id,
+            requestId: request.id,
+            metadata: {
+              payerId: id,
+              payerName: updated.name,
+              priorVersion: existing.billingProfile?.version ?? null,
+              version: billingProfile.version,
+              before: existing.billingProfile,
+              after: billingProfile,
+            },
+          });
+        }
+
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
@@ -176,13 +273,78 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
           entityId: id,
           requestId: request.id,
           metadata: {
-            before: existing,
-            after: updated,
+            before: {
+              name: existing.name,
+              bin: existing.bin,
+              pcn: existing.pcn,
+              defaultGroupId: existing.defaultGroupId,
+              claimStandard: existing.claimStandard,
+              active: existing.active,
+            },
+            after: {
+              name: updated.name,
+              bin: updated.bin,
+              pcn: updated.pcn,
+              defaultGroupId: updated.defaultGroupId,
+              claimStandard: updated.claimStandard,
+              active: updated.active,
+            },
+            billingProfileVersion: billingProfile?.version ?? null,
           },
         });
-        return updated;
+        return tx.payer.findUniqueOrThrow({
+          where: { id },
+          include: { billingProfile: true },
+        });
       });
       return { payer };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/third-party/payers/:id/history", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:override");
+      const payerId = (request.params as { id: string }).id;
+      const payer = await db.payer.findFirst({
+        where: { id: payerId, siteId: actor.siteId },
+        include: { billingProfile: true },
+      });
+      if (!payer) {
+        return reply.code(404).send({ error: "Payer not found." });
+      }
+
+      const entityIds = [
+        payer.id,
+        payer.billingProfile?.id,
+      ].filter((id): id is string => Boolean(id));
+      const events = await db.auditEvent.findMany({
+        where: {
+          siteId: actor.siteId,
+          entityId: { in: entityIds },
+          action: {
+            in: [
+              "PAYER_CREATED",
+              "PAYER_UPDATED",
+              "PAYER_BILLING_PROFILE_CREATED",
+              "PAYER_BILLING_PROFILE_UPDATED",
+            ],
+          },
+        },
+        include: {
+          actor: {
+            select: { id: true, displayName: true, role: true },
+          },
+        },
+        orderBy: { occurredAt: "desc" },
+        take: 100,
+      });
+
+      return { payer, events };
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });
@@ -205,7 +367,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
 
       const coverages = await db.patientCoverage.findMany({
         where: { patientId, siteId: actor.siteId },
-        include: { payer: true },
+        include: { payer: { include: { billingProfile: true } } },
         orderBy: { position: "asc" },
       });
       return { coverages };
@@ -300,7 +462,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
               position,
             },
           },
-          include: { payer: true },
+          include: { payer: { include: { billingProfile: true } } },
         });
 
         const saved = await tx.patientCoverage.upsert({
@@ -338,7 +500,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
             terminationDate,
             active: body.active ?? true,
           },
-          include: { payer: true },
+          include: { payer: { include: { billingProfile: true } } },
         });
 
         await writeAuditEvent(tx, {
@@ -457,7 +619,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         },
         include: {
           coverages: {
-            include: { payer: true },
+            include: { payer: { include: { billingProfile: true } } },
             orderBy: { position: "asc" },
           },
         },
@@ -466,8 +628,9 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
       });
 
       const payers = await db.payer.findMany({
-        where: { siteId: actor.siteId, active: true },
-        orderBy: { name: "asc" },
+        where: { siteId: actor.siteId },
+        include: { billingProfile: true },
+        orderBy: [{ active: "desc" }, { name: "asc" }],
       });
 
       const recentClaims = await db.claimTransaction.findMany({

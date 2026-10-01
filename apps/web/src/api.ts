@@ -879,6 +879,8 @@ export async function createPayer(
     defaultGroupId?: string;
     claimStandard?: ClaimStandard;
     billingNdcStrategy?: BillingNdcStrategy;
+    autoReversePaidClaimOnSourceCorrection?: boolean;
+    billingProfileNotes?: string | null;
   },
 ) {
   return request<{ payer: Payer }>("/api/third-party/payers", {
@@ -886,6 +888,38 @@ export async function createPayer(
     devUser,
     body: JSON.stringify(input),
   });
+}
+
+export async function updatePayer(
+  devUser: string,
+  payerId: string,
+  input: {
+    name?: string;
+    bin?: string | null;
+    pcn?: string | null;
+    defaultGroupId?: string | null;
+    claimStandard?: ClaimStandard;
+    billingNdcStrategy?: BillingNdcStrategy;
+    autoReversePaidClaimOnSourceCorrection?: boolean;
+    billingProfileNotes?: string | null;
+    active?: boolean;
+  },
+) {
+  return request<{ payer: Payer }>(`/api/third-party/payers/${payerId}`, {
+    method: "PATCH",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getPayerHistory(
+  devUser: string,
+  payerId: string,
+) {
+  return request<{
+    payer: Payer;
+    events: AuditEvent[];
+  }>(`/api/third-party/payers/${payerId}/history`, { devUser });
 }
 
 export async function savePatientCoverage(
