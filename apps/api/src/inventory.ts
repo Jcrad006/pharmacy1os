@@ -341,6 +341,24 @@ export async function releaseInventoryReservation(
     },
   });
 
+  const activeAllocation = await tx.inventoryAllocation.findFirst({
+    where: {
+      fillId: fill.id,
+      inventoryBalanceId: balance.id,
+      status: "RESERVED",
+    },
+    orderBy: { reservedAt: "desc" },
+  });
+  if (activeAllocation) {
+    await tx.inventoryAllocation.update({
+      where: { id: activeAllocation.id },
+      data: {
+        status: "RELEASED",
+        releasedAt: new Date(),
+      },
+    });
+  }
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -471,6 +489,17 @@ export async function reserveInventoryForFill(
     },
   });
 
+  await tx.inventoryAllocation.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: locked.id,
+      fillId: fill.id,
+      quantity,
+      status: "RESERVED",
+      reservedAt,
+    },
+  });
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -596,6 +625,24 @@ export async function commitInventoryForFill(
     quantity,
   });
 
+  const reservedAllocation = await tx.inventoryAllocation.findFirst({
+    where: {
+      fillId: fill.id,
+      inventoryBalanceId: balance.id,
+      status: "RESERVED",
+    },
+    orderBy: { reservedAt: "desc" },
+  });
+  if (reservedAllocation) {
+    await tx.inventoryAllocation.update({
+      where: { id: reservedAllocation.id },
+      data: {
+        status: "COMMITTED",
+        committedAt,
+      },
+    });
+  }
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -668,6 +715,24 @@ export async function returnInventoryForFill(
     preferredTypes: ["DISPENSING", "UNASSIGNED"],
   });
   await reverseInventoryCostConsumption(tx, fill.id);
+
+  const committedAllocation = await tx.inventoryAllocation.findFirst({
+    where: {
+      fillId: fill.id,
+      inventoryBalanceId: balance.id,
+      status: "COMMITTED",
+    },
+    orderBy: { committedAt: "desc" },
+  });
+  if (committedAllocation) {
+    await tx.inventoryAllocation.update({
+      where: { id: committedAllocation.id },
+      data: {
+        status: "RETURNED",
+        returnedAt,
+      },
+    });
+  }
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
