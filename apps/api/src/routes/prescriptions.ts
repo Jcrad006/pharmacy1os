@@ -990,6 +990,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             where: { id: currentActiveFill.id },
             data: { status: "CANCELLED" },
           });
+
+          await tx.prescriptionFill.updateMany({
+            where: {
+              completionOfFillId: currentActiveFill.id,
+              status: "SCHEDULED",
+            },
+            data: { status: "CANCELLED" },
+          });
         }
 
         const rx = await tx.prescription.update({
@@ -2225,6 +2233,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             status: "RETURNED_TO_STOCK",
             soldAt: null,
           },
+        });
+
+        await tx.prescriptionFill.updateMany({
+          where: {
+            completionOfFillId: id,
+            status: "SCHEDULED",
+          },
+          data: { status: "CANCELLED" },
         });
 
         const rx = await tx.prescription.update({
