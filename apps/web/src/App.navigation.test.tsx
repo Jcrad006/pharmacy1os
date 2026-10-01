@@ -37,6 +37,11 @@ vi.mock("./api", async (importOriginal) => {
     getPrescribers: vi.fn(async () => []),
     getMedications: vi.fn(async () => []),
     getInventoryBalances: vi.fn(async () => []),
+    getInventoryLocations: vi.fn(async () => []),
+    getInventoryPolicies: vi.fn(async () => []),
+    getInventoryDemands: vi.fn(async () => []),
+    getInventoryExceptions: vi.fn(async () => []),
+    getReceivingDiscrepancies: vi.fn(async () => []),
     getInventorySites: vi.fn(async () => []),
     getInventoryTransfers: vi.fn(async () => []),
     getRecallCases: vi.fn(async () => []),
@@ -104,6 +109,9 @@ describe("primary workstation buttons", () => {
 
       if (expectedHeading === "Inventory Ledger") {
         const text = container.textContent ?? "";
+        expect(text).toContain("Inventory architecture");
+        expect(text).toContain("Demand / backorder queue");
+        expect(text).toContain("FEFO planner");
         expect(text).toContain("Inter-site transfers");
         expect(text).toContain("Purchase orders");
         expect(text).toContain("Recall management");
