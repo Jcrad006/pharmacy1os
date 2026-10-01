@@ -65,6 +65,10 @@ export function canVerify(user?: DevUser) {
   return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
 }
 
+export function canAuthorizeEmergencySupply(user?: DevUser) {
+  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+}
+
 export function canSell(user?: DevUser) {
   return Boolean(
     user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "CASHIER"].includes(user.role),
@@ -90,8 +94,10 @@ export function roleLabel(role: UserRole) {
 }
 
 export function activeFill(fills: PrescriptionFill[]) {
-  return fills.find((fill) =>
-    ["SCHEDULED", "IN_PROGRESS", "READY"].includes(fill.status),
+  return (
+    fills.find((fill) => fill.status === "IN_PROGRESS") ??
+    fills.find((fill) => fill.status === "READY") ??
+    fills.find((fill) => fill.status === "SCHEDULED")
   );
 }
 

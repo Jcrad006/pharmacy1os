@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type {
-  FillStatus,
-  PrescriptionStatus,
+import {
   Prisma,
+  type FillStatus,
+  type PrescriptionStatus,
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
@@ -67,6 +67,22 @@ type CreateFillBody = {
   quantity?: number;
 };
 
+type CreatePartialFillBody = {
+  dispenseQuantity?: number;
+  completionScheduledFor?: string;
+  reason?: string;
+};
+
+type CreateEmergencySupplyBody = {
+  quantity?: number;
+  reason?: string;
+  followUpDueAt?: string;
+};
+
+type CompleteEmergencyFollowUpBody = {
+  note?: string;
+};
+
 type ScanProductBody = {
   ndc?: string;
   lotNumber?: string;
@@ -120,7 +136,11 @@ const prescriptionInclude = {
       productExpiration: true,
       inventoryBalance: true,
     },
-    orderBy: { fillNumber: "desc" as const },
+    orderBy: [
+      { fillNumber: "desc" as const },
+      { partNumber: "desc" as const },
+      { createdAt: "desc" as const },
+    ],
   },
 };
 
@@ -147,7 +167,10 @@ function activeFill(
   fills: Array<{
     id: string;
     fillNumber: number;
+    partNumber?: number;
     status: FillStatus;
+    consumesRefill?: boolean;
+    kind?: string;
     productId?: string | null;
     productLotId?: string | null;
     productExpirationId?: string | null;
@@ -158,8 +181,10 @@ function activeFill(
     inventoryReturnedAt?: Date | null;
   }>,
 ) {
-  return fills.find((fill) =>
-    ["SCHEDULED", "IN_PROGRESS", "READY"].includes(fill.status),
+  return (
+    fills.find((fill) => fill.status === "IN_PROGRESS") ??
+    fills.find((fill) => fill.status === "READY") ??
+    fills.find((fill) => fill.status === "SCHEDULED")
   );
 }
 
@@ -927,10 +952,12 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             },
           });
 
-          prescriptionData.refillsUsed = Math.max(
-            current.refillsUsed,
-            currentActiveFill.fillNumber,
-          );
+          if (currentActiveFill.consumesRefill) {
+            prescriptionData.refillsUsed = Math.max(
+              current.refillsUsed,
+              currentActiveFill.fillNumber,
+            );
+          }
         }
 
         if (
@@ -961,6 +988,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
           await tx.prescriptionFill.update({
             where: { id: currentActiveFill.id },
+            data: { status: "CANCELLED" },
+          });
+
+          await tx.prescriptionFill.updateMany({
+            where: {
+              completionOfFillId: currentActiveFill.id,
+              status: "SCHEDULED",
+            },
             data: { status: "CANCELLED" },
           });
         }
@@ -1067,8 +1102,16 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const latestFill = prescription.fills[0];
+      const latestRefillConsumingFill = prescription.fills.find(
+        (fill) => fill.consumesRefill,
+      );
+      const returnedRefillConsumingFill = prescription.fills.find(
+        (fill) =>
+          fill.consumesRefill && fill.status === "RETURNED_TO_STOCK",
+      );
 
-      if (latestFill?.status === "RETURNED_TO_STOCK") {
+      if (returnedRefillConsumingFill) {
+        const latestFill = returnedRefillConsumingFill;
         const result = await db.$transaction(async (tx) => {
           const reprocessed = await tx.prescriptionFill.update({
             where: { id: latestFill.id },
@@ -1122,7 +1165,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
-      const nextFillNumber = (latestFill?.fillNumber ?? -1) + 1;
+      const nextFillNumber =
+        (latestRefillConsumingFill?.fillNumber ?? -1) + 1;
       const totalFillsAllowed = prescription.refillsAllowed + 1;
 
       if (nextFillNumber >= totalFillsAllowed) {
@@ -1134,8 +1178,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           data: {
             prescriptionId: prescription.id,
             fillNumber: nextFillNumber,
+            partNumber: 1,
+            kind: "STANDARD",
+            consumesRefill: true,
             scheduledFor: scheduledFor instanceof Date ? scheduledFor : undefined,
             quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
+            authorizedQuantity:
+              body.quantity ?? prescription.quantityWritten ?? undefined,
             status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
           },
         });
@@ -1180,6 +1229,417 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       throw error;
     }
   });
+
+  app.post("/fills/:id/partial", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(
+        request,
+        "prescription:process",
+      );
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as CreatePartialFillBody;
+      const dispenseQuantity = body.dispenseQuantity;
+      const completionScheduledFor = parseDate(body.completionScheduledFor);
+
+      if (
+        typeof dispenseQuantity !== "number" ||
+        !Number.isFinite(dispenseQuantity) ||
+        dispenseQuantity <= 0 ||
+        !(completionScheduledFor instanceof Date) ||
+        completionScheduledFor.getTime() <= Date.now()
+      ) {
+        return reply.code(400).send({
+          error:
+            "A positive partial quantity and a future completion date are required.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findUnique({
+        where: { id },
+        include: {
+          prescription: {
+            include: prescriptionInclude,
+          },
+        },
+      });
+
+      if (!fill || fill.prescription.siteId !== actor.siteId) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+
+      if (
+        fill.status !== "IN_PROGRESS" ||
+        fill.prescription.status !== "PRODUCT_FILL"
+      ) {
+        return reply.code(409).send({
+          error:
+            "A partial fill can only be entered during an in-progress Product Fill.",
+        });
+      }
+
+      if (
+        fill.productVerifiedAt ||
+        fill.inventoryReservedAt ||
+        fill.inventoryCommittedAt
+      ) {
+        return reply.code(409).send({
+          error:
+            "Enter the partial quantity before scanning/reserving product inventory.",
+          code: "PARTIAL_BEFORE_PRODUCT_SCAN_REQUIRED",
+        });
+      }
+
+      if (fill.kind === "EMERGENCY_SUPPLY") {
+        return reply.code(409).send({
+          error: "An emergency supply cannot be converted into a partial fill.",
+        });
+      }
+
+      if (fill.quantity === null) {
+        return reply.code(409).send({
+          error: "The current fill has no intended quantity.",
+        });
+      }
+
+      const intended = fill.quantity;
+      const partial = new Prisma.Decimal(dispenseQuantity);
+      if (partial.gte(intended)) {
+        return reply.code(400).send({
+          error:
+            "Partial quantity must be less than the current intended fill quantity.",
+        });
+      }
+
+      const remainder = intended.minus(partial);
+
+      const result = await db.$transaction(async (tx) => {
+        const existingParts = await tx.prescriptionFill.findMany({
+          where: {
+            prescriptionId: fill.prescriptionId,
+            fillNumber: fill.fillNumber,
+          },
+          select: { partNumber: true },
+          orderBy: { partNumber: "desc" },
+        });
+
+        const nextPartNumber = (existingParts[0]?.partNumber ?? fill.partNumber) + 1;
+        const rootAuthorizedQuantity =
+          fill.authorizedQuantity ?? intended;
+
+        const partialFill = await tx.prescriptionFill.update({
+          where: { id: fill.id },
+          data: {
+            kind: "PARTIAL",
+            quantity: partial,
+            authorizedQuantity: rootAuthorizedQuantity,
+          },
+        });
+
+        const completion = await tx.prescriptionFill.create({
+          data: {
+            prescriptionId: fill.prescriptionId,
+            fillNumber: fill.fillNumber,
+            partNumber: nextPartNumber,
+            kind: "COMPLETION",
+            consumesRefill: false,
+            completionOfFillId: fill.id,
+            scheduledFor: completionScheduledFor,
+            quantity: remainder,
+            authorizedQuantity: rootAuthorizedQuantity,
+            status: "SCHEDULED",
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRESCRIPTION_PARTIAL_FILL_CREATED",
+          entityType: "PrescriptionFill",
+          entityId: fill.id,
+          requestId: request.id,
+          metadata: {
+            prescriptionId: fill.prescriptionId,
+            fillNumber: fill.fillNumber,
+            partNumber: fill.partNumber,
+            intendedQuantity: intended.toString(),
+            dispensedQuantity: partial.toString(),
+            remainingQuantity: remainder.toString(),
+            completionFillId: completion.id,
+            completionScheduledFor:
+              completionScheduledFor.toISOString(),
+            reason: body.reason?.trim() || null,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRESCRIPTION_COMPLETION_FILL_SCHEDULED",
+          entityType: "PrescriptionFill",
+          entityId: completion.id,
+          requestId: request.id,
+          metadata: {
+            prescriptionId: fill.prescriptionId,
+            fillNumber: fill.fillNumber,
+            partNumber: completion.partNumber,
+            completionOfFillId: fill.id,
+            quantity: remainder.toString(),
+            scheduledFor: completionScheduledFor.toISOString(),
+          },
+        });
+
+        return { partialFill, completion };
+      });
+
+      const prescription = await db.prescription.findUniqueOrThrow({
+        where: { id: fill.prescriptionId },
+        include: prescriptionInclude,
+      });
+
+      return {
+        partialFill: result.partialFill,
+        completionFill: result.completion,
+        prescription: presentPrescription(prescription),
+      };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/prescriptions/:id/emergency-supply", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(
+        request,
+        "prescription:emergency",
+      );
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as CreateEmergencySupplyBody;
+      const followUpDueAt = parseDate(body.followUpDueAt);
+      const reason = body.reason?.trim();
+
+      if (
+        typeof body.quantity !== "number" ||
+        !Number.isFinite(body.quantity) ||
+        body.quantity <= 0 ||
+        !reason ||
+        !(followUpDueAt instanceof Date) ||
+        followUpDueAt.getTime() <= Date.now()
+      ) {
+        return reply.code(400).send({
+          error:
+            "A positive emergency quantity, documented pharmacist reason, and future follow-up deadline are required.",
+        });
+      }
+
+      const prescription = await db.prescription.findFirst({
+        where: { id, siteId: actor.siteId },
+        include: prescriptionInclude,
+      });
+
+      if (!prescription) {
+        return reply.code(404).send({ error: "Prescription not found." });
+      }
+
+      if (prescription.status !== "SOLD") {
+        return reply.code(409).send({
+          error:
+            "Emergency supply may only be initiated from a previously dispensed prescription.",
+        });
+      }
+
+      if (prescription.refillsUsed < prescription.refillsAllowed) {
+        return reply.code(409).send({
+          error:
+            "Authorized refills remain; use the normal refill workflow instead.",
+          code: "AUTHORIZED_REFILLS_REMAIN",
+        });
+      }
+
+      if (!prescription.medicationId) {
+        return reply.code(409).send({
+          error:
+            "Emergency supply requires a catalog-linked medication selection.",
+          code: "DRUG_SELECTION_REQUIRED",
+        });
+      }
+
+      if (activeFill(prescription.fills)) {
+        return reply.code(409).send({
+          error: "Resolve the existing active fill before creating emergency supply.",
+        });
+      }
+
+      const latestAccountingFill = prescription.fills.find(
+        (fill) => fill.consumesRefill,
+      );
+      if (!latestAccountingFill) {
+        return reply.code(409).send({
+          error:
+            "Emergency supply requires a prior completed prescription fill.",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const parts = await tx.prescriptionFill.findMany({
+          where: {
+            prescriptionId: prescription.id,
+            fillNumber: latestAccountingFill.fillNumber,
+          },
+          select: { partNumber: true },
+          orderBy: { partNumber: "desc" },
+        });
+        const partNumber = (parts[0]?.partNumber ?? 0) + 1;
+
+        const emergencyFill = await tx.prescriptionFill.create({
+          data: {
+            prescriptionId: prescription.id,
+            fillNumber: latestAccountingFill.fillNumber,
+            partNumber,
+            kind: "EMERGENCY_SUPPLY",
+            consumesRefill: false,
+            quantity: body.quantity,
+            authorizedQuantity: body.quantity,
+            status: "IN_PROGRESS",
+            emergencyReason: reason,
+            emergencyAuthorizedById: actor.id,
+            emergencyAuthorizedAt: new Date(),
+            followUpDueAt,
+          },
+        });
+
+        const rx = await tx.prescription.update({
+          where: { id: prescription.id },
+          data: { status: "PRODUCT_FILL" },
+          include: prescriptionInclude,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRESCRIPTION_EMERGENCY_SUPPLY_AUTHORIZED",
+          entityType: "PrescriptionFill",
+          entityId: emergencyFill.id,
+          requestId: request.id,
+          metadata: {
+            prescriptionId: prescription.id,
+            fillNumber: emergencyFill.fillNumber,
+            partNumber: emergencyFill.partNumber,
+            quantity: String(body.quantity),
+            reason,
+            followUpDueAt: followUpDueAt.toISOString(),
+            priorRefillsAllowed: prescription.refillsAllowed,
+            priorRefillsUsed: prescription.refillsUsed,
+          },
+        });
+
+        return { fill: emergencyFill, prescription: rx };
+      });
+
+      return reply.code(201).send({
+        fill: result.fill,
+        prescription: presentPrescription(result.prescription),
+      });
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post(
+    "/fills/:id/emergency-follow-up/complete",
+    async (request, reply) => {
+      try {
+        const actor = await resolveDevelopmentActor(
+          request,
+          "prescription:emergency",
+        );
+        const id = (request.params as { id: string }).id;
+        const body = (request.body ?? {}) as CompleteEmergencyFollowUpBody;
+        const note = body.note?.trim();
+
+        if (!note) {
+          return reply.code(400).send({
+            error: "A follow-up note is required.",
+          });
+        }
+
+        const fill = await db.prescriptionFill.findUnique({
+          where: { id },
+          include: { prescription: true },
+        });
+
+        if (!fill || fill.prescription.siteId !== actor.siteId) {
+          return reply.code(404).send({ error: "Emergency fill not found." });
+        }
+
+        if (fill.kind !== "EMERGENCY_SUPPLY") {
+          return reply.code(409).send({
+            error: "This fill is not an emergency supply.",
+          });
+        }
+
+        if (fill.followUpCompletedAt) {
+          return reply.code(409).send({
+            error: "Emergency-supply follow-up is already complete.",
+          });
+        }
+
+        const completedAt = new Date();
+        const updated = await db.$transaction(async (tx) => {
+          const completed = await tx.prescriptionFill.update({
+            where: { id: fill.id },
+            data: {
+              followUpCompletedAt: completedAt,
+              followUpNote: note,
+            },
+          });
+
+          await writeAuditEvent(tx, {
+            siteId: actor.siteId,
+            actorId: actor.id,
+            action: "PRESCRIPTION_EMERGENCY_SUPPLY_FOLLOW_UP_COMPLETED",
+            entityType: "PrescriptionFill",
+            entityId: fill.id,
+            requestId: request.id,
+            metadata: {
+              prescriptionId: fill.prescriptionId,
+              completedAt: completedAt.toISOString(),
+              note,
+            },
+          });
+
+          return completed;
+        });
+
+        return { fill: updated };
+      } catch (error) {
+        if (error instanceof AccessError || error instanceof InventoryError) {
+          return reply.code(error.statusCode).send({
+            error: error.message,
+            ...(error instanceof InventoryError
+              ? { code: error.code, details: error.details }
+              : {}),
+          });
+        }
+        throw error;
+      }
+    },
+  );
 
   app.post("/fills/:id/scan-barcode", async (request, reply) => {
     try {
@@ -1643,39 +2103,49 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
-      if (fill.prescription.status !== "DUR_REVIEW") {
+      const isCompletion = fill.kind === "COMPLETION";
+
+      if (
+        (!isCompletion && fill.prescription.status !== "DUR_REVIEW") ||
+        (isCompletion &&
+          !["SOLD", "DUR_REVIEW"].includes(fill.prescription.status))
+      ) {
         return reply.code(409).send({
-          error: "The prescription must be in DUR Review before starting the fill.",
+          error: isCompletion
+            ? "A completion fill can only start after the partial dispense has been sold."
+            : "The prescription must be in DUR Review before starting the fill.",
         });
       }
 
       const startTime = new Date();
 
-      await reconcileDateRuleIssues({
-        prescription: fill.prescription,
-        targetDate: startTime,
-        actorId: actor.id,
-        requestId: request.id,
-      });
-
-      const dateRuleBlock = evaluateDispensingDateRules(
-        fill.prescription,
-        startTime,
-      );
-
-      if (dateRuleBlock) {
-        await recordDateRuleIssue({
+      if (!isCompletion) {
+        await reconcileDateRuleIssues({
           prescription: fill.prescription,
-          block: dateRuleBlock,
+          targetDate: startTime,
           actorId: actor.id,
           requestId: request.id,
         });
 
-        return reply.code(409).send({
-          error: dateRuleBlock.message,
-          code: dateRuleBlock.code,
-          eligibleAt: dateRuleBlock.eligibleAt?.toISOString() ?? null,
-        });
+        const dateRuleBlock = evaluateDispensingDateRules(
+          fill.prescription,
+          startTime,
+        );
+
+        if (dateRuleBlock) {
+          await recordDateRuleIssue({
+            prescription: fill.prescription,
+            block: dateRuleBlock,
+            actorId: actor.id,
+            requestId: request.id,
+          });
+
+          return reply.code(409).send({
+            error: dateRuleBlock.message,
+            code: dateRuleBlock.code,
+            eligibleAt: dateRuleBlock.eligibleAt?.toISOString() ?? null,
+          });
+        }
       }
 
       const result = await db.$transaction(async (tx) => {
@@ -1700,6 +2170,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           metadata: {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
+            partNumber: fill.partNumber,
+            kind: fill.kind,
           },
         });
 
@@ -1761,6 +2233,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             status: "RETURNED_TO_STOCK",
             soldAt: null,
           },
+        });
+
+        await tx.prescriptionFill.updateMany({
+          where: {
+            completionOfFillId: id,
+            status: "SCHEDULED",
+          },
+          data: { status: "CANCELLED" },
         });
 
         const rx = await tx.prescription.update({

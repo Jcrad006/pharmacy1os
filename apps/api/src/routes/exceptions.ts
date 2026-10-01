@@ -7,7 +7,9 @@ type ExceptionKind =
   | "CLINICAL_ISSUE"
   | "ON_HOLD"
   | "PHARMACIST_REVIEW"
-  | "SCHEDULED_FILL";
+  | "SCHEDULED_FILL"
+  | "COMPLETION_FILL"
+  | "EMERGENCY_FOLLOW_UP";
 
 type ExceptionItem = {
   id: string;
@@ -46,6 +48,8 @@ export async function exceptionRoutes(app: FastifyInstance) {
         "ON_HOLD",
         "PHARMACIST_REVIEW",
         "SCHEDULED_FILL",
+        "COMPLETION_FILL",
+        "EMERGENCY_FOLLOW_UP",
       ]);
 
       if (query.kind && !kinds.has(query.kind)) {
@@ -57,8 +61,13 @@ export async function exceptionRoutes(app: FastifyInstance) {
         ? Math.min(300, Math.max(1, parsedLimit))
         : 200;
 
-      const [openIssues, held, pharmacistReview, scheduledFills] =
-        await Promise.all([
+      const [
+        openIssues,
+        held,
+        pharmacistReview,
+        scheduledFills,
+        emergencyFollowUps,
+      ] = await Promise.all([
           db.durIssue.findMany({
             where: {
               status: "OPEN",
@@ -95,6 +104,21 @@ export async function exceptionRoutes(app: FastifyInstance) {
               },
             },
             orderBy: { scheduledFor: "asc" },
+            take: limit,
+          }),
+          db.prescriptionFill.findMany({
+            where: {
+              kind: "EMERGENCY_SUPPLY",
+              followUpCompletedAt: null,
+              followUpDueAt: { not: null },
+              prescription: { siteId: actor.siteId },
+            },
+            include: {
+              prescription: {
+                include: { patient: true },
+              },
+            },
+            orderBy: { followUpDueAt: "asc" },
             take: limit,
           }),
         ]);
@@ -143,17 +167,48 @@ export async function exceptionRoutes(app: FastifyInstance) {
         })),
         ...scheduledFills.map((fill) => ({
           id: `scheduled:${fill.id}`,
-          kind: "SCHEDULED_FILL" as const,
+          kind:
+            fill.kind === "COMPLETION"
+              ? ("COMPLETION_FILL" as const)
+              : ("SCHEDULED_FILL" as const),
           prescriptionId: fill.prescriptionId,
           rxNumber: fill.prescription.rxNumber,
           patientName: `${fill.prescription.patient.lastName}, ${fill.prescription.patient.firstName}`,
           medicationName: fill.prescription.medicationName,
-          title: `Scheduled fill #${fill.fillNumber}`,
-          detail: fill.scheduledFor
-            ? `Scheduled for ${fill.scheduledFor.toISOString()}`
-            : "Scheduled fill",
-          severity: "INFO" as const,
+          title:
+            fill.kind === "COMPLETION"
+              ? `Completion fill due · #${fill.fillNumber} part ${fill.partNumber}`
+              : `Scheduled fill #${fill.fillNumber}`,
+          detail:
+            fill.kind === "COMPLETION"
+              ? `${fill.quantity?.toString() ?? "Remaining quantity"} to complete prior partial fill`
+              : fill.scheduledFor
+                ? `Scheduled for ${fill.scheduledFor.toISOString()}`
+                : "Scheduled fill",
+          severity:
+            fill.kind === "COMPLETION" &&
+            fill.scheduledFor &&
+            fill.scheduledFor.getTime() <= Date.now()
+              ? ("WARNING" as const)
+              : ("INFO" as const),
           dueAt: fill.scheduledFor?.toISOString() ?? null,
+          createdAt: fill.createdAt.toISOString(),
+        })),
+        ...emergencyFollowUps.map((fill) => ({
+          id: `emergency-follow-up:${fill.id}`,
+          kind: "EMERGENCY_FOLLOW_UP" as const,
+          prescriptionId: fill.prescriptionId,
+          rxNumber: fill.prescription.rxNumber,
+          patientName: `${fill.prescription.patient.lastName}, ${fill.prescription.patient.firstName}`,
+          medicationName: fill.prescription.medicationName,
+          title: "Emergency supply follow-up required",
+          detail: fill.emergencyReason,
+          severity:
+            fill.followUpDueAt &&
+            fill.followUpDueAt.getTime() <= Date.now()
+              ? ("HIGH" as const)
+              : ("WARNING" as const),
+          dueAt: fill.followUpDueAt?.toISOString() ?? null,
           createdAt: fill.createdAt.toISOString(),
         })),
       ];
@@ -194,7 +249,14 @@ export async function exceptionRoutes(app: FastifyInstance) {
           pharmacistReview: filtered.filter(
             (item) => item.kind === "PHARMACIST_REVIEW",
           ).length,
-          scheduled: filtered.filter((item) => item.kind === "SCHEDULED_FILL").length,
+          scheduled: filtered.filter(
+            (item) =>
+              item.kind === "SCHEDULED_FILL" ||
+              item.kind === "COMPLETION_FILL",
+          ).length,
+          emergencyFollowUp: filtered.filter(
+            (item) => item.kind === "EMERGENCY_FOLLOW_UP",
+          ).length,
         },
       };
     } catch (error) {

@@ -295,6 +295,60 @@ export async function createFill(
   });
 }
 
+export async function createPartialFill(
+  devUser: string,
+  fillId: string,
+  input: {
+    dispenseQuantity: number;
+    completionScheduledFor: string;
+    reason?: string;
+  },
+) {
+  return request<{
+    partialFill: PrescriptionFill;
+    completionFill: PrescriptionFill;
+    prescription: PrescriptionQueueItem;
+  }>(`/api/fills/${fillId}/partial`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function createEmergencySupply(
+  devUser: string,
+  prescriptionId: string,
+  input: {
+    quantity: number;
+    reason: string;
+    followUpDueAt: string;
+  },
+) {
+  return request<{
+    fill: PrescriptionFill;
+    prescription: PrescriptionQueueItem;
+  }>(`/api/prescriptions/${prescriptionId}/emergency-supply`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function completeEmergencySupplyFollowUp(
+  devUser: string,
+  fillId: string,
+  note: string,
+) {
+  return request<{ fill: PrescriptionFill }>(
+    `/api/fills/${fillId}/emergency-follow-up/complete`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ note }),
+    },
+  );
+}
+
 export async function scanFillProduct(
   devUser: string,
   fillId: string,

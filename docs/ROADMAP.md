@@ -207,6 +207,23 @@
 - [x] PO receipts linked to inventory balances and immutable RECEIVE transactions
 - [x] Pharmacist/admin cancellation of unreceived purchase-order remainder
 
+## Phase 3I — Dispensing continuity
+- [x] Technician-entered partial fill before product reservation
+- [x] Partial quantity and intended total preserved separately
+- [x] Automatic linked completion fill for the remaining quantity
+- [x] Completion retains the same prescription fill number with a separate part number
+- [x] Completion fill does not consume an additional authorized refill
+- [x] Completion fill scheduled date/time and derived Exceptions prompt
+- [x] Completion can start directly from the sold partial without minimum-days-between-fills blocking
+- [x] Cancellation/return-to-stock prevents orphaned scheduled completion fills
+- [x] Pharmacist/admin-only emergency supply authorization when no refills remain
+- [x] Emergency supply requires documented clinical justification and follow-up deadline
+- [x] Emergency supply does not fabricate or consume an authorized refill
+- [x] Emergency supply still requires Product Fill, inventory reservation, pharmacist verification, and sale
+- [x] Emergency follow-up appears in Exceptions until documented complete
+- [x] Database-backed partial/completion and emergency-supply workflow tests
+- [ ] Jurisdiction-specific policy configuration for emergency quantity/duration, exclusions, notification deadlines, and controlled-substance rules
+
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
 - [x] Barcode scanning
