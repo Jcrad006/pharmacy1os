@@ -4,6 +4,13 @@ import {
   quarantineInventory,
   receiveInventory,
 } from "./inventory.js";
+import {
+  addInventoryPosition,
+  depleteInventoryCostLayers,
+  reconcileDemandReceipt,
+  recordInventoryCostLayer,
+  removeInventoryPosition,
+} from "./inventoryArchitecture.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -204,6 +211,11 @@ export async function createInventoryTransfer(
     );
   }
 
+  const valuation = await depleteInventoryCostLayers(tx, {
+    balanceId: balance.id,
+    quantity,
+  });
+
   const transfer = await tx.inventoryTransfer.create({
     data: {
       sourceSiteId: input.sourceSiteId,
@@ -213,6 +225,7 @@ export async function createInventoryTransfer(
       lotNumber: balance.productLot.lotNumber,
       expirationDate: balance.productExpiration.expirationDate,
       quantity,
+      unitCostSnapshot: valuation.weightedUnitCost,
       note: input.note?.trim() || null,
       initiatedById: input.actorId,
     },
@@ -241,7 +254,20 @@ export async function createInventoryTransfer(
     },
   });
 
-  return { transfer, sourceBalance: updatedSource, transaction };
+  await removeInventoryPosition(tx, {
+    siteId: input.sourceSiteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    reason: `Transfer to ${destination.name}`,
+  });
+
+  return {
+    transfer,
+    sourceBalance: updatedSource,
+    transaction,
+    valuation,
+  };
 }
 
 export async function receiveInventoryTransfer(
@@ -288,6 +314,8 @@ export async function receiveInventoryTransfer(
     source: "SITE_TRANSFER",
     reference: transfer.id,
     reason: `Received site transfer from ${transfer.sourceSite.name}`,
+    unitCost: transfer.unitCostSnapshot,
+    preferredLocationTypes: ["RECEIVING", "UNASSIGNED"],
   });
 
   const transferTransaction = await tx.inventoryTransaction.update({
@@ -365,6 +393,26 @@ export async function cancelInventoryTransfer(
       source: "SITE_TRANSFER",
       reference: transfer.id,
     },
+  });
+
+  await addInventoryPosition(tx, {
+    siteId: transfer.sourceSiteId,
+    balanceId: source.id,
+    quantity: transfer.quantity,
+    actorId: input.actorId,
+    reason: input.reason,
+    preferredTypes: ["DISPENSING", "UNASSIGNED"],
+  });
+
+  await recordInventoryCostLayer(tx, {
+    siteId: transfer.sourceSiteId,
+    inventoryBalanceId: source.id,
+    productId: transfer.productId,
+    sourceTransactionId: transaction.id,
+    quantity: transfer.quantity,
+    unitCost: transfer.unitCostSnapshot,
+    sourceType: "TRANSFER_CANCEL_RETURN",
+    reference: transfer.id,
   });
 
   const updated = await tx.inventoryTransfer.update({
@@ -724,6 +772,8 @@ export async function receivePurchaseOrderLine(
     source: "PURCHASE_ORDER",
     reference: line.purchaseOrder.orderNumber,
     reason: `PO ${line.purchaseOrder.orderNumber} receipt from ${line.purchaseOrder.supplierName}`,
+    unitCost: line.unitCost,
+    preferredLocationTypes: ["RECEIVING", "UNASSIGNED"],
   });
 
   const receipt = await tx.purchaseOrderReceipt.create({
@@ -744,6 +794,11 @@ export async function receivePurchaseOrderLine(
     data: {
       quantityReceived: line.quantityReceived.plus(quantity),
     },
+  });
+
+  await reconcileDemandReceipt(tx, {
+    purchaseOrderLineId: line.id,
+    receiptQuantity: quantity,
   });
 
   const lines = await tx.purchaseOrderLine.findMany({
