@@ -1459,3 +1459,200 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+
+.inventory-operations-panel {
+  margin-top: 24px;
+  border-color: #cfded6;
+}
+
+.inventory-operation-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0 20px;
+  padding: 14px;
+  border: 1px solid #dce7e1;
+  border-radius: 10px;
+  background: #fafcfb;
+}
+
+.inventory-operation-form label,
+.inventory-operation-resolution label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inventory-operation-form .wide {
+  grid-column: 1 / -1;
+}
+
+.inventory-operation-form input,
+.inventory-operation-form select,
+.inventory-operation-form textarea,
+.inventory-operation-resolution input,
+.inventory-operation-resolution select,
+.inventory-operation-resolution textarea {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+  color: #1f2c27;
+  font: inherit;
+}
+
+.inventory-operation-resolution {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  border-top: 1px solid #e0e8e4;
+  background: #fafcfb;
+}
+
+.table-action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inventory-transfer-table {
+  min-width: 1050px;
+}
+
+.recall-case-list,
+.purchase-order-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.recall-case-card,
+.purchase-order-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #dde7e2;
+  border-radius: 10px;
+  padding: 14px;
+  background: #fcfdfc;
+}
+
+.recall-case-header,
+.purchase-order-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.recall-case-header h3,
+.purchase-order-header h3 {
+  margin: 6px 0 2px;
+}
+
+.recall-summary {
+  display: grid;
+  gap: 4px;
+  color: #5b6d64;
+  font-size: 12px;
+  text-align: right;
+}
+
+.recall-exposure-table-wrap {
+  margin-top: 4px;
+}
+
+.purchase-order-create {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.purchase-order-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.purchase-order-line-editor {
+  display: grid;
+  grid-template-columns: minmax(280px, 2fr) minmax(120px, .7fr) minmax(120px, .7fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid #e0e8e4;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.purchase-order-line-editor label {
+  display: grid;
+  gap: 5px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.purchase-order-line-editor input,
+.purchase-order-line-editor select {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: white;
+}
+
+.purchase-order-table {
+  min-width: 1200px;
+}
+
+.receipt-history {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: #52645b;
+}
+
+.po-receipt-form {
+  display: grid;
+  grid-template-columns: 80px 110px 140px 130px auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.po-receipt-form input {
+  min-width: 0;
+  border: 1px solid #cfdad4;
+  border-radius: 7px;
+  padding: 7px 8px;
+}
+
+@media (max-width: 900px) {
+  .inventory-operation-form {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-operation-form .wide {
+    grid-column: auto;
+  }
+
+  .recall-case-header,
+  .purchase-order-header {
+    flex-direction: column;
+  }
+
+  .recall-summary {
+    text-align: left;
+  }
+
+  .purchase-order-line-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .po-receipt-form {
+    grid-template-columns: 1fr;
+  }
+}
