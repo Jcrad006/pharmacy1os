@@ -631,7 +631,6 @@ model InventoryBalance {
   purchaseOrderReceipts PurchaseOrderReceipt[]
   stockPositions        InventoryStockPosition[]
   allocations           InventoryAllocation[]
-  demands               InventoryDemand[]
 
   @@unique([siteId, productId, productLotId, productExpirationId])
   @@index([siteId, productId])
