@@ -1,4 +1,6 @@
 -- Phase 3H architecture hardening:
+ALTER TYPE "InventoryTransactionType" ADD VALUE IF NOT EXISTS 'MOVE_LOCATION';
+
 -- physical locations, allocations, demand/backorders, policy, discrepancies,
 -- idempotency/cost history, inventory exceptions, and transfer custody.
 
