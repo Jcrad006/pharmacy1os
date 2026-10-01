@@ -37,6 +37,36 @@ export async function ensureSiteInventoryInfrastructure(
     },
   });
 
+  const willCall = await db.inventoryLocation.upsert({
+    where: {
+      siteId_code: {
+        siteId,
+        code: "WILL-CALL",
+      },
+    },
+    update: {
+      name: "Will Call",
+      type: "WILL_CALL",
+      active: true,
+      isDefaultReceiving: false,
+      isDefaultDispensing: false,
+      isQuarantine: false,
+      barcode: `WC-DEFAULT-${siteId}`,
+    },
+    create: {
+      id: `location-will-call-${siteId}`,
+      siteId,
+      code: "WILL-CALL",
+      name: "Will Call",
+      type: "WILL_CALL",
+      active: true,
+      isDefaultReceiving: false,
+      isDefaultDispensing: false,
+      isQuarantine: false,
+      barcode: `WC-DEFAULT-${siteId}`,
+    },
+  });
+
   const quarantine = await db.inventoryLocation.upsert({
     where: {
       siteId_code: {
@@ -147,5 +177,5 @@ export async function ensureSiteInventoryInfrastructure(
     }
   }
 
-  return { storage, quarantine, policy };
+  return { storage, quarantine, willCall, policy };
 }
