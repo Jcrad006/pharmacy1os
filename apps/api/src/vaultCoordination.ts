@@ -57,6 +57,7 @@ async function readLockMetadata(path: string) {
     const raw = JSON.parse(await readFile(path, "utf8")) as {
       pid?: number;
       createdAt?: string;
+      purpose?: "BACKUP" | "RESTORE";
     };
     const createdAt = raw.createdAt
       ? new Date(raw.createdAt).getTime()
@@ -64,9 +65,10 @@ async function readLockMetadata(path: string) {
     return {
       pid: Number(raw.pid ?? 0),
       createdAt,
+      purpose: raw.purpose ?? null,
     };
   } catch {
-    return { pid: 0, createdAt: Number.NaN };
+    return { pid: 0, createdAt: Number.NaN, purpose: null };
   }
 }
 
@@ -76,6 +78,10 @@ async function reclaimStaleFile(path: string) {
   const age = Number.isFinite(metadata.createdAt)
     ? Date.now() - metadata.createdAt
     : Number.POSITIVE_INFINITY;
+
+  if (metadata.purpose === "RESTORE") {
+    return false;
+  }
 
   if (!pidAlive(metadata.pid) && age >= STALE_LOCK_MS) {
     await unlink(path).catch(() => undefined);
@@ -97,10 +103,15 @@ async function assertNoExclusiveLock() {
   const lockPath = backupLockPath();
   await reclaimStaleFile(lockPath);
   if (await pathExists(lockPath)) {
+    const metadata = await readLockMetadata(lockPath);
     throw new DocumentVaultError(
       503,
-      "DOCUMENT_VAULT_BACKUP_IN_PROGRESS",
-      "The document vault is temporarily read-only while a coordinated backup or restore is in progress.",
+      metadata.purpose === "RESTORE"
+        ? "DOCUMENT_VAULT_RESTORE_RECOVERY_REQUIRED"
+        : "DOCUMENT_VAULT_BACKUP_IN_PROGRESS",
+      metadata.purpose === "RESTORE"
+        ? "The document vault is locked by a restore operation. If the restore process is no longer running, keep Pharmacy1OS offline and investigate the restore journal before clearing the lock."
+        : "The document vault is temporarily read-only while a coordinated backup is in progress.",
     );
   }
 }
