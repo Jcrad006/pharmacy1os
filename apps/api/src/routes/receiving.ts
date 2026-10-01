@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
@@ -32,7 +33,7 @@ const productInclude = (siteId: string) => ({
 });
 
 async function recordTraceability(
-  tx: Parameters<Parameters<typeof db.$transaction>[0]>[0],
+  tx: Prisma.TransactionClient,
   input: {
     siteId: string;
     productId: string;
