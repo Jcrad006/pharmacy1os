@@ -465,6 +465,8 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
             quarantinedHoldCount: created.quarantinedHoldCount,
             reservedAffectedQuantity:
               created.reservedAffectedQuantity.toString(),
+            invalidatedReservedFillCount:
+              created.invalidatedReservedFillCount,
             affectedSoldFillCount: created.affectedSoldFillCount,
           },
         });
@@ -484,6 +486,8 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
           quarantinedHoldCount: result.quarantinedHoldCount,
           reservedAffectedQuantity:
             result.reservedAffectedQuantity.toString(),
+          invalidatedReservedFillCount:
+            result.invalidatedReservedFillCount,
           affectedSoldFillCount: result.affectedSoldFillCount,
         },
       });
