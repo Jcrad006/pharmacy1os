@@ -112,11 +112,14 @@ CREATE TABLE "InventoryPolicy" (
   "productId" TEXT,
   "reorderPoint" DECIMAL(14,3),
   "parLevel" DECIMAL(14,3),
+  "maxStockLevel" DECIMAL(14,3),
   "minShelfLifeDays" INTEGER,
   "expirationWarningDays" INTEGER NOT NULL DEFAULT 90,
   "fefoEnabled" BOOLEAN NOT NULL DEFAULT true,
   "preferredSupplierName" TEXT,
   "adjustmentApprovalThreshold" DECIMAL(14,3),
+  "allowTechnicianAdjustments" BOOLEAN NOT NULL DEFAULT false,
+  "requiredLocationType" "InventoryLocationType",
   "requireTransferSecondCheck" BOOLEAN NOT NULL DEFAULT false,
   "staleReservationHours" INTEGER NOT NULL DEFAULT 24,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -125,6 +128,7 @@ CREATE TABLE "InventoryPolicy" (
   CONSTRAINT "InventoryPolicy_nonnegative_thresholds" CHECK (
     ("reorderPoint" IS NULL OR "reorderPoint" >= 0)
     AND ("parLevel" IS NULL OR "parLevel" >= 0)
+    AND ("maxStockLevel" IS NULL OR "maxStockLevel" >= 0)
     AND ("minShelfLifeDays" IS NULL OR "minShelfLifeDays" >= 0)
     AND "expirationWarningDays" >= 0
     AND ("adjustmentApprovalThreshold" IS NULL OR "adjustmentApprovalThreshold" >= 0)
