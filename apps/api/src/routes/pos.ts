@@ -151,12 +151,24 @@ export async function posRoutes(app: FastifyInstance) {
           code: "IDEMPOTENCY_KEY_REQUIRED",
         });
       }
+      if (!Array.isArray(body.pickupPackages)) {
+        return reply.code(400).send({
+          error: "pickupPackages must be an array.",
+          code: "PACKAGE_SCAN_REQUIRED",
+        });
+      }
+      if (!body.pickup) {
+        return reply.code(400).send({
+          error: "pickup verification and signature details are required.",
+          code: "PICKUP_VERIFICATION_REQUIRED",
+        });
+      }
       const result = await checkoutFills(
         {
           fillIds: body.fillIds,
           tenders: body.tenders ?? [],
-          pickupPackages: body.pickupPackages ?? [],
-          pickup: body.pickup as PickupVerificationInput,
+          pickupPackages: body.pickupPackages,
+          pickup: body.pickup,
           idempotencyKey: body.idempotencyKey,
         },
         {
