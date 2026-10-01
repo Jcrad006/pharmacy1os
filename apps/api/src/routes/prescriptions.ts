@@ -1683,9 +1683,6 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           where: {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
-            claimReversalTransactionIds: claimReversals.map(
-              (item) => item.transaction.id,
-            ),
           },
           select: { partNumber: true },
           orderBy: { partNumber: "desc" },
@@ -3469,6 +3466,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           metadata: {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
+            claimReversalTransactionIds: claimReversals.map(
+              (item) => item.transaction.id,
+            ),
           },
         });
 
