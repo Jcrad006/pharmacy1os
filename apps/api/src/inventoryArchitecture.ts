@@ -453,6 +453,47 @@ export async function reverseInventoryCostConsumption(
   return active.length;
 }
 
+export async function depleteInventoryCostLayers(
+  tx: Prisma.TransactionClient,
+  input: {
+    balanceId: string;
+    quantity: Prisma.Decimal | number | string;
+  },
+) {
+  let remaining = decimal(input.quantity);
+  const layers = await tx.inventoryCostLayer.findMany({
+    where: {
+      inventoryBalanceId: input.balanceId,
+      quantityRemaining: { gt: 0 },
+    },
+    orderBy: [{ acquiredAt: "asc" }, { id: "asc" }],
+  });
+
+  let depletedQuantity = new Prisma.Decimal(0);
+  let depletedValue = new Prisma.Decimal(0);
+
+  for (const layer of layers) {
+    if (remaining.lte(0)) break;
+    const take = Prisma.Decimal.min(layer.quantityRemaining, remaining);
+    await tx.inventoryCostLayer.update({
+      where: { id: layer.id },
+      data: { quantityRemaining: layer.quantityRemaining.minus(take) },
+    });
+    depletedQuantity = depletedQuantity.plus(take);
+    depletedValue = depletedValue.plus(take.mul(layer.unitCost));
+    remaining = remaining.minus(take);
+  }
+
+  return {
+    depletedQuantity,
+    uncoveredQuantity: remaining,
+    weightedUnitCost:
+      depletedQuantity.gt(0)
+        ? depletedValue.div(depletedQuantity)
+        : null,
+  };
+}
+
 export async function weightedUnitCostForBalance(
   tx: Prisma.TransactionClient,
   balanceId: string,
