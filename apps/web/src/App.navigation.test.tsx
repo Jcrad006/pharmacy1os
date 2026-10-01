@@ -13,6 +13,7 @@ vi.mock("./api", async (importOriginal) => {
     onHold: 0,
     pharmacistReview: 0,
     scheduled: 0,
+    emergencyFollowUp: 0,
   };
 
   return {
