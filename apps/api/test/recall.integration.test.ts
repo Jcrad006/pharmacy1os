@@ -4,6 +4,7 @@ import { buildApp } from "../src/app.js";
 import { db } from "../src/db.js";
 
 process.env.ALLOW_DEV_IDENTITY = "true";
+process.env.ALLOW_LEGACY_DIRECT_SALE = "true";
 
 const app = buildApp();
 const tech = { "x-dev-user": "dev-technician" };

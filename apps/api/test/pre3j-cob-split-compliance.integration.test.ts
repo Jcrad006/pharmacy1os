@@ -6,6 +6,7 @@ import { receiveInventory } from "../src/inventory.js";
 import { requireBillingNdcSelection } from "../src/claims/adapter.js";
 
 process.env.ALLOW_DEV_IDENTITY = "true";
+process.env.ALLOW_LEGACY_DIRECT_SALE = "true";
 
 const app = buildApp();
 const technicianHeaders = { "x-dev-user": "dev-technician" };

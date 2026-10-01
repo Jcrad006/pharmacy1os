@@ -189,6 +189,9 @@ const prescriptionInclude = {
         orderBy: { sequence: "asc" as const },
       },
       biologicCommunicationTask: true,
+      willCallPackage: {
+        include: { location: true },
+      },
     },
     orderBy: [
       { fillNumber: "desc" as const },
@@ -1037,6 +1040,22 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         current.refillsUsed >= current.refillsAllowed
       ) {
         return reply.code(409).send({ error: "No refills remain on this prescription." });
+      }
+
+      const legacyDirectSaleAllowedForTests =
+        process.env.NODE_ENV === "test" &&
+        process.env.ALLOW_LEGACY_DIRECT_SALE === "true";
+
+      if (
+        current.status === "READY" &&
+        body.status === "SOLD" &&
+        !legacyDirectSaleAllowedForTests
+      ) {
+        return reply.code(409).send({
+          error:
+            "Ready prescriptions must be completed through the controlled POS pickup workflow.",
+          code: "POS_CHECKOUT_REQUIRED",
+        });
       }
 
       const currentActiveFill = activeFill(current.fills);
@@ -3393,6 +3412,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      const claimReversals = await reverseActivePaidClaimsForFill(id, {
+        siteId: actor.siteId,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+      await assertNoActivePaidClaimForMutation(id, actor.siteId);
+
       const result = await db.$transaction(async (tx) => {
         await returnInventoryForFill(tx, {
           fillId: id,
@@ -3429,6 +3455,17 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           await cancelDemandForFill(tx, completion.id);
         }
 
+        await tx.willCallPackage.updateMany({
+          where: {
+            fillId: id,
+            status: "STAGED",
+          },
+          data: {
+            status: "RETURNED_TO_STOCK",
+            returnedAt: new Date(),
+          },
+        });
+
         const rx = await tx.prescription.update({
           where: { id: fill.prescriptionId },
           data: { status: "DUR_REVIEW" },
@@ -3445,6 +3482,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           metadata: {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
+            claimReversalTransactionIds: claimReversals.map(
+              (item) => item.transaction.id,
+            ),
           },
         });
 

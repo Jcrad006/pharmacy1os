@@ -225,6 +225,44 @@ enum LabelPrintStatus {
   CANCELLED
 }
 
+enum PosTransactionStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum PosPriceBasis {
+  THIRD_PARTY
+  CASH
+  COMPLETION_ALREADY_BILLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  CHECK
+  OTHER
+}
+
+enum PickupIdentityMethod {
+  DATE_OF_BIRTH
+  ADDRESS
+  GOVERNMENT_ID
+  KNOWN_PATIENT
+  OTHER
+}
+
+enum PickupSignatureMethod {
+  ELECTRONIC_TYPED
+  EXTERNAL_DEVICE
+  PAPER
+}
+
+enum WillCallPackageStatus {
+  STAGED
+  PICKED_UP
+  RETURNED_TO_STOCK
+}
+
 enum ProductSelectionDirective {
   UNSPECIFIED
   SELECTION_PERMITTED
@@ -335,6 +373,8 @@ model PharmacySite {
   claimTransactions     ClaimTransaction[]
   prescriptionLabels    PrescriptionLabel[]
   labelPrintJobs        LabelPrintJob[]
+  posTransactions       PointOfSaleTransaction[]
+  willCallPackages      WillCallPackage[]
   auditEvents           AuditEvent[]
 }
 
@@ -378,6 +418,10 @@ model User {
   completedBiologicCommunicationTasks BiologicCommunicationTask[] @relation("BiologicCommunicationCompletedBy")
   claimTransactions ClaimTransaction[] @relation("ClaimTransactionActor")
   labelPrintJobs LabelPrintJob[] @relation("LabelPrintJobActor")
+  posTransactionsCreated PointOfSaleTransaction[] @relation("PosTransactionCreatedBy")
+  posTransactionsVoided PointOfSaleTransaction[] @relation("PosTransactionVoidedBy")
+  paymentTenders PaymentTender[] @relation("PaymentTenderActor")
+  stagedWillCallPackages WillCallPackage[] @relation("WillCallPackageStagedBy")
 
   @@index([siteId, role])
 }
@@ -396,6 +440,7 @@ model Patient {
   updatedAt     DateTime       @updatedAt
   prescriptions Prescription[]
   coverages     PatientCoverage[]
+  posTransactions PointOfSaleTransaction[]
 
   @@index([siteId, lastName, firstName])
   @@index([siteId, dateOfBirth])
@@ -714,6 +759,8 @@ model PrescriptionFill {
   biologicCommunicationTask BiologicCommunicationTask?
   claimTransactions   ClaimTransaction[]
   prescriptionLabels  PrescriptionLabel[]
+  posSaleLine          PointOfSaleLine?
+  willCallPackage       WillCallPackage?
   inventoryDemand     InventoryDemand?
   filledAt            DateTime?
   soldAt              DateTime?
@@ -842,6 +889,7 @@ model ClaimTransaction {
   adjudicatedAt         DateTime
   createdAt             DateTime        @default(now())
   labels                PrescriptionLabel[]
+  posSaleLines           PointOfSaleLine[]
 
   @@index([siteId, createdAt])
   @@index([fillId, coveragePosition, createdAt])
@@ -904,6 +952,100 @@ model LabelPrintJob {
 
   @@index([siteId, status, queuedAt])
   @@index([labelId, status])
+}
+
+
+model PointOfSaleTransaction {
+  id              String               @id @default(uuid())
+  siteId          String
+  site            PharmacySite         @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  patientId       String
+  patient         Patient              @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  receiptNumber   String               @unique
+  status          PosTransactionStatus @default(COMPLETED)
+  totalDue        Decimal              @db.Decimal(12, 2)
+  totalTendered   Decimal              @db.Decimal(12, 2)
+  changeDue       Decimal              @default(0) @db.Decimal(12, 2)
+  idempotencyKey  String               @unique
+  pickupRecipientName String
+  pickupRelationship String?
+  pickupIdentityMethod PickupIdentityMethod
+  pickupVerifiedAt DateTime
+  pickupSignatureMethod PickupSignatureMethod
+  pickupSignatureName String?
+  pickupSignatureReference String?
+  createdById     String
+  createdBy       User                 @relation("PosTransactionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  voidedById      String?
+  voidedBy        User?                @relation("PosTransactionVoidedBy", fields: [voidedById], references: [id], onDelete: Restrict)
+  completedAt     DateTime             @default(now())
+  voidedAt        DateTime?
+  voidReason      String?
+  createdAt       DateTime             @default(now())
+  lines           PointOfSaleLine[]
+  tenders         PaymentTender[]
+
+  @@index([siteId, completedAt])
+  @@index([patientId, completedAt])
+  @@index([siteId, status, completedAt])
+}
+
+model PointOfSaleLine {
+  id                            String                 @id @default(uuid())
+  transactionId                 String
+  transaction                   PointOfSaleTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  fillId                        String                 @unique
+  fill                          PrescriptionFill       @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  claimTransactionId            String?
+  claimTransaction              ClaimTransaction?      @relation(fields: [claimTransactionId], references: [id], onDelete: Restrict)
+  quantity                      Decimal                @db.Decimal(10, 3)
+  priceBasis                    PosPriceBasis
+  cashUnitPriceSnapshot         Decimal?               @db.Decimal(12, 6)
+  cashPricingSnapshot           Json                   @default("{}")
+  patientResponsibilitySnapshot Decimal?               @db.Decimal(12, 2)
+  amountDue                     Decimal                @db.Decimal(12, 2)
+  createdAt                     DateTime               @default(now())
+
+  @@index([transactionId])
+  @@index([claimTransactionId])
+  @@index([priceBasis, createdAt])
+}
+
+model PaymentTender {
+  id            String                 @id @default(uuid())
+  transactionId String
+  transaction   PointOfSaleTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  method        PaymentMethod
+  amount        Decimal                @db.Decimal(12, 2)
+  reference     String?
+  actorId       String
+  actor         User                   @relation("PaymentTenderActor", fields: [actorId], references: [id], onDelete: Restrict)
+  createdAt     DateTime               @default(now())
+
+  @@index([transactionId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+
+model WillCallPackage {
+  id          String                @id @default(uuid())
+  siteId      String
+  site        PharmacySite          @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  fillId      String                @unique
+  fill        PrescriptionFill      @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  bagBarcode  String                @unique
+  locationId  String
+  location    InventoryLocation     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  status      WillCallPackageStatus @default(STAGED)
+  stagedById  String
+  stagedBy    User                  @relation("WillCallPackageStagedBy", fields: [stagedById], references: [id], onDelete: Restrict)
+  stagedAt    DateTime              @default(now())
+  pickedUpAt  DateTime?
+  returnedAt  DateTime?
+  updatedAt   DateTime              @updatedAt
+
+  @@index([siteId, status, stagedAt])
+  @@index([locationId, status])
 }
 
 model FillProductSource {
@@ -1279,11 +1421,14 @@ model InventoryLocation {
   isQuarantine         Boolean               @default(false)
   temperatureMinC      Decimal?              @db.Decimal(6, 2)
   temperatureMaxC      Decimal?              @db.Decimal(6, 2)
+  barcode              String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   stockPositions       InventoryStockPosition[]
+  willCallPackages     WillCallPackage[]
 
   @@unique([siteId, code])
+  @@unique([siteId, barcode])
   @@index([siteId, active, type])
 }
 

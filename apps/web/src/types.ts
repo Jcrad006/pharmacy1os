@@ -166,6 +166,7 @@ export type PrescriptionFill = {
   inventoryCommittedAt: string | null;
   inventoryReturnedAt: string | null;
   inventoryBalance: InventoryBalance | null;
+  willCallPackage: WillCallPackage | null;
   product: Product | null;
   productLot: ProductLot | null;
   productExpiration: ProductExpiration | null;
@@ -476,6 +477,7 @@ export type InventoryLocation = {
   isQuarantine: boolean;
   temperatureMinC: string | number | null;
   temperatureMaxC: string | number | null;
+  barcode: string | null;
   createdAt: string;
   updatedAt: string;
   stockPositions?: InventoryStockPosition[];
@@ -1128,4 +1130,127 @@ export type ClaimAdjudicationResult = {
   printJob: LabelPrintJob | null;
   labels: PrescriptionLabel[];
   printJobs: LabelPrintJob[];
+};
+
+
+export type PosTransactionStatus = "COMPLETED" | "VOIDED";
+export type PosPriceBasis =
+  | "THIRD_PARTY"
+  | "CASH"
+  | "COMPLETION_ALREADY_BILLED";
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "OTHER";
+export type PickupIdentityMethod =
+  | "DATE_OF_BIRTH"
+  | "ADDRESS"
+  | "GOVERNMENT_ID"
+  | "KNOWN_PATIENT"
+  | "OTHER";
+export type PickupSignatureMethod =
+  | "ELECTRONIC_TYPED"
+  | "EXTERNAL_DEVICE"
+  | "PAPER";
+export type WillCallPackageStatus =
+  | "STAGED"
+  | "PICKED_UP"
+  | "RETURNED_TO_STOCK";
+
+export type WillCallPackage = {
+  id: string;
+  siteId: string;
+  fillId: string;
+  bagBarcode: string;
+  locationId: string;
+  status: WillCallPackageStatus;
+  stagedById: string;
+  stagedAt: string;
+  pickedUpAt: string | null;
+  returnedAt: string | null;
+  updatedAt: string;
+  location: InventoryLocation;
+};
+
+export type PosQuoteLine = {
+  fillId: string;
+  prescriptionId: string;
+  patientId: string;
+  rxNumber: string | null;
+  medicationName: string;
+  fillNumber: number;
+  partNumber: number;
+  quantity: string | number;
+  priceBasis: PosPriceBasis;
+  claimTransactionId: string | null;
+  patientResponsibilitySnapshot: string | number | null;
+  cashUnitPriceSnapshot: string | number | null;
+  cashPricingSnapshot: unknown;
+  amountDue: string | number;
+  willCallPackageId: string;
+  bagBarcode: string;
+  willCallLocationId: string;
+  willCallLocationCode: string;
+  willCallLocationName: string;
+  willCallLocationBarcode: string | null;
+};
+
+export type PosQuote = {
+  patientId: string;
+  lines: PosQuoteLine[];
+  totalDue: string | number;
+};
+
+export type PaymentTender = {
+  id: string;
+  transactionId: string;
+  method: PaymentMethod;
+  amount: string | number;
+  reference: string | null;
+  actorId: string;
+  createdAt: string;
+};
+
+export type PointOfSaleLine = {
+  id: string;
+  transactionId: string;
+  fillId: string;
+  claimTransactionId: string | null;
+  quantity: string | number;
+  priceBasis: PosPriceBasis;
+  cashUnitPriceSnapshot: string | number | null;
+  cashPricingSnapshot: unknown;
+  patientResponsibilitySnapshot: string | number | null;
+  amountDue: string | number;
+  createdAt: string;
+};
+
+export type PointOfSaleTransaction = {
+  id: string;
+  siteId: string;
+  patientId: string;
+  receiptNumber: string;
+  status: PosTransactionStatus;
+  totalDue: string | number;
+  totalTendered: string | number;
+  changeDue: string | number;
+  idempotencyKey: string;
+  pickupRecipientName: string;
+  pickupRelationship: string | null;
+  pickupIdentityMethod: PickupIdentityMethod;
+  pickupVerifiedAt: string;
+  pickupSignatureMethod: PickupSignatureMethod;
+  pickupSignatureName: string | null;
+  pickupSignatureReference: string | null;
+  createdById: string;
+  voidedById: string | null;
+  completedAt: string;
+  voidedAt: string | null;
+  voidReason: string | null;
+  createdAt: string;
+  lines: PointOfSaleLine[];
+  tenders: PaymentTender[];
+  patient?: Patient;
+  createdBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
 };

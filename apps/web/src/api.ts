@@ -49,6 +49,12 @@ import type {
   FillInterruptionReason,
   PrescriptionQueueItem,
   PrescriptionStatus,
+  PosQuote,
+  PointOfSaleTransaction,
+  PaymentMethod,
+  PickupIdentityMethod,
+  PickupSignatureMethod,
+  WillCallPackage,
 } from "./types";
 
 type ApiOptions = RequestInit & {
@@ -112,6 +118,73 @@ export async function getWillCall(devUser: string) {
     { devUser },
   );
   return result.prescriptions;
+}
+
+
+export async function stageWillCallPackage(
+  devUser: string,
+  fillId: string,
+  input?: {
+    bagBarcode?: string | null;
+    locationId?: string | null;
+    locationBarcode?: string | null;
+  },
+) {
+  return request<{ package: WillCallPackage }>(
+    `/api/fills/${fillId}/will-call/stage`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input ?? {}),
+    },
+  );
+}
+
+export async function quotePosCheckout(
+  devUser: string,
+  fillIds: string[],
+) {
+  const result = await request<{ quote: PosQuote }>("/api/pos/quote", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({ fillIds }),
+  });
+  return result.quote;
+}
+
+export async function checkoutPos(
+  devUser: string,
+  input: {
+    fillIds: string[];
+    tenders: Array<{
+      method: PaymentMethod;
+      amount: number | string;
+      reference?: string | null;
+    }>;
+    pickupPackages: Array<{
+      fillId: string;
+      bagBarcode: string;
+    }>;
+    pickup: {
+      recipientName: string;
+      relationship?: string | null;
+      identityMethod: PickupIdentityMethod;
+      identityValue?: string | null;
+      signatureMethod: PickupSignatureMethod;
+      signatureName?: string | null;
+      signatureReference?: string | null;
+    };
+    idempotencyKey: string;
+  },
+) {
+  return request<{
+    transaction: PointOfSaleTransaction;
+    replayed: boolean;
+  }>("/api/pos/checkout", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getPrescription(devUser: string, id: string) {
@@ -1428,6 +1501,7 @@ export async function createInventoryLocation(
     isQuarantine?: boolean;
     temperatureMinC?: number;
     temperatureMaxC?: number;
+    barcode?: string;
   },
 ) {
   return request<{ location: InventoryLocation }>("/api/inventory/locations", {

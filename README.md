@@ -42,6 +42,12 @@ The current prototype includes:
 - Quantity-based inventory ledger with on-hand, reserved, quarantined, and available stock by NDC/lot/expiration
 - Cycle-count sessions with technician count entry and pharmacist/admin discrepancy reconciliation
 - Quarantine holds for damaged, expired, recalled, suspect, or temperature-excursion stock with pharmacist-controlled release/disposition
+- Synthetic patient coverage with up to four ordered COB payers and pharmacist-managed payer billing profiles
+- Immutable synthetic claim submit/reversal history with scan-triggered adjudication and physical-source-aware billing snapshots
+- Prescription label sets tied to the physical NDC(s), with audited print jobs and reprint controls
+- Physical Will Call staging with barcode-capable bins/locations and one unique bag barcode per Ready fill
+- Controlled pickup/POS transactions with cash or adjudicated patient-pay pricing, tender/change capture, bag scan, identity verification, and signature attestation
+- Abandoned Ready-fill return-to-stock that reverses active paid synthetic claims before restoring inventory
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
 
@@ -62,16 +68,24 @@ Product Fill
    ↓
 Scan/verify NDC + Lot + Expiration against Data Entry Drug
    ↓
+Synthetic third-party adjudication / cash-price preparation
+   ↓
+Physical-NDC prescription label generation
+   ↓
 Pharmacist Review
    ↓
 Pharmacist verification
    ↓
-Ready / Will Call
+Ready
    ↓
-Sold
+Stage labeled prescription in a barcoded Will Call location/bag
+   ↓
+Pickup: scan bag + verify identity + capture signature + tender patient amount
+   ↓
+Sold / POS receipt record
 ```
 
-A Ready fill may instead be returned to stock. A returned, unsold fill does not consume a refill authorization and can be reprocessed using the same fill number.
+A Ready fill may instead be returned to stock. For an insured fill, Pharmacy1OS first reverses any active paid synthetic claim; only after a successful reversal can the committed inventory be returned and the staged Will Call package be closed. A returned, unsold fill does not consume a refill authorization and can be reprocessed using the same fill number.
 
 ## Synthetic clinical/date-rule layer
 
@@ -127,6 +141,12 @@ The workstation offers synthetic staff identities for exercising role behavior. 
 
 This repository remains a development prototype. Do not enter real PHI. Production authentication, encryption, validated clinical content, regulated interfaces, deployment hardening, disaster recovery, formal validation, and applicable privacy/regulatory controls must be completed and independently reviewed before real-world pharmacy use.
 
+### Controlled sale boundary
+
+In normal operation a `READY` prescription cannot be changed directly to `SOLD`. It must pass through the Stage 3K POS checkout so the staged Will Call bag, pickup identity method, signature attestation, amount due, and payment tender are recorded together. The `ALLOW_LEGACY_DIRECT_SALE` environment switch exists only to keep older isolated regression fixtures executable; it defaults off and must not be enabled for a real workstation workflow.
+
+The claim adapter and POS implementation are still synthetic development infrastructure. They do not transmit a live insurance claim, charge a payment card, validate a government ID, or capture a hardware signature. Alternative pickup identity methods other than the implemented DOB comparison are recorded as staff attestations until a validated identity integration is added.
+
 ## Workstation efficiency
 
 The dispensing dashboard now supports a server-backed working view. Staff can search by Rx number, medication, patient name, or prescriber name; filter to a workflow status; and sort by oldest or newest activity.
@@ -171,7 +191,7 @@ This preference is local to the workstation prototype and is not yet a productio
 
 The barcode registry stores stable product identifiers separately from variable lot and expiration data. A receiving scan can resolve a known product or flag an unknown barcode for assignment. GS1 AI (01) is treated as the stable GTIN identifier, while parsed lot and expiration values are recorded under the recognized NDC at the pharmacy site. Product Fill uses the same registry and still requires the resolved NDC to belong to the Drug selected during Data Entry.
 
-Third-party adjudication and prescription-label printing remain intentionally deferred to later phases.
+Synthetic third-party adjudication and prescription-label generation are now implemented for development and testing. Live NCPDP/clearinghouse connectivity, production payment processing, receipt printers, and signature-pad hardware remain external integrations and are not represented by the sandbox adapters.
 
 
 ## Barcode-assignment correction safety

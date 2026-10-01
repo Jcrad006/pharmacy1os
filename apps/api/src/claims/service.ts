@@ -988,6 +988,30 @@ export async function reverseClaimTransaction(
     );
   }
 
+  const completedSale = await db.pointOfSaleLine.findUnique({
+    where: { fillId: original.fillId },
+    include: {
+      transaction: {
+        select: {
+          id: true,
+          receiptNumber: true,
+          status: true,
+        },
+      },
+    },
+  });
+  if (completedSale?.transaction.status === "COMPLETED") {
+    throw new ClaimError(
+      409,
+      "POS_SALE_LOCKS_CLAIM",
+      "The claim cannot be reversed while the fill belongs to a completed pickup transaction.",
+      {
+        posTransactionId: completedSale.transaction.id,
+        receiptNumber: completedSale.transaction.receiptNumber,
+      },
+    );
+  }
+
   const priorReversal = await db.claimTransaction.findFirst({
     where: {
       originalTransactionId: original.id,

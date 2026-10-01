@@ -155,8 +155,8 @@
 - [x] Correction warns when the old barcode mapping was previously used on prescription fills
 - [x] Correction re-registers rescanned lot/expiration under the corrected NDC without blindly deleting old traceability records
 - [x] Registered barcode identifiers are searchable in the Drug/Product catalog
-- [ ] Third-party claim billing/adjudication during Product Fill
-- [ ] Prescription label generation/printing after successful adjudication
+- [x] Synthetic third-party claim billing/adjudication during Product Fill
+- [x] Prescription label generation/printing after successful adjudication
 
 ## Phase 3H — Inventory ledger and dispensing integration
 - [x] Inventory balance by site + NDC + lot + expiration
@@ -258,32 +258,56 @@
 - [x] Physical shortage/discrepancy creates a high-severity inventory exception without silently changing on-hand inventory
 - [x] Pharmacist/admin resolution of physical-stock exceptions requires an audited note
 - [x] Quantity architecture documented for claims and label implementation
-- [ ] Patient coverage / payer profile model
-- [ ] Immutable claim and claim-attempt transaction model
-- [ ] Scan-triggered claim construction and adjudication
-- [ ] Default synthetic partial strategy submits the full payer-intended logical fill quantity
-- [ ] Payer-adapter strategy layer for payer-specific partial/completion transaction rules
-- [ ] PAID adjudication automatically generates and queues the physical dispense-part label
-- [ ] REJECTED adjudication suppresses dispensing-label generation and routes the fill to a dedicated Third-Party Rejections workspace
-- [ ] Third-party rejection correction/resubmission history
-- [ ] Claim reversal/rebill lifecycle
-- [ ] Cash and coordination-of-benefits pathways
-- [ ] Structured prescription label renderer
-- [ ] Audited print-job / reprint / failure queue
+- [x] Patient coverage / payer profile model
+- [x] Immutable claim and claim-attempt transaction model
+- [x] Scan-triggered claim construction and adjudication
+- [x] Default synthetic partial strategy submits the full payer-intended logical fill quantity
+- [x] Payer-adapter strategy layer for payer-specific partial/completion transaction rules
+- [x] PAID adjudication automatically generates and queues the physical dispense-part label
+- [x] REJECTED adjudication suppresses dispensing-label generation and routes the fill to a dedicated Third-Party Rejections workspace
+- [x] Third-party rejection correction/resubmission history
+- [x] Claim reversal/rebill lifecycle
+- [x] Cash and coordination-of-benefits pathways
+- [x] Structured prescription label renderer
+- [x] Audited print-job / reprint / failure queue
+
+## Phase 3K — Will Call / Pickup / POS hardening
+- [x] Default physical Will Call location for every pharmacy site
+- [x] Barcode-capable Will Call locations/bins with administrator/pharmacist configuration
+- [x] One staged Will Call package per Ready fill with unique bag barcode
+- [x] Bag and location-barcode scan lookup for staged pickup work
+- [x] Block checkout until a pharmacist-verified fill has an active label and staged Will Call package
+- [x] Block generic Ready → Sold transition outside the controlled POS path
+- [x] Cash quote from the exact physical NDC source quantities and snapshotted unit prices
+- [x] Insured pickup quote from the final active paid COB patient responsibility
+- [x] No second patient charge for completion parts already billed through the primary logical fill
+- [x] Immutable POS transaction/line/tender records with receipt number and checkout idempotency
+- [x] Cash, card, check, and other tender capture with non-cash overpayment and change controls
+- [x] Require the scanned bag barcode to match every selected fill at checkout
+- [x] Pickup recipient and relationship capture
+- [x] Server-side DOB verification without persisting the entered DOB; alternate staff-attested identity methods
+- [x] Typed electronic signature plus external-device/paper signature-reference architecture
+- [x] Atomically mark staged package Picked Up and fill/prescription Sold
+- [x] Prevent independent claim reversal underneath a completed POS sale
+- [x] Reverse active paid claims before an abandoned Ready fill is returned to stock
+- [x] Close staged Will Call package when an abandoned fill is returned to stock
+- [x] Database-backed Stage 3K tests for staging, bin scanning, cash pricing, copay handling, identity mismatch, signature metadata, duplicate sale prevention, completion pickup, and abandonment reversal
+- [ ] Receipt printing/device integration and hardware signature-pad adapter
+- [ ] Post-pickup return/refund workflow with coordinated POS void, claim reversal/rebill, and inventory disposition
 
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
 - [x] Barcode scanning
-- Label generation and printing
+- [x] Label generation and printing
 - [x] Return-to-stock inventory effects
-- Will-call inventory/location management
+- [x] Will-call inventory/location management
 - Reports and dashboards
 
 ## Phase 4 — External integrations
 - Fax
 - E-prescribing
 - Drug knowledge / DUR vendor adapter
-- Claims adjudication
+- Live clearinghouse claims adjudication
 - PDMP where applicable
 - Notifications
 
