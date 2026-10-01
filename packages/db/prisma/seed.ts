@@ -1,3 +1,4 @@
+import { ensureSiteInventoryInfrastructure } from "../src/inventoryBootstrap.js";
 import {
   FillStatus,
   InventoryTransactionType,
@@ -91,6 +92,9 @@ async function main() {
       ncpdpId: "DEMO002",
     },
   });
+
+  await ensureSiteInventoryInfrastructure(db, ids.site);
+  await ensureSiteInventoryInfrastructure(db, ids.site2);
 
   const staff = [
     [ids.pharmacist, "dev-pharmacist", "Morgan Pharmacist", UserRole.PHARMACIST],
@@ -693,6 +697,10 @@ async function main() {
       },
     });
   }
+
+  // Reconcile physical positions after opening balances are seeded.
+  await ensureSiteInventoryInfrastructure(db, ids.site);
+  await ensureSiteInventoryInfrastructure(db, ids.site2);
 
   await db.prescription.upsert({
     where: { id: ids.rx1 },
