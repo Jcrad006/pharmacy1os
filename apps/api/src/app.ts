@@ -1,5 +1,8 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
+import { readFile, stat } from "node:fs/promises";
+import { extname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { healthRoutes } from "./routes/health.js";
 import { developmentRoutes } from "./routes/development.js";
 import { patientRoutes } from "./routes/patients.js";
@@ -10,7 +13,38 @@ import { exceptionRoutes } from "./routes/exceptions.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { receivingRoutes } from "./routes/receiving.js";
 
-export function buildApp() {
+type BuildAppOptions = {
+  serveWeb?: boolean;
+  webDistPath?: string;
+};
+
+const contentTypes: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+function contentTypeFor(path: string) {
+  return contentTypes[extname(path).toLowerCase()] ?? "application/octet-stream";
+}
+
+async function isFile(path: string) {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-request-id",
@@ -29,6 +63,60 @@ export function buildApp() {
   app.register(exceptionRoutes, { prefix: "/api" });
   app.register(catalogRoutes, { prefix: "/api" });
   app.register(receivingRoutes, { prefix: "/api" });
+
+  if (options.serveWeb) {
+    const webRoot = resolve(
+      options.webDistPath ??
+        fileURLToPath(new URL("../../web/dist/", import.meta.url)),
+    );
+    const webRootPrefix = `${webRoot}${sep}`;
+
+    app.setNotFoundHandler(async (request, reply) => {
+      if (
+        request.url === "/api" ||
+        request.url.startsWith("/api/") ||
+        request.url === "/health"
+      ) {
+        return reply.code(404).send({ error: "Route not found." });
+      }
+
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return reply.code(404).send({ error: "Route not found." });
+      }
+
+      let pathname: string;
+      try {
+        pathname = decodeURIComponent(request.url.split("?")[0] ?? "/");
+      } catch {
+        return reply.code(400).send({ error: "Invalid request path." });
+      }
+
+      const relativePath =
+        pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+      let candidate = resolve(webRoot, relativePath);
+
+      if (!candidate.startsWith(webRootPrefix)) {
+        return reply.code(404).send({ error: "Route not found." });
+      }
+
+      if (!(await isFile(candidate))) {
+        if (extname(relativePath)) {
+          return reply.code(404).send({ error: "Asset not found." });
+        }
+
+        candidate = resolve(webRoot, "index.html");
+        if (!(await isFile(candidate))) {
+          return reply.code(503).send({
+            error:
+              "The workstation web build is unavailable. Run the web build before starting hosted mode.",
+          });
+        }
+      }
+
+      const content = await readFile(candidate);
+      return reply.type(contentTypeFor(candidate)).send(content);
+    });
+  }
 
   return app;
 }
