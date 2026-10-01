@@ -958,13 +958,42 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           body.status === "SOLD" &&
           currentActiveFill
         ) {
+          const soldAt = new Date();
+          const physicalQuantity =
+            currentActiveFill.quantity ?? new Prisma.Decimal(0);
+
           await tx.prescriptionFill.update({
             where: { id: currentActiveFill.id },
             data: {
               status: "SOLD",
-              soldAt: new Date(),
+              soldAt,
+              physicalDispensedQuantity: physicalQuantity,
             },
           });
+
+          if (currentActiveFill.billingAnchorFillId) {
+            const billingAnchor = await tx.prescriptionFill.findUnique({
+              where: { id: currentActiveFill.billingAnchorFillId },
+              select: {
+                id: true,
+                remainingOwedQuantity: true,
+              },
+            });
+
+            if (billingAnchor) {
+              await tx.prescriptionFill.update({
+                where: { id: billingAnchor.id },
+                data: {
+                  remainingOwedQuantity: Prisma.Decimal.max(
+                    billingAnchor.remainingOwedQuantity.minus(
+                      physicalQuantity,
+                    ),
+                    new Prisma.Decimal(0),
+                  ),
+                },
+              });
+            }
+          }
 
           if (currentActiveFill.consumesRefill) {
             prescriptionData.refillsUsed = Math.max(
