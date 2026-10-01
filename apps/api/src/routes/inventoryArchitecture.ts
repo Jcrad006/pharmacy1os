@@ -949,6 +949,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
         discrepancies,
         recentCycleDiscrepancies,
         activeRecalls,
+        externalDemands,
       ] = await Promise.all([
         db.inventoryBalance.findMany({
           where: { siteId: actor.siteId },
@@ -1037,6 +1038,17 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             lotNumberSearch: true,
             reference: true,
           },
+        }),
+        db.inventoryDemand.findMany({
+          where: {
+            siteId: { not: actor.siteId },
+            status: { in: ["OPEN", "PARTIALLY_SATISFIED"] },
+          },
+          include: {
+            site: { select: { id: true, name: true } },
+            medication: true,
+          },
+          orderBy: { dueAt: "asc" },
         }),
       ]);
 
@@ -1338,10 +1350,45 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
         });
       }
 
+      const transferSuggestions: Array<Record<string, unknown>> = [];
+      for (const projection of projections) {
+        if (projection.daysToExpiration > 90) continue;
+        const available = new Prisma.Decimal(projection.availableQuantity);
+        if (available.lte(0)) continue;
+
+        const matchingDemand = externalDemands.find(
+          (demand) =>
+            demand.medicationId === projection.product.medicationId &&
+            demand.quantityRequired.minus(demand.quantitySatisfied).gt(0),
+        );
+        if (!matchingDemand) continue;
+
+        const remainingDemand = matchingDemand.quantityRequired.minus(
+          matchingDemand.quantitySatisfied,
+        );
+        const suggested = Prisma.Decimal.min(available, remainingDemand);
+        if (suggested.lte(0)) continue;
+
+        transferSuggestions.push({
+          sourceBalanceId: projection.balanceId,
+          productId: projection.product.id,
+          medicationId: projection.product.medicationId,
+          medicationName: projection.product.medication.genericName,
+          lotNumber: projection.lot.lotNumber,
+          expirationDate: projection.expiration.expirationDate.toISOString(),
+          daysToExpiration: projection.daysToExpiration,
+          destinationSiteId: matchingDemand.site.id,
+          destinationSiteName: matchingDemand.site.name,
+          demandId: matchingDemand.id,
+          suggestedQuantity: suggested.toString(),
+        });
+      }
+
       return {
         generatedAt: now.toISOString(),
         inventoryValue: inventoryValue.toString(),
         projections,
+        transferSuggestions,
         demands: demands.map((demand) => ({
           ...demand,
           quantityRequired: demand.quantityRequired.toString(),
