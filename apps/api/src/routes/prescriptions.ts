@@ -252,6 +252,34 @@ function diffSnapshots(
   return changes;
 }
 
+async function ensureShortageDemand(input: {
+  siteId: string;
+  fillId: string;
+  medicationId: string | null;
+  preferredProductId?: string | null;
+  shortageQuantity: Prisma.Decimal;
+}) {
+  if (!input.medicationId || input.shortageQuantity.lte(0)) return null;
+
+  const existing = await db.inventoryDemand.findUnique({
+    where: { fillId: input.fillId },
+  });
+  if (existing) return existing;
+
+  return db.inventoryDemand.create({
+    data: {
+      siteId: input.siteId,
+      medicationId: input.medicationId,
+      preferredProductId: input.preferredProductId ?? null,
+      fillId: input.fillId,
+      reason: "SHORTAGE",
+      quantityRequired: input.shortageQuantity,
+      dueAt: new Date(),
+      note: "Automatically created because Product Fill inventory was insufficient.",
+    },
+  });
+}
+
 export async function prescriptionRoutes(app: FastifyInstance) {
   app.get("/prescriptions/queue", async (request, reply) => {
     try {
@@ -1145,6 +1173,45 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             },
           });
 
+          if (prescription.medicationId && reprocessed.quantity) {
+            const demand = await tx.inventoryDemand.findUnique({
+              where: { fillId: reprocessed.id },
+            });
+            if (isFuture) {
+              if (demand) {
+                await tx.inventoryDemand.update({
+                  where: { id: demand.id },
+                  data: {
+                    reason: "SCHEDULED_FILL",
+                    status: "OPEN",
+                    quantityRequired: reprocessed.quantity,
+                    quantitySatisfied: 0,
+                    dueAt: reprocessed.scheduledFor,
+                  },
+                });
+              } else {
+                await tx.inventoryDemand.create({
+                  data: {
+                    siteId: actor.siteId,
+                    medicationId: prescription.medicationId,
+                    fillId: reprocessed.id,
+                    reason: "SCHEDULED_FILL",
+                    quantityRequired: reprocessed.quantity,
+                    dueAt: reprocessed.scheduledFor,
+                  },
+                });
+              }
+            } else if (
+              demand &&
+              ["OPEN", "PARTIALLY_SATISFIED"].includes(demand.status)
+            ) {
+              await tx.inventoryDemand.update({
+                where: { id: demand.id },
+                data: { status: "CANCELLED" },
+              });
+            }
+          }
+
           const rx = await tx.prescription.update({
             where: { id: prescription.id },
             data: { status: isFuture ? "DUR_REVIEW" : "PRODUCT_FILL" },
@@ -1198,6 +1265,25 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
           },
         });
+
+        if (
+          isFuture &&
+          prescription.medicationId &&
+          created.quantity &&
+          created.quantity.gt(0)
+        ) {
+          await tx.inventoryDemand.create({
+            data: {
+              siteId: actor.siteId,
+              medicationId: prescription.medicationId,
+              fillId: created.id,
+              reason: "SCHEDULED_FILL",
+              quantityRequired: created.quantity,
+              dueAt: created.scheduledFor,
+              note: "Inventory demand for scheduled prescription fill",
+            },
+          });
+        }
 
         const rx = await tx.prescription.update({
           where: { id: prescription.id },
@@ -1360,20 +1446,39 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           },
         });
 
+        const existingDemand = await tx.inventoryDemand.findUnique({
+          where: { fillId: fill.id },
+        });
         const demand = fill.prescription.medicationId
-          ? await tx.inventoryDemand.create({
-              data: {
-                siteId: actor.siteId,
-                medicationId: fill.prescription.medicationId,
-                fillId: completion.id,
-                reason: "PARTIAL_COMPLETION",
-                quantityRequired: remainder,
-                dueAt: completionScheduledFor,
-                note:
-                  body.reason?.trim() ||
-                  "Remaining quantity required to complete partial fill",
-              },
-            })
+          ? existingDemand
+            ? await tx.inventoryDemand.update({
+                where: { id: existingDemand.id },
+                data: {
+                  fillId: completion.id,
+                  reason: "PARTIAL_COMPLETION",
+                  status: "OPEN",
+                  preferredProductId: null,
+                  quantityRequired: remainder,
+                  quantitySatisfied: 0,
+                  dueAt: completionScheduledFor,
+                  note:
+                    body.reason?.trim() ||
+                    "Remaining quantity required to complete partial fill",
+                },
+              })
+            : await tx.inventoryDemand.create({
+                data: {
+                  siteId: actor.siteId,
+                  medicationId: fill.prescription.medicationId,
+                  fillId: completion.id,
+                  reason: "PARTIAL_COMPLETION",
+                  quantityRequired: remainder,
+                  dueAt: completionScheduledFor,
+                  note:
+                    body.reason?.trim() ||
+                    "Remaining quantity required to complete partial fill",
+                },
+              })
           : null;
 
         await writeAuditEvent(tx, {
@@ -1816,6 +1921,40 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      const barcodeBalance = await db.inventoryBalance.findUnique({
+        where: {
+          siteId_productId_productLotId_productExpirationId: {
+            siteId: actor.siteId,
+            productId: product.id,
+            productLotId: lot.id,
+            productExpirationId: expiration.id,
+          },
+        },
+      });
+      const barcodeRequested = fill.quantity ?? new Prisma.Decimal(0);
+      const barcodeAvailable = barcodeBalance
+        ? barcodeBalance.onHandQuantity
+            .minus(barcodeBalance.reservedQuantity)
+            .minus(barcodeBalance.quarantinedQuantity)
+        : new Prisma.Decimal(0);
+      if (barcodeRequested.gt(barcodeAvailable)) {
+        const demand = await ensureShortageDemand({
+          siteId: actor.siteId,
+          fillId: fill.id,
+          medicationId: fill.prescription.medicationId,
+          preferredProductId: product.id,
+          shortageQuantity: barcodeRequested.minus(barcodeAvailable),
+        });
+        return reply.code(409).send({
+          error: "There is not enough available inventory for this fill.",
+          code: "INSUFFICIENT_INVENTORY",
+          availableQuantity: barcodeAvailable.toString(),
+          requestedQuantity: barcodeRequested.toString(),
+          shortageQuantity: barcodeRequested.minus(barcodeAvailable).toString(),
+          inventoryDemandId: demand?.id ?? null,
+        });
+      }
+
       const verified = await db.$transaction(async (tx) => {
         const reservation = await reserveInventoryForFill(tx, {
           fillId: id,
@@ -2021,6 +2160,40 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return reply.code(409).send({
           error: "The scanned product is expired.",
           code: "PRODUCT_EXPIRED",
+        });
+      }
+
+      const manualBalance = await db.inventoryBalance.findUnique({
+        where: {
+          siteId_productId_productLotId_productExpirationId: {
+            siteId: actor.siteId,
+            productId: product.id,
+            productLotId: lot.id,
+            productExpirationId: expiration.id,
+          },
+        },
+      });
+      const manualRequested = fill.quantity ?? new Prisma.Decimal(0);
+      const manualAvailable = manualBalance
+        ? manualBalance.onHandQuantity
+            .minus(manualBalance.reservedQuantity)
+            .minus(manualBalance.quarantinedQuantity)
+        : new Prisma.Decimal(0);
+      if (manualRequested.gt(manualAvailable)) {
+        const demand = await ensureShortageDemand({
+          siteId: actor.siteId,
+          fillId: fill.id,
+          medicationId: fill.prescription.medicationId,
+          preferredProductId: product.id,
+          shortageQuantity: manualRequested.minus(manualAvailable),
+        });
+        return reply.code(409).send({
+          error: "There is not enough available inventory for this fill.",
+          code: "INSUFFICIENT_INVENTORY",
+          availableQuantity: manualAvailable.toString(),
+          requestedQuantity: manualRequested.toString(),
+          shortageQuantity: manualRequested.minus(manualAvailable).toString(),
+          inventoryDemandId: demand?.id ?? null,
         });
       }
 
