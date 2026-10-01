@@ -92,6 +92,16 @@ export type PrescriptionFill = {
   scheduledFor: string | null;
   quantity: string | number | null;
   status: FillStatus;
+  productId: string | null;
+  productLotId: string | null;
+  productExpirationId: string | null;
+  scannedNdc: string | null;
+  scannedLotNumber: string | null;
+  scannedExpiration: string | null;
+  productVerifiedAt: string | null;
+  product: Product | null;
+  productLot: ProductLot | null;
+  productExpiration: ProductExpiration | null;
   filledAt: string | null;
   soldAt: string | null;
   createdAt: string;
@@ -100,6 +110,8 @@ export type PrescriptionFill = {
 export type PrescriptionQueueItem = {
   id: string;
   rxNumber: string | null;
+  medicationId: string | null;
+  medication: Medication | null;
   medicationName: string;
   strength: string | null;
   dosageForm: string | null;
