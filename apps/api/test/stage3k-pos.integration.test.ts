@@ -289,9 +289,10 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(beforeStage.statusCode).toBe(409);
     expect(beforeStage.json().code).toBe("WILL_CALL_STAGING_REQUIRED");
 
-    const staged = await stage(fillId, "WC-BAG-CASH-3K");
+    const cashBagBarcode = `WC-BAG-CASH-3K-${randomUUID().slice(0, 8)}`.toUpperCase();
+    const staged = await stage(fillId, cashBagBarcode);
     expect(staged.status).toBe("STAGED");
-    expect(staged.bagBarcode).toBe("WC-BAG-CASH-3K");
+    expect(staged.bagBarcode).toBe(cashBagBarcode);
     expect(staged.location.code).toBe("WILL-CALL");
     expect(staged.location.barcode).toBe(`WC-DEFAULT-${siteId}`.toUpperCase());
 
@@ -306,7 +307,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(quote.json().quote.lines[0]).toMatchObject({
       fillId,
       priceBasis: "CASH",
-      bagBarcode: "WC-BAG-CASH-3K",
+      bagBarcode: cashBagBarcode,
       willCallLocationCode: "WILL-CALL",
     });
     expect(Number(quote.json().quote.lines[0].cashUnitPriceSnapshot)).toBe(0.25);
@@ -590,7 +591,10 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const scanned = await scan(fillId, 12);
     expect(scanned.json().adjudication.state).toBe("PAID_LABEL_READY");
     await makeReady(prescriptionId);
-    await stage(fillId, "WC-BAG-ABANDON-3K");
+    await stage(
+      fillId,
+      `WC-BAG-ABANDON-3K-${randomUUID().slice(0, 8)}`.toUpperCase(),
+    );
 
     const original = await db.claimTransaction.findFirstOrThrow({
       where: { fillId, operation: "SUBMIT", outcome: "PAID" },
