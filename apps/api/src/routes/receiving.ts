@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
 import { parseBarcode } from "../barcode.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
+import { InventoryError, receiveInventory } from "../inventory.js";
 
 type ScanBody = {
   rawBarcode?: string;
@@ -20,6 +21,13 @@ type CorrectBarcodeBody = {
   productId?: string;
   reason?: string;
   rawBarcode?: string;
+};
+
+type ReceiveStockBody = {
+  rawBarcode?: string;
+  quantity?: number;
+  source?: string;
+  reference?: string;
 };
 
 const productInclude = (siteId: string) => ({
@@ -164,6 +172,127 @@ export async function receivingRoutes(app: FastifyInstance) {
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/receiving/stock", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:write");
+      const body = (request.body ?? {}) as ReceiveStockBody;
+      const parsed = parseBarcode(body.rawBarcode ?? "");
+
+      if (
+        !parsed ||
+        !parsed.lotNumber ||
+        !parsed.expirationDate ||
+        typeof body.quantity !== "number" ||
+        !Number.isFinite(body.quantity) ||
+        body.quantity <= 0
+      ) {
+        return reply.code(400).send({
+          error:
+            "A registered traceability barcode with lot/expiration and a positive received quantity are required.",
+        });
+      }
+
+      const barcode = await db.productBarcode.findUnique({
+        where: {
+          type_identifierSearch: {
+            type: parsed.type,
+            identifierSearch: parsed.identifierSearch,
+          },
+        },
+        include: {
+          product: { include: productInclude(actor.siteId) },
+        },
+      });
+
+      if (!barcode || !barcode.product.active) {
+        return reply.code(409).send({
+          error:
+            "This barcode must be assigned to an active product before inventory can be received.",
+          code: "BARCODE_UNKNOWN",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const traceability = await recordTraceability(tx, {
+          siteId: actor.siteId,
+          productId: barcode.productId,
+          lotNumber: parsed.lotNumber,
+          expirationDate: parsed.expirationDate,
+        });
+
+        if (!traceability.lot || !traceability.expiration) {
+          throw new InventoryError(
+            409,
+            "TRACEABILITY_REQUIRED",
+            "Lot and expiration records are required before inventory can be received.",
+          );
+        }
+
+        const received = await receiveInventory(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          productId: barcode.productId,
+          productLotId: traceability.lot.id,
+          productExpirationId: traceability.expiration.id,
+          quantity: body.quantity,
+          source: body.source,
+          reference: body.reference,
+          reason: "Inventory received from scanned stock",
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "INVENTORY_STOCK_RECEIVED",
+          entityType: "InventoryBalance",
+          entityId: received.balance.id,
+          requestId: request.id,
+          metadata: {
+            productId: barcode.productId,
+            ndc: barcode.product.ndc,
+            barcodeId: barcode.id,
+            identifier: parsed.identifier,
+            lotNumber: parsed.lotNumber,
+            expirationDate: parsed.expirationDate.toISOString(),
+            quantity: body.quantity,
+            source: body.source?.trim() || null,
+            reference: body.reference?.trim() || null,
+          },
+        });
+
+        return {
+          traceability,
+          ...received,
+        };
+      });
+
+      return reply.code(201).send({
+        status: "RECEIVED",
+        parsed,
+        barcode,
+        product: barcode.product,
+        traceability: result.traceability,
+        balance: {
+          ...result.balance,
+          availableQuantity: result.balance.onHandQuantity
+            .minus(result.balance.reservedQuantity)
+            .toString(),
+        },
+        transaction: result.transaction,
+      });
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
