@@ -1078,17 +1078,6 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (
         current.status === "PRODUCT_FILL" &&
         body.status === "PHARMACIST_REVIEW" &&
-        currentActiveFill
-      ) {
-        await assertFillBillingReadyForReview(
-          currentActiveFill.id,
-          actor.siteId,
-        );
-      }
-
-      if (
-        current.status === "PRODUCT_FILL" &&
-        body.status === "PHARMACIST_REVIEW" &&
         current.medicationId &&
         (!currentActiveFill?.productId ||
           !currentActiveFill.productLotId ||
@@ -1102,6 +1091,17 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             "A verified NDC, lot, expiration, and inventory reservation are required before pharmacist review.",
           code: "PRODUCT_SCAN_REQUIRED",
         });
+      }
+
+      if (
+        current.status === "PRODUCT_FILL" &&
+        body.status === "PHARMACIST_REVIEW" &&
+        currentActiveFill
+      ) {
+        await assertFillBillingReadyForReview(
+          currentActiveFill.id,
+          actor.siteId,
+        );
       }
 
       if (
@@ -1882,10 +1882,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         include: prescriptionInclude,
       });
 
+      const adjudication = result.partialFill.productVerifiedAt
+        ? await tryAutoAdjudication(result.partialFill.id, actor, request.id)
+        : null;
+
       return {
         partialFill: result.partialFill,
         completionFill: result.completion,
         inventoryException: result.inventoryException,
+        adjudication,
         prescription: presentPrescription(prescription),
       };
     } catch (error) {
