@@ -1576,12 +1576,19 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
             partNumber: fill.partNumber,
-            intendedQuantity: intended.toString(),
-            dispensedQuantity: partial.toString(),
-            remainingQuantity: remainder.toString(),
+            priorPlannedPhysicalQuantity: plannedPartQuantity.toString(),
+            physicalQuantityThisPart: partial.toString(),
+            logicalIntendedQuantity: intendedQuantity.toString(),
+            payerIntendedQuantity: payerIntendedQuantity.toString(),
+            completionQuantity: remainder.toString(),
             completionFillId: completion.id,
             completionScheduledFor:
               completionScheduledFor.toISOString(),
+            billingAnchorFillId,
+            billingRole: partialFill.billingRole,
+            reservationResized: wasReserved,
+            interruptionReason,
+            inventoryExceptionId: inventoryException?.id ?? null,
             reason: body.reason?.trim() || null,
           },
         });
@@ -1598,12 +1605,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             fillNumber: fill.fillNumber,
             partNumber: completion.partNumber,
             completionOfFillId: fill.id,
-            quantity: remainder.toString(),
+            billingAnchorFillId,
+            physicalCompletionQuantity: remainder.toString(),
+            logicalIntendedQuantity: intendedQuantity.toString(),
+            payerIntendedQuantity: payerIntendedQuantity.toString(),
             scheduledFor: completionScheduledFor.toISOString(),
           },
         });
 
-        return { partialFill, completion };
+        return { partialFill, completion, inventoryException };
       });
 
       const prescription = await db.prescription.findUniqueOrThrow({
@@ -1614,6 +1624,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       return {
         partialFill: result.partialFill,
         completionFill: result.completion,
+        inventoryException: result.inventoryException,
         prescription: presentPrescription(prescription),
       };
     } catch (error) {
