@@ -131,6 +131,10 @@
 - [x] Unknown receiving barcode can be carried into F7 and attached while creating a new NDC
 - [x] Receiving scan registers newly observed lot/expiration data under the recognized NDC
 - [x] Product Fill verifies a single raw registered barcode against the Data Entry Drug
+- [x] Pharmacist/admin-only correction of an incorrect barcode → Drug/NDC assignment
+- [x] Required correction reason with before/after audit trail
+- [x] Correction warns when the old barcode mapping was previously used on prescription fills
+- [x] Correction re-registers rescanned lot/expiration under the corrected NDC without blindly deleting old traceability records
 - [x] Registered barcode identifiers are searchable in the Drug/Product catalog
 - [ ] Third-party claim billing/adjudication during Product Fill
 - [ ] Prescription label generation/printing after successful adjudication
