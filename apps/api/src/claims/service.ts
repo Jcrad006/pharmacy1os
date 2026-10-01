@@ -172,13 +172,6 @@ function validatePhysicalFillReady(fill: FillForClaims) {
     );
   }
 
-  if (!fill.daysSupply || fill.daysSupply <= 0) {
-    throw new ClaimError(
-      409,
-      "DAYS_SUPPLY_REQUIRED",
-      "Days supply must be entered before a third-party claim can be submitted.",
-    );
-  }
 }
 
 async function createOrReuseLabel(
@@ -496,6 +489,14 @@ export async function adjudicateFillClaims(
       transactions: [],
       ...generated,
     };
+  }
+
+  if (!fill.daysSupply || fill.daysSupply <= 0) {
+    throw new ClaimError(
+      409,
+      "DAYS_SUPPLY_REQUIRED",
+      "Days supply must be entered before a third-party claim can be submitted.",
+    );
   }
 
   const existing = await db.claimTransaction.findMany({
