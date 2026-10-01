@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase3c-drug-selection-scan-verification]
+    branches: [main, phase3d-barcode-registry-receiving]
   pull_request:
   workflow_dispatch:
 

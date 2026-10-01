@@ -36,6 +36,8 @@ The current prototype includes:
 - Database-backed dispensing, clinical, and queue-search integration tests
 - Drug/Product master with NDC-specific descriptors, package sizes, dispensing units, current unit/package pricing, lots, and expirations
 - Catalog Drug selection during Data Entry with fill-time NDC/lot/expiration verification against the selected Drug
+- Shared product-barcode registry used by inventory receiving and Product Fill
+- F8 Receiving recognizes known GS1/UPC/GTIN identifiers and supports unknown-barcode assignment
 - Automated migration, seed, typecheck, test, and production-build validation in CI
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
@@ -160,3 +162,10 @@ When the queue is active and the user is not typing in a form:
 - `Enter` — open highlighted prescription
 
 This preference is local to the workstation prototype and is not yet a production user-profile setting.
+
+
+## Barcode workflow
+
+The barcode registry stores stable product identifiers separately from variable lot and expiration data. A receiving scan can resolve a known product or flag an unknown barcode for assignment. GS1 AI (01) is treated as the stable GTIN identifier, while parsed lot and expiration values are recorded under the recognized NDC at the pharmacy site. Product Fill uses the same registry and still requires the resolved NDC to belong to the Drug selected during Data Entry.
+
+Third-party adjudication and prescription-label printing remain intentionally deferred to later phases.
