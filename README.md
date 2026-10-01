@@ -39,6 +39,9 @@ The current prototype includes:
 - Shared product-barcode registry used by inventory receiving and Product Fill
 - F8 Receiving recognizes known GS1/UPC/GTIN identifiers and supports unknown-barcode assignment
 - Automated migration, seed, typecheck, test, and production-build validation in CI
+- Quantity-based inventory ledger with on-hand, reserved, quarantined, and available stock by NDC/lot/expiration
+- Cycle-count sessions with technician count entry and pharmacist/admin discrepancy reconciliation
+- Quarantine holds for damaged, expired, recalled, suspect, or temperature-excursion stock with pharmacist-controlled release/disposition
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
 
