@@ -2385,8 +2385,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return updated;
       });
 
+      const adjudication = verified.productVerifiedAt
+        ? await tryAutoAdjudication(id, actor, request.id)
+        : null;
+
       return {
         fill: verified,
+        adjudication,
         parsed,
         barcode: registered,
         verifiedProduct: {
@@ -2634,8 +2639,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return verified;
       });
 
+      const adjudication = result.productVerifiedAt
+        ? await tryAutoAdjudication(id, actor, request.id)
+        : null;
+
       return {
         fill: result,
+        adjudication,
         verifiedProduct: {
           drug: product.medication,
           product: {
@@ -2735,10 +2745,139 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return result;
       });
 
-      return { fill: updated };
+      const adjudication = updated.productVerifiedAt
+        ? await tryAutoAdjudication(id, actor, request.id)
+        : null;
+
+      return { fill: updated, adjudication };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/fills/:id/billing-details", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:write");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as {
+        daysSupply?: number;
+        billingProductId?: string | null;
+      };
+
+      if (
+        body.daysSupply !== undefined &&
+        (!Number.isInteger(body.daysSupply) || body.daysSupply <= 0)
+      ) {
+        return reply.code(400).send({
+          error: "daysSupply must be a positive whole number.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: { id, prescription: { siteId: actor.siteId } },
+        include: {
+          productSources: true,
+          prescription: true,
+        },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (fill.inventoryCommittedAt) {
+        return reply.code(409).send({
+          error: "Billing details cannot be changed after pharmacist inventory commitment.",
+        });
+      }
+      if (body.daysSupply === undefined && body.billingProductId === undefined) {
+        return reply.code(400).send({
+          error: "Provide daysSupply and/or billingProductId.",
+        });
+      }
+
+      if (body.billingProductId) {
+        const source = fill.productSources.find(
+          (item) => item.productId === body.billingProductId,
+        );
+        if (!source) {
+          return reply.code(409).send({
+            error:
+              "The billing product must be one of the physical NDC products used for this dispense part.",
+            code: "BILLING_PRODUCT_NOT_IN_FILL",
+          });
+        }
+      }
+
+      const updated = await db.$transaction(async (tx) => {
+        const result = await tx.prescriptionFill.update({
+          where: { id },
+          data: {
+            daysSupply: body.daysSupply,
+            billingProductId:
+              body.billingProductId === undefined
+                ? undefined
+                : body.billingProductId,
+          },
+          include: {
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_BILLING_DETAILS_UPDATED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            daysSupply: result.daysSupply,
+            billingProductId: result.billingProductId,
+          },
+        });
+        return result;
+      });
+
+      const adjudication = updated.productVerifiedAt
+        ? await tryAutoAdjudication(id, actor, request.id)
+        : null;
+
+      return { fill: updated, adjudication };
+    } catch (error) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
+        });
       }
       throw error;
     }
