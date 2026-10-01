@@ -890,6 +890,7 @@ export async function reverseClaimTransaction(
 export async function reverseActivePaidClaimsForFill(
   fillId: string,
   context: ClaimActorContext,
+  options?: { requireMajoritySource?: boolean },
 ) {
   const paidClaims = await db.claimTransaction.findMany({
     where: {
@@ -902,6 +903,7 @@ export async function reverseActivePaidClaimsForFill(
       id: true,
       coveragePosition: true,
       createdAt: true,
+      payer: { select: { billingNdcStrategy: true } },
     },
   });
   if (paidClaims.length === 0) return [];
@@ -929,6 +931,22 @@ export async function reverseActivePaidClaimsForFill(
         b.coveragePosition - a.coveragePosition ||
         b.createdAt.getTime() - a.createdAt.getTime(),
     );
+
+  if (
+    options?.requireMajoritySource &&
+    activePaidClaims.some(
+      (claim) => claim.payer.billingNdcStrategy !== "MAJORITY_SOURCE",
+    )
+  ) {
+    throw new ClaimError(
+      409,
+      "PAID_CLAIM_REVERSAL_REQUIRED",
+      "Reverse the active paid claim before changing product-source details for a payer that does not use automatic majority-NDC billing.",
+      {
+        claimTransactionIds: activePaidClaims.map((claim) => claim.id),
+      },
+    );
+  }
 
   const results = [];
   for (const claim of activePaidClaims) {
