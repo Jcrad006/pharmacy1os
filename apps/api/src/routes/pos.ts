@@ -4,6 +4,9 @@ import {
   checkoutFills,
   PosError,
   quoteFillsForCheckout,
+  stageWillCallPackage,
+  type PickupPackageInput,
+  type PickupVerificationInput,
   type PosTenderInput,
 } from "../pos/service.js";
 
@@ -14,7 +17,15 @@ type QuoteBody = {
 type CheckoutBody = {
   fillIds?: string[];
   tenders?: PosTenderInput[];
+  pickupPackages?: PickupPackageInput[];
+  pickup?: PickupVerificationInput;
   idempotencyKey?: string;
+};
+
+type StageBody = {
+  bagBarcode?: string | null;
+  locationId?: string | null;
+  locationBarcode?: string | null;
 };
 
 function handleError(error: unknown, reply: FastifyReply) {
@@ -30,6 +41,87 @@ function handleError(error: unknown, reply: FastifyReply) {
 }
 
 export async function posRoutes(app: FastifyInstance) {
+  app.post("/fills/:id/will-call/stage", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const fillId = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as StageBody;
+      const packageRecord = await stageWillCallPackage(
+        fillId,
+        body,
+        {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          requestId: request.id,
+        },
+      );
+      return { package: packageRecord };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.get("/will-call/packages/scan/:barcode", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:read");
+      const barcode = decodeURIComponent(
+        (request.params as { barcode: string }).barcode,
+      )
+        .trim()
+        .toUpperCase();
+      if (!barcode) {
+        return reply.code(400).send({ error: "A barcode is required." });
+      }
+      const { db } = await import("../db.js");
+
+      const bag = await db.willCallPackage.findFirst({
+        where: {
+          siteId: actor.siteId,
+          status: "STAGED",
+          bagBarcode: barcode,
+        },
+        include: {
+          location: true,
+          fill: {
+            include: {
+              prescription: { include: { patient: true } },
+            },
+          },
+        },
+      });
+      if (bag) {
+        return { scanType: "BAG", packages: [bag] };
+      }
+
+      const packages = await db.willCallPackage.findMany({
+        where: {
+          siteId: actor.siteId,
+          status: "STAGED",
+          location: {
+            siteId: actor.siteId,
+            barcode,
+            active: true,
+          },
+        },
+        include: {
+          location: true,
+          fill: {
+            include: {
+              prescription: { include: { patient: true } },
+            },
+          },
+        },
+        orderBy: { stagedAt: "asc" },
+      });
+      if (packages.length === 0) {
+        return reply.code(404).send({ error: "No staged Will Call package matches that barcode." });
+      }
+      return { scanType: "LOCATION", packages };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.post("/pos/quote", async (request, reply) => {
     try {
       const actor = await resolveDevelopmentActor(request, "prescription:sell");
@@ -63,6 +155,8 @@ export async function posRoutes(app: FastifyInstance) {
         {
           fillIds: body.fillIds,
           tenders: body.tenders ?? [],
+          pickupPackages: body.pickupPackages ?? [],
+          pickup: body.pickup as PickupVerificationInput,
           idempotencyKey: body.idempotencyKey,
         },
         {
