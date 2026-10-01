@@ -288,6 +288,15 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(scanned.json().adjudication.state).toBe("CASH_LABEL_READY");
     await makeReady(prescriptionId);
 
+    const bypass = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "SOLD" },
+    });
+    expect(bypass.statusCode).toBe(409);
+    expect(bypass.json().code).toBe("POS_CHECKOUT_REQUIRED");
+
     const beforeStage = await app.inject({
       method: "POST",
       url: "/api/pos/quote",
