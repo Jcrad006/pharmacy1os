@@ -226,6 +226,7 @@ enum InventoryExceptionType {
   UNALLOCATED_DEMAND
   POSITION_IMBALANCE
   MISSING_ACQUISITION_COST
+  PHYSICAL_STOCK_SHORTAGE
 }
 
 enum InventoryExceptionStatus {
