@@ -473,7 +473,8 @@ model CycleCountLine {
   countedById           String?
   countedBy             User?             @relation("CycleCountCountedBy", fields: [countedById], references: [id], onDelete: Restrict)
   countedAt             DateTime?
-  reconciledTransactionId String?
+  reconciledTransactionId String?             @unique
+  reconciledTransaction   InventoryTransaction? @relation("CycleCountReconciliation", fields: [reconciledTransactionId], references: [id], onDelete: Restrict)
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 
@@ -499,6 +500,7 @@ model InventoryTransaction {
   source             String?
   reference          String?
   occurredAt         DateTime                 @default(now())
+  cycleCountLine     CycleCountLine?          @relation("CycleCountReconciliation")
 
   @@index([siteId, occurredAt])
   @@index([inventoryBalanceId, occurredAt])
