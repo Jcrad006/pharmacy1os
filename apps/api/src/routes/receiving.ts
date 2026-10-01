@@ -114,6 +114,9 @@ export async function receivingRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "A barcode scan is required." });
       }
 
+      const lotNumber = parsed.lotNumber;
+      const expirationDate = parsed.expirationDate;
+
       const barcode = await db.productBarcode.findUnique({
         where: {
           type_identifierSearch: {
@@ -140,8 +143,8 @@ export async function receivingRoutes(app: FastifyInstance) {
         const recorded = await recordTraceability(tx, {
           siteId: actor.siteId,
           productId: barcode.productId,
-          lotNumber: parsed.lotNumber,
-          expirationDate: parsed.expirationDate,
+          lotNumber,
+          expirationDate,
         });
 
         await writeAuditEvent(tx, {
@@ -182,14 +185,15 @@ export async function receivingRoutes(app: FastifyInstance) {
       const actor = await resolveDevelopmentActor(request, "inventory:write");
       const body = (request.body ?? {}) as ReceiveStockBody;
       const parsed = parseBarcode(body.rawBarcode ?? "");
+      const quantity = body.quantity;
 
       if (
         !parsed ||
         !parsed.lotNumber ||
         !parsed.expirationDate ||
-        typeof body.quantity !== "number" ||
-        !Number.isFinite(body.quantity) ||
-        body.quantity <= 0
+        typeof quantity !== "number" ||
+        !Number.isFinite(quantity) ||
+        quantity <= 0
       ) {
         return reply.code(400).send({
           error:
@@ -239,7 +243,7 @@ export async function receivingRoutes(app: FastifyInstance) {
           productId: barcode.productId,
           productLotId: traceability.lot.id,
           productExpirationId: traceability.expiration.id,
-          quantity: body.quantity,
+          quantity,
           source: body.source,
           reference: body.reference,
           reason: "Inventory received from scanned stock",
@@ -257,9 +261,9 @@ export async function receivingRoutes(app: FastifyInstance) {
             ndc: barcode.product.ndc,
             barcodeId: barcode.id,
             identifier: parsed.identifier,
-            lotNumber: parsed.lotNumber,
-            expirationDate: parsed.expirationDate.toISOString(),
-            quantity: body.quantity,
+            lotNumber,
+            expirationDate: expirationDate.toISOString(),
+            quantity,
             source: body.source?.trim() || null,
             reference: body.reference?.trim() || null,
           },
