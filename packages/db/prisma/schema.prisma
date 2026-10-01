@@ -224,6 +224,7 @@ model PharmacySite {
   receivingDiscrepancies ReceivingDiscrepancy[]
   inventoryOperationKeys InventoryOperationKey[]
   inventoryCostLayers   InventoryCostLayer[]
+  inventoryLocationMovements InventoryLocationMovement[]
   auditEvents           AuditEvent[]
 }
 
@@ -414,6 +415,7 @@ model Product {
   purchaseOrderLines    PurchaseOrderLine[]
   inventoryPolicies      InventoryPolicy[]
   inventoryCostLayers    InventoryCostLayer[]
+  preferredInventoryDemands InventoryDemand[] @relation("InventoryDemandPreferredProduct")
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
@@ -594,6 +596,7 @@ model InventoryBalance {
   destinationTransfers  InventoryTransfer[] @relation("TransferDestinationBalance")
   purchaseOrderReceipts PurchaseOrderReceipt[]
   positions             InventoryPosition[]
+  locationMovements     InventoryLocationMovement[]
   inventoryCostLayers   InventoryCostLayer[]
   inventoryCostConsumptions InventoryCostConsumption[]
 
@@ -890,6 +893,7 @@ model InventoryPosition {
 model InventoryLocationMovement {
   id              String             @id @default(uuid())
   siteId          String
+  site            PharmacySite       @relation(fields: [siteId], references: [id], onDelete: Restrict)
   inventoryBalanceId String
   inventoryBalance InventoryBalance  @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
   fromLocationId  String?
@@ -943,6 +947,7 @@ model InventoryDemand {
   medicationId       String
   medication         Medication            @relation(fields: [medicationId], references: [id], onDelete: Restrict)
   preferredProductId String?
+  preferredProduct   Product?              @relation("InventoryDemandPreferredProduct", fields: [preferredProductId], references: [id], onDelete: Restrict)
   fillId             String?               @unique
   fill               PrescriptionFill?     @relation(fields: [fillId], references: [id], onDelete: Restrict)
   reason             InventoryDemandReason
