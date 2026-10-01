@@ -129,6 +129,9 @@ ALTER TABLE "ClaimTransaction"
 ALTER TABLE "ClaimTransaction"
   ADD CONSTRAINT "ClaimTransaction_createdById_fkey"
   FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "ClaimTransaction"
+  ADD CONSTRAINT "ClaimTransaction_originalTransactionId_fkey"
+  FOREIGN KEY ("originalTransactionId") REFERENCES "ClaimTransaction"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "PrescriptionLabel"
   ADD CONSTRAINT "PrescriptionLabel_siteId_fkey"
@@ -136,6 +139,9 @@ ALTER TABLE "PrescriptionLabel"
 ALTER TABLE "PrescriptionLabel"
   ADD CONSTRAINT "PrescriptionLabel_fillId_fkey"
   FOREIGN KEY ("fillId") REFERENCES "PrescriptionFill"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PrescriptionLabel"
+  ADD CONSTRAINT "PrescriptionLabel_claimTransactionId_fkey"
+  FOREIGN KEY ("claimTransactionId") REFERENCES "ClaimTransaction"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "LabelPrintJob"
   ADD CONSTRAINT "LabelPrintJob_siteId_fkey"
