@@ -48,6 +48,8 @@ The current prototype includes:
 - Physical Will Call staging with barcode-capable bins/locations and one unique bag barcode per Ready fill
 - Controlled pickup/POS transactions with cash or adjudicated patient-pay pricing, tender/change capture, bag scan, identity verification, and signature attestation
 - Abandoned Ready-fill return-to-stock that reverses active paid synthetic claims before restoring inventory
+- Local prescription document vault with immutable source files, SHA-256 integrity hashes, optional AES-256-GCM encryption, visual annotations, and separate change provenance
+- Human-readable electronic-prescription visual rendering instead of presenting raw message data as the pharmacist-facing prescription
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
 
@@ -86,6 +88,16 @@ Sold / POS receipt record
 ```
 
 A Ready fill may instead be returned to stock. For an insured fill, Pharmacy1OS first reverses any active paid synthetic claim; only after a successful reversal can the committed inventory be returned and the staged Will Call package be closed. A returned, unsold fill does not consume a refill authorization and can be reprocessed using the same fill number.
+
+## Local prescription document vault
+
+Prescription source images are stored on the Pharmacy1OS server, not as loose files on individual workstations. PostgreSQL stores document metadata, prescription/patient linkage, integrity hashes, annotation geometry, change provenance, and audit records; the immutable binary source is stored under `DOCUMENT_STORAGE_ROOT`. When `DOCUMENT_ENCRYPTION_KEY` is configured as a 64-character hexadecimal AES-256 key, source payloads are encrypted with AES-256-GCM before they are written to disk.
+
+The prescription workstation can draw an opaque text rectangle directly over a visual prescription. That visual text is deliberately separate from the structured change record. The structured record captures the staff member, timestamp, change type, what changed, why, communication method, contacted party, authorizing prescriber, and optional note. Revising an annotation creates a new version and marks the prior annotation/change record superseded; it does not delete the old history or modify the immutable source pixels.
+
+Electronic prescriptions may carry their raw electronic message separately while Pharmacy1OS generates an immutable human-readable SVG prescription rendering containing the patient, prescriber, medication, SIG, quantity, refills, written date, product-selection instruction, Rx number, and electronic message ID. Staff annotate that visual representation using the same overlay/provenance system used for scanned paper prescriptions.
+
+Current development limitations: browser image/SVG sources support visual box placement; PDF/TIFF files are retained and retrievable but page-specific annotation requires a later canvas/scanner integration. This remains development-only infrastructure and must not be used with real PHI until production security, encryption-key management, retention, backup/restore, privacy, and validation controls are completed.
 
 ## Synthetic clinical/date-rule layer
 
