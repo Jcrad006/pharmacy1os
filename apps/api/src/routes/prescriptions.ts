@@ -4,6 +4,7 @@ import {
   type FillInterruptionReason,
   type FillStatus,
   type PrescriptionStatus,
+  type ProductSelectionDirective,
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
@@ -42,6 +43,8 @@ type CreatePrescriptionBody = {
   patientId?: string;
   prescriberId?: string;
   medicationId?: string;
+  prescribedProductId?: string;
+  productSelectionDirective?: ProductSelectionDirective;
   rxNumber?: string;
   medicationName?: string;
   strength?: string;
@@ -58,6 +61,8 @@ type CreatePrescriptionBody = {
 type UpdatePrescriptionBody = {
   prescriberId?: string;
   medicationId?: string;
+  prescribedProductId?: string | null;
+  productSelectionDirective?: ProductSelectionDirective;
   medicationName?: string;
   strength?: string | null;
   dosageForm?: string | null;
@@ -108,6 +113,12 @@ type ScanBarcodeBody = {
   sourceQuantity?: number;
 };
 
+const productSelectionDirectives = new Set<ProductSelectionDirective>([
+  "UNSPECIFIED",
+  "SELECTION_PERMITTED",
+  "DISPENSE_AS_WRITTEN",
+]);
+
 const fillInterruptionReasons = new Set<FillInterruptionReason>([
   "INSUFFICIENT_PHYSICAL_STOCK",
   "DAMAGED_PRODUCT",
@@ -139,6 +150,7 @@ const editableStatuses = new Set<PrescriptionStatus>([
 const prescriptionInclude = {
   patient: true,
   medication: true,
+  prescribedProduct: { include: { manufacturer: true } },
   prescriber: {
     include: {
       identifiers: {
@@ -517,6 +529,44 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (
+        body.productSelectionDirective &&
+        !productSelectionDirectives.has(body.productSelectionDirective)
+      ) {
+        return reply.code(400).send({
+          error: "Invalid product-selection directive.",
+        });
+      }
+
+      let prescribedProduct = null;
+      if (body.prescribedProductId) {
+        prescribedProduct = await db.product.findUnique({
+          where: { id: body.prescribedProductId },
+          include: { manufacturer: true },
+        });
+        if (
+          !prescribedProduct ||
+          !prescribedProduct.active ||
+          !selectedMedication ||
+          prescribedProduct.medicationId !== selectedMedication.id
+        ) {
+          return reply.code(400).send({
+            error:
+              "The prescribed product must be an active NDC under the selected Drug.",
+          });
+        }
+      }
+
+      if (
+        body.productSelectionDirective === "DISPENSE_AS_WRITTEN" &&
+        !prescribedProduct
+      ) {
+        return reply.code(400).send({
+          error:
+            "A prescribed product/NDC is required when product selection is prohibited.",
+        });
+      }
+
       const prescription = await db.$transaction(async (tx) => {
         const created = await tx.prescription.create({
           data: {
@@ -524,6 +574,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             patientId: body.patientId!,
             prescriberId: body.prescriberId!,
             medicationId: selectedMedication?.id,
+            prescribedProductId: prescribedProduct?.id,
+            productSelectionDirective:
+              body.productSelectionDirective ?? "UNSPECIFIED",
             rxNumber: body.rxNumber?.trim() || undefined,
             medicationName:
               selectedMedication?.genericName ?? body.medicationName!.trim(),
@@ -609,6 +662,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         [
           "prescriberId",
           "medicationId",
+          "prescribedProductId",
+          "productSelectionDirective",
           "medicationName",
           "strength",
           "dosageForm",
@@ -689,6 +744,61 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         }
       }
 
+      if (
+        body.productSelectionDirective !== undefined &&
+        !productSelectionDirectives.has(body.productSelectionDirective)
+      ) {
+        return reply.code(400).send({
+          error: "Invalid product-selection directive.",
+        });
+      }
+
+      const effectiveMedicationId =
+        selectedMedicationForEdit?.id ?? current.medicationId;
+      let prescribedProductForEdit:
+        | { id: string; medicationId: string; active: boolean }
+        | null
+        | undefined = undefined;
+
+      if (body.prescribedProductId !== undefined) {
+        if (body.prescribedProductId === null) {
+          prescribedProductForEdit = null;
+        } else {
+          prescribedProductForEdit = await db.product.findUnique({
+            where: { id: body.prescribedProductId },
+            select: { id: true, medicationId: true, active: true },
+          });
+          if (
+            !prescribedProductForEdit ||
+            !prescribedProductForEdit.active ||
+            !effectiveMedicationId ||
+            prescribedProductForEdit.medicationId !== effectiveMedicationId
+          ) {
+            return reply.code(400).send({
+              error:
+                "The prescribed product must be an active NDC under the selected Drug.",
+            });
+          }
+        }
+      }
+
+      const effectiveDirective =
+        body.productSelectionDirective ?? current.productSelectionDirective;
+      const effectivePrescribedProductId =
+        prescribedProductForEdit === undefined
+          ? current.prescribedProductId
+          : prescribedProductForEdit?.id ?? null;
+
+      if (
+        effectiveDirective === "DISPENSE_AS_WRITTEN" &&
+        !effectivePrescribedProductId
+      ) {
+        return reply.code(400).send({
+          error:
+            "A prescribed product/NDC is required when product selection is prohibited.",
+        });
+      }
+
       if (body.prescriberId !== undefined) {
         const prescriber = await db.prescriber.findFirst({
           where: { id: body.prescriberId, siteId: actor.siteId },
@@ -725,6 +835,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         data.strength = selectedMedicationForEdit.strength;
         data.dosageForm = selectedMedicationForEdit.dosageForm;
       } else if (body.medicationName !== undefined) data.medicationName = body.medicationName.trim();
+      if (body.prescribedProductId !== undefined) {
+        data.prescribedProduct =
+          prescribedProductForEdit === null
+            ? { disconnect: true }
+            : { connect: { id: prescribedProductForEdit!.id } };
+      }
+      if (body.productSelectionDirective !== undefined) {
+        data.productSelectionDirective = body.productSelectionDirective;
+      }
       if (body.strength !== undefined) data.strength = body.strength?.trim() || null;
       if (body.dosageForm !== undefined) data.dosageForm = body.dosageForm?.trim() || null;
       if (body.sig !== undefined) data.sig = body.sig.trim();
