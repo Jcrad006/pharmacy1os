@@ -41,6 +41,7 @@ import {
 import {
   adjudicateFillClaims,
   assertFillBillingReadyForReview,
+  assertNoActivePaidClaimForMutation,
   ClaimError,
 } from "../claims/service.js";
 
@@ -2703,6 +2704,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           error: "Billing product cannot be changed after pharmacist inventory commitment.",
         });
       }
+      if ((body.productId ?? null) !== fill.billingProductId) {
+        await assertNoActivePaidClaimForMutation(id, actor.siteId);
+      }
 
       if (body.productId) {
         const source = fill.productSources.find(
@@ -2811,6 +2815,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return reply.code(400).send({
           error: "Provide daysSupply and/or billingProductId.",
         });
+      }
+
+      const claimSensitiveChange =
+        (body.daysSupply !== undefined && body.daysSupply !== fill.daysSupply) ||
+        (body.billingProductId !== undefined &&
+          body.billingProductId !== fill.billingProductId);
+      if (claimSensitiveChange) {
+        await assertNoActivePaidClaimForMutation(id, actor.siteId);
       }
 
       if (body.billingProductId) {
@@ -2973,6 +2985,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             "Product sources may only be removed during an in-progress Product Fill.",
         });
       }
+      await assertNoActivePaidClaimForMutation(params.id, actor.siteId);
 
       const summary = await db.$transaction(async (tx) => {
         const updated = await removeInventorySourceForFill(tx, {
