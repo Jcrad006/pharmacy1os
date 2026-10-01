@@ -3,6 +3,17 @@ import {
   type InventoryDispositionType,
   type InventoryHoldReason,
 } from "@prisma/client";
+import {
+  addInventoryPosition,
+  consumeInventoryCostLayers,
+  recordInventoryCostLayer,
+  removeInventoryPosition,
+  reverseInventoryCostConsumption,
+  resolveEffectiveInventoryPolicy,
+  repositionInventoryQuantity,
+  resolveInventoryLocation,
+  InventoryArchitectureError,
+} from "./inventoryArchitecture.js";
 
 export class InventoryError extends Error {
   constructor(
@@ -115,9 +126,53 @@ export async function receiveInventory(
     source?: string | null;
     reference?: string | null;
     reason?: string | null;
+    locationId?: string | null;
+    unitCost?: number | string | Prisma.Decimal | null;
+    preferredLocationTypes?: Array<
+      "DISPENSING" | "RECEIVING" | "REFRIGERATOR" | "FREEZER" | "SAFE" |
+      "QUARANTINE" | "RETURN_TO_VENDOR" | "OVERFLOW" | "UNASSIGNED" | "OTHER"
+    >;
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
+
+  const productForPolicy = await tx.product.findUnique({
+    where: { id: input.productId },
+    select: { medicationId: true },
+  });
+  const policy = await resolveEffectiveInventoryPolicy(tx, {
+    siteId: input.siteId,
+    medicationId: productForPolicy?.medicationId ?? null,
+    productId: input.productId,
+  });
+
+  if (input.locationId && policy?.requiredLocationType) {
+    const selectedLocation = await tx.inventoryLocation.findFirst({
+      where: {
+        id: input.locationId,
+        siteId: input.siteId,
+        active: true,
+      },
+    });
+    if (!selectedLocation) {
+      throw new InventoryArchitectureError(
+        404,
+        "INVENTORY_LOCATION_NOT_FOUND",
+        "Selected receiving location was not found.",
+      );
+    }
+    if (selectedLocation.type !== policy.requiredLocationType) {
+      throw new InventoryArchitectureError(
+        409,
+        "INVENTORY_STORAGE_POLICY_MISMATCH",
+        `This product must be received into a ${policy.requiredLocationType.replaceAll("_", " ").toLowerCase()} location.`,
+        {
+          requiredLocationType: policy.requiredLocationType,
+          selectedLocationType: selectedLocation.type,
+        },
+      );
+    }
+  }
 
   const balance = await tx.inventoryBalance.upsert({
     where: {
@@ -159,6 +214,29 @@ export async function receiveInventory(
     },
   });
 
+  await addInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: locked.id,
+    quantity,
+    actorId: input.actorId,
+    locationId: input.locationId,
+    reason: input.reason?.trim() || "Inventory received",
+    preferredTypes: policy?.requiredLocationType
+      ? [policy.requiredLocationType]
+      : input.preferredLocationTypes ?? ["RECEIVING", "UNASSIGNED"],
+  });
+
+  const costLayer = await recordInventoryCostLayer(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: locked.id,
+    productId: input.productId,
+    sourceTransactionId: transaction.id,
+    quantity,
+    unitCost: input.unitCost,
+    sourceType: input.source?.trim() || "RECEIVE",
+    reference: input.reference,
+  });
+
   const lot = await tx.productLot.findUnique({
     where: { id: input.productLotId },
     select: { lotNumber: true, lotNumberSearch: true },
@@ -194,10 +272,11 @@ export async function receiveInventory(
       balance: held.balance,
       transaction,
       quarantineHold: held.hold,
+      costLayer,
     };
   }
 
-  return { balance: updated, transaction, quarantineHold: null };
+  return { balance: updated, transaction, quarantineHold: null, costLayer };
 }
 
 export async function releaseInventoryReservation(
@@ -263,6 +342,24 @@ export async function releaseInventoryReservation(
       reason: input.reason,
     },
   });
+
+  const activeAllocation = await tx.inventoryAllocation.findFirst({
+    where: {
+      fillId: fill.id,
+      inventoryBalanceId: balance.id,
+      status: "RESERVED",
+    },
+    orderBy: { reservedAt: "desc" },
+  });
+  if (activeAllocation) {
+    await tx.inventoryAllocation.update({
+      where: { id: activeAllocation.id },
+      data: {
+        status: "RELEASED",
+        releasedAt: new Date(),
+      },
+    });
+  }
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
@@ -394,6 +491,17 @@ export async function reserveInventoryForFill(
     },
   });
 
+  await tx.inventoryAllocation.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: locked.id,
+      fillId: fill.id,
+      quantity,
+      status: "RESERVED",
+      reservedAt,
+    },
+  });
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -403,6 +511,19 @@ export async function reserveInventoryForFill(
       inventoryReturnedAt: null,
     },
   });
+
+  const demand = await tx.inventoryDemand.findUnique({
+    where: { fillId: fill.id },
+  });
+  if (demand && demand.status !== "CANCELLED") {
+    await tx.inventoryDemand.update({
+      where: { id: demand.id },
+      data: {
+        quantitySatisfied: demand.quantityRequired,
+        status: "SATISFIED",
+      },
+    });
+  }
 
   return {
     balance: updated,
@@ -492,6 +613,38 @@ export async function commitInventoryForFill(
     },
   });
 
+  await removeInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    reason: "Dispensed inventory removed from physical stock",
+  });
+
+  const costConsumption = await consumeInventoryCostLayers(tx, {
+    balanceId: balance.id,
+    fillId: fill.id,
+    quantity,
+  });
+
+  const reservedAllocation = await tx.inventoryAllocation.findFirst({
+    where: {
+      fillId: fill.id,
+      inventoryBalanceId: balance.id,
+      status: "RESERVED",
+    },
+    orderBy: { reservedAt: "desc" },
+  });
+  if (reservedAllocation) {
+    await tx.inventoryAllocation.update({
+      where: { id: reservedAllocation.id },
+      data: {
+        status: "COMMITTED",
+        committedAt,
+      },
+    });
+  }
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -500,7 +653,7 @@ export async function commitInventoryForFill(
     },
   });
 
-  return { committedAt };
+  return { committedAt, costConsumption };
 }
 
 export async function returnInventoryForFill(
@@ -554,6 +707,34 @@ export async function returnInventoryForFill(
       reason: input.reason,
     },
   });
+
+  await addInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    reason: input.reason,
+    preferredTypes: ["DISPENSING", "UNASSIGNED"],
+  });
+  await reverseInventoryCostConsumption(tx, fill.id);
+
+  const committedAllocation = await tx.inventoryAllocation.findFirst({
+    where: {
+      fillId: fill.id,
+      inventoryBalanceId: balance.id,
+      status: "COMMITTED",
+    },
+    orderBy: { committedAt: "desc" },
+  });
+  if (committedAllocation) {
+    await tx.inventoryAllocation.update({
+      where: { id: committedAllocation.id },
+      data: {
+        status: "RETURNED",
+        returnedAt,
+      },
+    });
+  }
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
@@ -625,6 +806,25 @@ export async function adjustInventoryBalance(
       reference: input.reference?.trim() || null,
     },
   });
+
+  if (delta.gt(0)) {
+    await addInventoryPosition(tx, {
+      siteId: input.siteId,
+      balanceId: balance.id,
+      quantity: delta,
+      actorId: input.actorId,
+      reason: input.reason,
+      preferredTypes: ["UNASSIGNED"],
+    });
+  } else {
+    await removeInventoryPosition(tx, {
+      siteId: input.siteId,
+      balanceId: balance.id,
+      quantity: delta.abs(),
+      actorId: input.actorId,
+      reason: input.reason,
+    });
+  }
 
   return { balance: updated, transaction };
 }
@@ -707,6 +907,15 @@ export async function quarantineInventory(
     },
   });
 
+  await repositionInventoryQuantity(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    destinationType: "QUARANTINE",
+    reason: input.note?.trim() || `Quarantine: ${input.reasonCode}`,
+  });
+
   return { balance: updated, hold, transaction };
 }
 
@@ -778,6 +987,26 @@ export async function releaseInventoryHold(
       source: "INVENTORY_HOLD",
       reference: hold.id,
     },
+  });
+
+  const releaseProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  const releasePolicy = await resolveEffectiveInventoryPolicy(tx, {
+    siteId: input.siteId,
+    medicationId: releaseProduct?.medicationId ?? null,
+    productId: balance.productId,
+  });
+
+  await repositionInventoryQuantity(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity: hold.quantity,
+    actorId: input.actorId,
+    sourceType: "QUARANTINE",
+    destinationType: releasePolicy?.requiredLocationType ?? "DISPENSING",
+    reason: input.resolutionNote.trim(),
   });
 
   const resolved = await tx.inventoryHold.update({
@@ -868,6 +1097,20 @@ export async function disposeInventoryHold(
       source: input.dispositionType,
       reference: hold.id,
     },
+  });
+
+  const quarantineLocation = await resolveInventoryLocation(tx, {
+    siteId: input.siteId,
+    preferredTypes: ["QUARANTINE"],
+  });
+
+  await removeInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity: hold.quantity,
+    actorId: input.actorId,
+    locationId: quarantineLocation.id,
+    reason: `Disposition: ${input.dispositionType}`,
   });
 
   const resolved = await tx.inventoryHold.update({

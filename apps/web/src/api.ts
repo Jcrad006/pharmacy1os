@@ -24,6 +24,14 @@ import type {
   InventoryDispositionType,
   PharmacySiteSummary,
   InventoryTransfer,
+  InventoryLocation,
+  InventoryLocationType,
+  InventoryPolicy,
+  InventoryDemand,
+  InventoryIntelligence,
+  ReceivingDiscrepancy,
+  ReceivingDiscrepancyType,
+  TransferCustodyEvent,
   RecallCase,
   PurchaseOrder,
   PrescriptionFill,
@@ -694,10 +702,13 @@ export async function receiveInventoryStock(
     quantity: number;
     source?: string;
     reference?: string;
+    locationId?: string;
+    unitCost?: number;
+    idempotencyKey?: string;
   },
 ) {
   return request<{
-    status: "RECEIVED";
+    status: "RECEIVED" | "DUPLICATE_IGNORED";
     parsed: ParsedBarcode;
     barcode: ProductBarcode;
     product: Product & { medication: Medication };
@@ -710,6 +721,9 @@ export async function receiveInventoryStock(
   }>("/api/receiving/stock", {
     method: "POST",
     devUser,
+    headers: input.idempotencyKey
+      ? { "idempotency-key": input.idempotencyKey }
+      : undefined,
     body: JSON.stringify(input),
   });
 }
@@ -890,11 +904,15 @@ export async function createInventoryTransfer(
     sourceInventoryBalanceId: string;
     quantity: number;
     note?: string;
+    idempotencyKey?: string;
   },
 ) {
-  return request<{ transfer: InventoryTransfer }>("/api/inventory/transfers", {
+  return request<{ transfer: InventoryTransfer; duplicate?: boolean }>("/api/inventory/transfers", {
     method: "POST",
     devUser,
+    headers: input.idempotencyKey
+      ? { "idempotency-key": input.idempotencyKey }
+      : undefined,
     body: JSON.stringify(input),
   });
 }
@@ -988,6 +1006,7 @@ export async function createPurchaseOrder(
     orderNumber: string;
     supplierName: string;
     note?: string;
+    expectedDeliveryAt?: string;
     lines: Array<{
       productId: string;
       quantityOrdered: number;
@@ -1014,6 +1033,7 @@ export async function receivePurchaseOrderLine(
     lotNumber: string;
     expirationDate: string;
     invoiceReference?: string;
+    idempotencyKey?: string;
   },
 ) {
   return request<{
@@ -1025,6 +1045,9 @@ export async function receivePurchaseOrderLine(
     {
       method: "POST",
       devUser,
+      headers: input.idempotencyKey
+        ? { "idempotency-key": input.idempotencyKey }
+        : undefined,
       body: JSON.stringify(input),
     },
   );
@@ -1039,6 +1062,287 @@ export async function cancelPurchaseOrder(
     {
       method: "POST",
       devUser,
+    },
+  );
+}
+
+
+export async function getInventoryLocations(devUser: string) {
+  const result = await request<{ locations: InventoryLocation[] }>(
+    "/api/inventory/locations",
+    { devUser },
+  );
+  return result.locations;
+}
+
+export async function createInventoryLocation(
+  devUser: string,
+  input: {
+    code: string;
+    name: string;
+    type: InventoryLocationType;
+    temperatureMinC?: number | null;
+    temperatureMaxC?: number | null;
+    pickPriority?: number;
+  },
+) {
+  return request<{ location: InventoryLocation }>("/api/inventory/locations", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function moveInventoryLocation(
+  devUser: string,
+  input: {
+    inventoryBalanceId: string;
+    fromLocationId: string;
+    toLocationId: string;
+    quantity: number;
+    reason: string;
+  },
+) {
+  return request("/api/inventory/locations/move", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getInventoryPolicies(devUser: string) {
+  const result = await request<{ policies: InventoryPolicy[] }>(
+    "/api/inventory/policies",
+    { devUser },
+  );
+  return result.policies;
+}
+
+export async function putInventoryPolicy(
+  devUser: string,
+  policyKey: string,
+  input: {
+    medicationId?: string | null;
+    productId?: string | null;
+    reorderPoint?: number | null;
+    parLevel?: number | null;
+    maxStockLevel?: number | null;
+    minShelfLifeDays?: number | null;
+    expirationWarningDays?: number;
+    fefoEnabled?: boolean;
+    preferredSupplierName?: string | null;
+    adjustmentApprovalThreshold?: number | null;
+    allowTechnicianAdjustments?: boolean;
+    requiredLocationType?: InventoryLocationType | null;
+    requireTransferSecondCheck?: boolean;
+    staleReservationHours?: number;
+  },
+) {
+  return request<{ policy: InventoryPolicy }>(
+    `/api/inventory/policies/${encodeURIComponent(policyKey)}`,
+    {
+      method: "PUT",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getInventoryDemands(devUser: string) {
+  const result = await request<{ demands: InventoryDemand[] }>(
+    "/api/inventory/demands",
+    { devUser },
+  );
+  return result.demands;
+}
+
+export async function createInventoryDemand(
+  devUser: string,
+  input: {
+    medicationId: string;
+    preferredProductId?: string | null;
+    quantityRequired: number;
+    dueAt?: string | null;
+    note?: string;
+    reason?: "SHORTAGE" | "SCHEDULED_FILL" | "MANUAL";
+  },
+) {
+  return request<{ demand: InventoryDemand }>("/api/inventory/demands", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function linkInventoryDemandToPurchaseOrder(
+  devUser: string,
+  demandId: string,
+  input: {
+    purchaseOrderLineId: string;
+    quantityPlanned: number;
+  },
+) {
+  return request(
+    `/api/inventory/demands/${demandId}/link-po-line`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function cancelInventoryDemand(
+  devUser: string,
+  demandId: string,
+) {
+  return request<{ demand: InventoryDemand }>(
+    `/api/inventory/demands/${demandId}/cancel`,
+    { method: "POST", devUser },
+  );
+}
+
+export async function getInventoryRecommendations(
+  devUser: string,
+  input: {
+    medicationId?: string;
+    productId?: string;
+    quantity: number;
+  },
+) {
+  const params = new URLSearchParams();
+  if (input.medicationId) params.set("medicationId", input.medicationId);
+  if (input.productId) params.set("productId", input.productId);
+  params.set("quantity", String(input.quantity));
+  return request<{
+    requestedQuantity: string;
+    shortageQuantity: string;
+    recommendation: Array<{
+      balanceId: string;
+      product: Product & { medication: Medication };
+      lot: ProductLot;
+      expiration: ProductExpiration;
+      availableQuantity: string;
+      suggestedQuantity: string;
+      daysToExpiration: number;
+      locations: Array<{
+        id: string;
+        code: string;
+        name: string;
+        type: InventoryLocationType;
+        quantity: string;
+      }>;
+    }>;
+  }>(`/api/inventory/recommendations?${params.toString()}`, { devUser });
+}
+
+export async function getInventoryIntelligence(devUser: string) {
+  return request<InventoryIntelligence>("/api/inventory/intelligence", {
+    devUser,
+  });
+}
+
+export async function getInventoryBalanceAsOf(
+  devUser: string,
+  balanceId: string,
+  at: string,
+) {
+  return request<{
+    at: string;
+    balance: InventoryBalance;
+    snapshot: {
+      onHandQuantity: string;
+      reservedQuantity: string;
+      quarantinedQuantity: string;
+      availableQuantity: string;
+    };
+  }>(
+    `/api/inventory/balances/${balanceId}/as-of?at=${encodeURIComponent(at)}`,
+    { devUser },
+  );
+}
+
+export async function getReceivingDiscrepancies(devUser: string) {
+  const result = await request<{ discrepancies: ReceivingDiscrepancy[] }>(
+    "/api/inventory/receiving-discrepancies",
+    { devUser },
+  );
+  return result.discrepancies;
+}
+
+export async function reportReceivingDiscrepancy(
+  devUser: string,
+  input: {
+    purchaseOrderLineId?: string | null;
+    purchaseOrderReceiptId?: string | null;
+    type: ReceivingDiscrepancyType;
+    expectedQuantity?: number | null;
+    observedQuantity?: number | null;
+    detail: string;
+  },
+) {
+  return request<{ discrepancy: ReceivingDiscrepancy }>(
+    "/api/inventory/receiving-discrepancies",
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function resolveReceivingDiscrepancy(
+  devUser: string,
+  discrepancyId: string,
+  input: {
+    status: "RESOLVED" | "DISMISSED";
+    resolutionNote: string;
+  },
+) {
+  return request<{ discrepancy: ReceivingDiscrepancy }>(
+    `/api/inventory/receiving-discrepancies/${discrepancyId}/resolve`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getTransferCustodyEvents(
+  devUser: string,
+  transferId: string,
+) {
+  const result = await request<{ events: TransferCustodyEvent[] }>(
+    `/api/inventory/transfers/${transferId}/custody-events`,
+    { devUser },
+  );
+  return result.events;
+}
+
+export async function addTransferCustodyEvent(
+  devUser: string,
+  transferId: string,
+  input: {
+    type:
+      | "PACKED"
+      | "VERIFIED"
+      | "HANDED_OFF"
+      | "RECEIVED"
+      | "DISCREPANCY_REPORTED"
+      | "CANCELLED";
+    carrier?: string;
+    trackingReference?: string;
+    sealIdentifier?: string;
+    note?: string;
+  },
+) {
+  return request<{ event: TransferCustodyEvent }>(
+    `/api/inventory/transfers/${transferId}/custody-events`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
     },
   );
 }

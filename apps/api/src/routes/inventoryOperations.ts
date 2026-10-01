@@ -4,6 +4,11 @@ import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
 import { InventoryError } from "../inventory.js";
 import {
+  claimInventoryOperationKey,
+  completeInventoryOperationKey,
+  InventoryArchitectureError,
+} from "../inventoryArchitecture.js";
+import {
   cancelInventoryTransfer,
   cancelPurchaseOrder,
   closeRecallCase,
@@ -44,6 +49,7 @@ type PurchaseOrderCreateBody = {
   orderNumber?: string;
   supplierName?: string;
   note?: string;
+  expectedDeliveryAt?: string;
   lines?: Array<{
     productId?: string;
     quantityOrdered?: number;
@@ -59,10 +65,15 @@ type PurchaseOrderReceiveBody = {
 };
 
 function sendKnownError(reply: any, error: unknown) {
-  if (error instanceof AccessError || error instanceof InventoryError) {
+  if (
+    error instanceof AccessError ||
+    error instanceof InventoryError ||
+    error instanceof InventoryArchitectureError
+  ) {
     return reply.code(error.statusCode).send({
       error: error.message,
-      ...(error instanceof InventoryError
+      ...(error instanceof InventoryError ||
+      error instanceof InventoryArchitectureError
         ? { code: error.code, details: error.details }
         : {}),
     });
@@ -244,7 +255,32 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
         });
       }
 
+      const idempotencyKey =
+        typeof request.headers["idempotency-key"] === "string"
+          ? request.headers["idempotency-key"]
+          : null;
+
       const result = await db.$transaction(async (tx) => {
+        const operationKey = await claimInventoryOperationKey(tx, {
+          siteId: actor.siteId,
+          operationType: "TRANSFER_CREATE",
+          idempotencyKey,
+        });
+
+        if (operationKey.duplicate) {
+          if (!operationKey.record?.resultEntityId) {
+            throw new InventoryArchitectureError(
+              409,
+              "IDEMPOTENT_OPERATION_IN_PROGRESS",
+              "A transfer operation with this idempotency key is already in progress.",
+            );
+          }
+          const transfer = await tx.inventoryTransfer.findUniqueOrThrow({
+            where: { id: operationKey.record.resultEntityId },
+          });
+          return { duplicate: true, transfer };
+        }
+
         const created = await createInventoryTransfer(tx, {
           sourceSiteId: actor.siteId,
           destinationSiteId: body.destinationSiteId!,
@@ -270,7 +306,12 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
           },
         });
 
-        return created;
+        await completeInventoryOperationKey(tx, operationKey.record?.id, {
+          resultEntityType: "InventoryTransfer",
+          resultEntityId: created.transfer.id,
+        });
+
+        return { ...created, duplicate: false };
       });
 
       const transfer = await db.inventoryTransfer.findUniqueOrThrow({
@@ -278,7 +319,10 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
         include: transferInclude,
       });
 
-      return reply.code(201).send({ transfer });
+      return reply.code(result.duplicate ? 200 : 201).send({
+        transfer,
+        duplicate: result.duplicate,
+      });
     } catch (error) {
       return sendKnownError(reply, error);
     }
@@ -526,6 +570,13 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
         });
       }
 
+      const expectedDeliveryAt = body.expectedDeliveryAt
+        ? new Date(body.expectedDeliveryAt)
+        : null;
+      if (expectedDeliveryAt && Number.isNaN(expectedDeliveryAt.getTime())) {
+        return reply.code(400).send({ error: "Invalid expectedDeliveryAt." });
+      }
+
       const normalizedLines = body.lines.map((line) => ({
         productId: line.productId ?? "",
         quantityOrdered: line.quantityOrdered ?? Number.NaN,
@@ -555,6 +606,7 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
           orderNumber,
           supplierName,
           note: body.note,
+          expectedDeliveryAt,
           lines: normalizedLines,
         });
 
@@ -569,6 +621,7 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
             orderNumber,
             supplierName,
             lineCount: created.lines.length,
+            expectedDeliveryAt: expectedDeliveryAt?.toISOString() ?? null,
           },
         });
 
@@ -611,7 +664,35 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
           });
         }
 
+        const idempotencyKey =
+          typeof request.headers["idempotency-key"] === "string"
+            ? request.headers["idempotency-key"]
+            : null;
+
         const result = await db.$transaction(async (tx) => {
+          const operationKey = await claimInventoryOperationKey(tx, {
+            siteId: actor.siteId,
+            operationType: "PURCHASE_ORDER_RECEIPT",
+            idempotencyKey,
+          });
+
+          if (operationKey.duplicate) {
+            if (!operationKey.record?.resultEntityId) {
+              throw new InventoryArchitectureError(
+                409,
+                "IDEMPOTENT_OPERATION_IN_PROGRESS",
+                "A purchase-order receipt with this idempotency key is already in progress.",
+              );
+            }
+            const receipt = await tx.purchaseOrderReceipt.findUniqueOrThrow({
+              where: { id: operationKey.record.resultEntityId },
+            });
+            const balance = await tx.inventoryBalance.findUniqueOrThrow({
+              where: { id: receipt.inventoryBalanceId },
+            });
+            return { duplicate: true, receipt, balance };
+          }
+
           const received = await receivePurchaseOrderLine(tx, {
             purchaseOrderId: id,
             lineId,
@@ -641,7 +722,12 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
             },
           });
 
-          return received;
+          await completeInventoryOperationKey(tx, operationKey.record?.id, {
+            resultEntityType: "PurchaseOrderReceipt",
+            resultEntityId: received.receipt.id,
+          });
+
+          return { ...received, duplicate: false };
         });
 
         const purchaseOrder = await db.purchaseOrder.findUniqueOrThrow({
@@ -653,6 +739,7 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
           purchaseOrder,
           receipt: result.receipt,
           balance: result.balance,
+          duplicate: result.duplicate,
         };
       } catch (error) {
         return sendKnownError(reply, error);

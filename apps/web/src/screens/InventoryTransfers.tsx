@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  addTransferCustodyEvent,
   cancelInventoryTransfer,
   createInventoryTransfer,
   getInventorySites,
   getInventoryTransfers,
+  getTransferCustodyEvents,
   receiveInventoryTransfer,
 } from "../api";
 import type {
@@ -11,6 +13,7 @@ import type {
   InventoryBalance,
   InventoryTransfer,
   PharmacySiteSummary,
+  TransferCustodyEvent,
 } from "../types";
 import {
   canCorrectInventory,
@@ -59,6 +62,15 @@ export function InventoryTransfers({
   const [note, setNote] = useState("");
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [transferIdempotencyKey, setTransferIdempotencyKey] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [custodyEvents, setCustodyEvents] = useState<
+    Record<string, TransferCustodyEvent[]>
+  >({});
+  const [handoffCarrier, setHandoffCarrier] = useState("");
+  const [handoffTracking, setHandoffTracking] = useState("");
+  const [handoffSeal, setHandoffSeal] = useState("");
   const [busy, setBusy] = useState(false);
 
   const correctable = canCorrectInventory(user);
@@ -73,6 +85,16 @@ export function InventoryTransfers({
       ]);
       setSites(nextSites);
       setTransfers(nextTransfers);
+      const active = nextTransfers.filter(
+        (transfer) => transfer.status === "IN_TRANSIT",
+      );
+      const custody = await Promise.all(
+        active.map(async (transfer) => [
+          transfer.id,
+          await getTransferCustodyEvents(devUser, transfer.id),
+        ] as const),
+      );
+      setCustodyEvents(Object.fromEntries(custody));
     } catch (error) {
       onError(
         error instanceof Error
@@ -111,11 +133,13 @@ export function InventoryTransfers({
         sourceInventoryBalanceId: balanceId,
         quantity: amount,
         note: note.trim() || undefined,
+        idempotencyKey: transferIdempotencyKey,
       });
       setBalanceId("");
       setDestinationSiteId("");
       setQuantity("");
       setNote("");
+      setTransferIdempotencyKey(crypto.randomUUID());
       await Promise.all([refresh(), onBalancesChanged()]);
     } catch (error) {
       onError(
@@ -139,6 +163,50 @@ export function InventoryTransfers({
         error instanceof Error
           ? error.message
           : "Unable to receive inventory transfer.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyTransfer(transferId: string) {
+    setBusy(true);
+    onError(null);
+    try {
+      await addTransferCustodyEvent(devUser, transferId, {
+        type: "VERIFIED",
+        note: "Second-person verification completed before receipt.",
+      });
+      await refresh();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to verify transfer.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handOffTransfer(transferId: string) {
+    setBusy(true);
+    onError(null);
+    try {
+      await addTransferCustodyEvent(devUser, transferId, {
+        type: "HANDED_OFF",
+        carrier: handoffCarrier.trim() || undefined,
+        trackingReference: handoffTracking.trim() || undefined,
+        sealIdentifier: handoffSeal.trim() || undefined,
+        note: "Transfer released to courier/carrier.",
+      });
+      setHandoffCarrier("");
+      setHandoffTracking("");
+      setHandoffSeal("");
+      await refresh();
+    } catch (error) {
+      onError(
+        error instanceof Error ? error.message : "Unable to record handoff.",
       );
     } finally {
       setBusy(false);
@@ -258,6 +326,38 @@ export function InventoryTransfers({
         </div>
       )}
 
+      {writable && (
+        <div className="inventory-operation-form">
+          <label>
+            Carrier / courier
+            <input
+              value={handoffCarrier}
+              onChange={(event) => setHandoffCarrier(event.target.value)}
+              placeholder="Optional"
+            />
+          </label>
+          <label>
+            Tracking / reference
+            <input
+              value={handoffTracking}
+              onChange={(event) => setHandoffTracking(event.target.value)}
+              placeholder="Optional"
+            />
+          </label>
+          <label>
+            Seal identifier
+            <input
+              value={handoffSeal}
+              onChange={(event) => setHandoffSeal(event.target.value)}
+              placeholder="Optional"
+            />
+          </label>
+          <p className="catalog-help wide">
+            These values are used when recording a Hand off custody event.
+          </p>
+        </div>
+      )}
+
       <div className="table-wrap">
         <table className="compact-table inventory-transfer-table">
           <thead>
@@ -267,6 +367,7 @@ export function InventoryTransfers({
               <th>Quantity</th>
               <th>From → To</th>
               <th>Shipped</th>
+              <th>Custody</th>
               <th>Received / cancelled</th>
               <th></th>
             </tr>
@@ -303,6 +404,26 @@ export function InventoryTransfers({
                   <span className="cell-subtext">
                     {new Date(transfer.shippedAt).toLocaleString()}
                   </span>
+                </td>
+                <td>
+                  <div className="receipt-history">
+                    {(custodyEvents[transfer.id] ?? transfer.custodyEvents ?? []).map(
+                      (event) => (
+                        <span key={event.id}>
+                          {event.type.replaceAll("_", " ")}
+                          {event.actor?.displayName
+                            ? ` · ${event.actor.displayName}`
+                            : ""}
+                          {event.carrier ? ` · ${event.carrier}` : ""}
+                          {event.trackingReference
+                            ? ` · ${event.trackingReference}`
+                            : ""}
+                        </span>
+                      ),
+                    )}
+                    {(custodyEvents[transfer.id] ?? transfer.custodyEvents ?? [])
+                      .length === 0 && <span>—</span>}
+                  </div>
                 </td>
                 <td>
                   {transfer.status === "RECEIVED" ? (
@@ -351,6 +472,39 @@ export function InventoryTransfers({
                         <button
                           type="button"
                           className="secondary-button table-action"
+                          disabled={
+                            busy ||
+                            (custodyEvents[transfer.id] ?? []).some(
+                              (event) => event.type === "VERIFIED",
+                            )
+                          }
+                          onClick={() => void verifyTransfer(transfer.id)}
+                        >
+                          Verify
+                        </button>
+                      )}
+                    {transfer.status === "IN_TRANSIT" &&
+                      transfer.sourceSiteId === user?.siteId &&
+                      writable && (
+                        <button
+                          type="button"
+                          className="secondary-button table-action"
+                          disabled={busy}
+                          onClick={() =>
+                            window.confirm(
+                              "Record this transfer as handed to the carrier?",
+                            ) && void handOffTransfer(transfer.id)
+                          }
+                        >
+                          Hand off
+                        </button>
+                      )}
+                    {transfer.status === "IN_TRANSIT" &&
+                      transfer.sourceSiteId === user?.siteId &&
+                      correctable && (
+                        <button
+                          type="button"
+                          className="secondary-button table-action"
                           disabled={busy}
                           onClick={() => {
                             setCancelId(transfer.id);
@@ -366,7 +520,7 @@ export function InventoryTransfers({
             ))}
             {transfers.length === 0 && (
               <tr>
-                <td colSpan={7} className="empty-state">
+                <td colSpan={8} className="empty-state">
                   No inter-site inventory transfers have been recorded.
                 </td>
               </tr>

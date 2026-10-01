@@ -14,6 +14,7 @@ const ids = {
   site: "site-demo-001",
   site2: "site-demo-002",
   pharmacist: "user-demo-pharmacist",
+  pharmacistBackup: "user-demo-pharmacist-backup",
   technician: "user-demo-technician",
   intern: "user-demo-intern",
   pharmacist2: "user-demo-pharmacist-002",
@@ -92,8 +93,40 @@ async function main() {
     },
   });
 
+  const demoLocations = [
+    [ids.site, "DISPENSING", "Dispensing shelves", "DISPENSING", 10],
+    [ids.site, "RECEIVING", "Receiving / staging", "RECEIVING", 50],
+    [ids.site, "REFRIGERATOR", "Medication refrigerator", "REFRIGERATOR", 20],
+    [ids.site, "QUARANTINE", "Quarantine cage", "QUARANTINE", 900],
+    [ids.site2, "DISPENSING", "Dispensing shelves", "DISPENSING", 10],
+    [ids.site2, "RECEIVING", "Receiving / staging", "RECEIVING", 50],
+    [ids.site2, "REFRIGERATOR", "Medication refrigerator", "REFRIGERATOR", 20],
+    [ids.site2, "QUARANTINE", "Quarantine cage", "QUARANTINE", 900],
+  ] as const;
+
+  for (const [siteId, code, name, type, pickPriority] of demoLocations) {
+    await db.inventoryLocation.upsert({
+      where: { siteId_code: { siteId, code } },
+      update: { name, type, active: true, pickPriority },
+      create: {
+        id: `${siteId}:location:${code.toLowerCase()}`,
+        siteId,
+        code,
+        name,
+        type,
+        pickPriority,
+      },
+    });
+  }
+
   const staff = [
     [ids.pharmacist, "dev-pharmacist", "Morgan Pharmacist", UserRole.PHARMACIST],
+    [
+      ids.pharmacistBackup,
+      "dev-pharmacist-backup",
+      "Jamie Pharmacist",
+      UserRole.PHARMACIST,
+    ],
     [ids.technician, "dev-technician", "Taylor Technician", UserRole.TECHNICIAN],
     [ids.intern, "dev-intern", "Jordan Intern", UserRole.INTERN],
   ] as const;
@@ -619,6 +652,7 @@ async function main() {
       productLotId: ids.lotLisinoprilA1,
       productExpirationId: ids.expirationLisinoprilA1,
       quantity: 1000,
+      unitCost: 0.018,
     },
     {
       balanceId: ids.inventoryLisinoprilA2,
@@ -627,6 +661,7 @@ async function main() {
       productLotId: ids.lotLisinoprilA2,
       productExpirationId: ids.expirationLisinoprilA2,
       quantity: 500,
+      unitCost: 0.019,
     },
     {
       balanceId: ids.inventoryLisinoprilB1,
@@ -635,6 +670,7 @@ async function main() {
       productLotId: ids.lotLisinoprilB1,
       productExpirationId: ids.expirationLisinoprilB1,
       quantity: 2000,
+      unitCost: 0.021,
     },
     {
       balanceId: ids.inventoryAtorvastatinA1,
@@ -643,6 +679,7 @@ async function main() {
       productLotId: ids.lotAtorvastatinA1,
       productExpirationId: ids.expirationAtorvastatinA1,
       quantity: 900,
+      unitCost: 0.028,
     },
   ];
 
@@ -692,7 +729,97 @@ async function main() {
         reference: "PHARMACY1OS_DEMO",
       },
     });
+
+    await db.inventoryPosition.upsert({
+      where: {
+        inventoryBalanceId_locationId: {
+          inventoryBalanceId: item.balanceId,
+          locationId: `${ids.site}:location:dispensing`,
+        },
+      },
+      update: { quantity: item.quantity },
+      create: {
+        id: `${item.balanceId}:position:dispensing`,
+        inventoryBalanceId: item.balanceId,
+        locationId: `${ids.site}:location:dispensing`,
+        quantity: item.quantity,
+      },
+    });
+
+    await db.inventoryCostLayer.upsert({
+      where: { sourceTransactionId: item.transactionId },
+      update: {
+        siteId: ids.site,
+        inventoryBalanceId: item.balanceId,
+        productId: item.productId,
+        quantityReceived: item.quantity,
+        quantityRemaining: item.quantity,
+        unitCost: item.unitCost,
+        sourceType: "SEED",
+        reference: "PHARMACY1OS_DEMO",
+      },
+      create: {
+        id: `${item.balanceId}:cost:opening`,
+        siteId: ids.site,
+        inventoryBalanceId: item.balanceId,
+        productId: item.productId,
+        sourceTransactionId: item.transactionId,
+        quantityReceived: item.quantity,
+        quantityRemaining: item.quantity,
+        unitCost: item.unitCost,
+        sourceType: "SEED",
+        reference: "PHARMACY1OS_DEMO",
+      },
+    });
   }
+
+  await db.inventoryPolicy.upsert({
+    where: {
+      siteId_policyKey: {
+        siteId: ids.site,
+        policyKey: "SITE",
+      },
+    },
+    update: {
+      fefoEnabled: true,
+      expirationWarningDays: 90,
+      staleReservationHours: 24,
+    },
+    create: {
+      siteId: ids.site,
+      policyKey: "SITE",
+      fefoEnabled: true,
+      expirationWarningDays: 90,
+      staleReservationHours: 24,
+    },
+  });
+
+  await db.inventoryPolicy.upsert({
+    where: {
+      siteId_policyKey: {
+        siteId: ids.site,
+        policyKey: `MEDICATION:${ids.medicationLisinopril}`,
+      },
+    },
+    update: {
+      medicationId: ids.medicationLisinopril,
+      reorderPoint: 100,
+      parLevel: 1500,
+      minShelfLifeDays: 30,
+      fefoEnabled: true,
+      preferredSupplierName: "Synthetic Wholesaler",
+    },
+    create: {
+      siteId: ids.site,
+      policyKey: `MEDICATION:${ids.medicationLisinopril}`,
+      medicationId: ids.medicationLisinopril,
+      reorderPoint: 100,
+      parLevel: 1500,
+      minShelfLifeDays: 30,
+      fefoEnabled: true,
+      preferredSupplierName: "Synthetic Wholesaler",
+    },
+  });
 
   await db.prescription.upsert({
     where: { id: ids.rx1 },

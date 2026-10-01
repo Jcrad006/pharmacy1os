@@ -4,6 +4,13 @@ import {
   quarantineInventory,
   receiveInventory,
 } from "./inventory.js";
+import {
+  addInventoryPosition,
+  depleteInventoryCostLayers,
+  reconcileDemandReceipt,
+  recordInventoryCostLayer,
+  removeInventoryPosition,
+} from "./inventoryArchitecture.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -204,6 +211,11 @@ export async function createInventoryTransfer(
     );
   }
 
+  const valuation = await depleteInventoryCostLayers(tx, {
+    balanceId: balance.id,
+    quantity,
+  });
+
   const transfer = await tx.inventoryTransfer.create({
     data: {
       sourceSiteId: input.sourceSiteId,
@@ -213,6 +225,7 @@ export async function createInventoryTransfer(
       lotNumber: balance.productLot.lotNumber,
       expirationDate: balance.productExpiration.expirationDate,
       quantity,
+      unitCostSnapshot: valuation.weightedUnitCost,
       note: input.note?.trim() || null,
       initiatedById: input.actorId,
     },
@@ -241,7 +254,29 @@ export async function createInventoryTransfer(
     },
   });
 
-  return { transfer, sourceBalance: updatedSource, transaction };
+  await removeInventoryPosition(tx, {
+    siteId: input.sourceSiteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    reason: `Transfer to ${destination.name}`,
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      inventoryTransferId: transfer.id,
+      type: "PACKED",
+      actorId: input.actorId,
+      note: input.note?.trim() || "Transfer prepared for shipment",
+    },
+  });
+
+  return {
+    transfer,
+    sourceBalance: updatedSource,
+    transaction,
+    valuation,
+  };
 }
 
 export async function receiveInventoryTransfer(
@@ -271,6 +306,39 @@ export async function receiveInventoryTransfer(
     );
   }
 
+  const policyKeys = [
+    `PRODUCT:${transfer.productId}`,
+    `MEDICATION:${transfer.sourceInventoryBalance.product.medicationId}`,
+    "SITE",
+  ];
+  const policies = await tx.inventoryPolicy.findMany({
+    where: {
+      siteId: transfer.sourceSiteId,
+      policyKey: { in: policyKeys },
+    },
+  });
+  const transferPolicy =
+    policyKeys
+      .map((key) => policies.find((policy) => policy.policyKey === key))
+      .find(Boolean) ?? null;
+
+  if (transferPolicy?.requireTransferSecondCheck) {
+    const verification = await tx.inventoryTransferCustodyEvent.findFirst({
+      where: {
+        inventoryTransferId: transfer.id,
+        type: "VERIFIED",
+        actorId: { not: transfer.initiatedById },
+      },
+    });
+    if (!verification) {
+      throw new InventoryError(
+        409,
+        "TRANSFER_SECOND_CHECK_REQUIRED",
+        "This transfer requires second-person verification before destination receipt.",
+      );
+    }
+  }
+
   const traceability = await upsertTraceability(tx, {
     siteId: transfer.destinationSiteId,
     productId: transfer.productId,
@@ -288,6 +356,8 @@ export async function receiveInventoryTransfer(
     source: "SITE_TRANSFER",
     reference: transfer.id,
     reason: `Received site transfer from ${transfer.sourceSite.name}`,
+    unitCost: transfer.unitCostSnapshot,
+    preferredLocationTypes: ["RECEIVING", "UNASSIGNED"],
   });
 
   const transferTransaction = await tx.inventoryTransaction.update({
@@ -305,6 +375,15 @@ export async function receiveInventoryTransfer(
       destinationInventoryBalanceId: received.balance.id,
       receivedById: input.actorId,
       receivedAt: new Date(),
+    },
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      inventoryTransferId: transfer.id,
+      type: "RECEIVED",
+      actorId: input.actorId,
+      note: "Destination pharmacy confirmed physical receipt",
     },
   });
 
@@ -367,6 +446,26 @@ export async function cancelInventoryTransfer(
     },
   });
 
+  await addInventoryPosition(tx, {
+    siteId: transfer.sourceSiteId,
+    balanceId: source.id,
+    quantity: transfer.quantity,
+    actorId: input.actorId,
+    reason: input.reason,
+    preferredTypes: ["DISPENSING", "UNASSIGNED"],
+  });
+
+  await recordInventoryCostLayer(tx, {
+    siteId: transfer.sourceSiteId,
+    inventoryBalanceId: source.id,
+    productId: transfer.productId,
+    sourceTransactionId: transaction.id,
+    quantity: transfer.quantity,
+    unitCost: transfer.unitCostSnapshot,
+    sourceType: "TRANSFER_CANCEL_RETURN",
+    reference: transfer.id,
+  });
+
   const updated = await tx.inventoryTransfer.update({
     where: { id: transfer.id },
     data: {
@@ -376,6 +475,15 @@ export async function cancelInventoryTransfer(
       note: transfer.note
         ? `${transfer.note} | Cancelled: ${input.reason.trim()}`
         : `Cancelled: ${input.reason.trim()}`,
+    },
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      inventoryTransferId: transfer.id,
+      type: "CANCELLED",
+      actorId: input.actorId,
+      note: input.reason.trim(),
     },
   });
 
@@ -551,6 +659,7 @@ export async function createPurchaseOrder(
     orderNumber: string;
     supplierName: string;
     note?: string | null;
+    expectedDeliveryAt?: Date | null;
     lines: Array<{
       productId: string;
       quantityOrdered: Prisma.Decimal | number | string;
@@ -596,6 +705,7 @@ export async function createPurchaseOrder(
       orderNumber: input.orderNumber.trim(),
       supplierName: input.supplierName.trim(),
       note: input.note?.trim() || null,
+      expectedDeliveryAt: input.expectedDeliveryAt ?? null,
       createdById: input.actorId,
       lines: {
         create: input.lines.map((line) => {
@@ -724,6 +834,8 @@ export async function receivePurchaseOrderLine(
     source: "PURCHASE_ORDER",
     reference: line.purchaseOrder.orderNumber,
     reason: `PO ${line.purchaseOrder.orderNumber} receipt from ${line.purchaseOrder.supplierName}`,
+    unitCost: line.unitCost,
+    preferredLocationTypes: ["RECEIVING", "UNASSIGNED"],
   });
 
   const receipt = await tx.purchaseOrderReceipt.create({
@@ -744,6 +856,11 @@ export async function receivePurchaseOrderLine(
     data: {
       quantityReceived: line.quantityReceived.plus(quantity),
     },
+  });
+
+  await reconcileDemandReceipt(tx, {
+    purchaseOrderLineId: line.id,
+    receiptQuantity: quantity,
   });
 
   const lines = await tx.purchaseOrderLine.findMany({

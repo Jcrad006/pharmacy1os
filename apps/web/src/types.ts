@@ -411,6 +411,188 @@ export type InventoryBalance = {
   productLot?: ProductLot;
   productExpiration?: ProductExpiration;
   transactions?: InventoryTransaction[];
+  positions?: InventoryPosition[];
+};
+
+export type InventoryLocationType =
+  | "DISPENSING"
+  | "RECEIVING"
+  | "REFRIGERATOR"
+  | "FREEZER"
+  | "SAFE"
+  | "QUARANTINE"
+  | "RETURN_TO_VENDOR"
+  | "OVERFLOW"
+  | "UNASSIGNED"
+  | "OTHER";
+
+export type InventoryLocation = {
+  id: string;
+  siteId: string;
+  code: string;
+  name: string;
+  type: InventoryLocationType;
+  active: boolean;
+  temperatureMinC: string | number | null;
+  temperatureMaxC: string | number | null;
+  pickPriority: number;
+  createdAt: string;
+  updatedAt: string;
+  positions?: InventoryPosition[];
+};
+
+export type InventoryPosition = {
+  id: string;
+  inventoryBalanceId: string;
+  locationId: string;
+  quantity: string | number;
+  createdAt: string;
+  updatedAt: string;
+  location?: InventoryLocation;
+  inventoryBalance?: InventoryBalance;
+};
+
+export type InventoryPolicy = {
+  id: string;
+  siteId: string;
+  policyKey: string;
+  medicationId: string | null;
+  productId: string | null;
+  reorderPoint: string | number | null;
+  parLevel: string | number | null;
+  maxStockLevel: string | number | null;
+  minShelfLifeDays: number | null;
+  expirationWarningDays: number;
+  fefoEnabled: boolean;
+  preferredSupplierName: string | null;
+  adjustmentApprovalThreshold: string | number | null;
+  allowTechnicianAdjustments: boolean;
+  requiredLocationType: InventoryLocationType | null;
+  requireTransferSecondCheck: boolean;
+  staleReservationHours: number;
+  medication?: Medication | null;
+  product?: (Product & { medication: Medication }) | null;
+};
+
+export type InventoryDemandStatus =
+  | "OPEN"
+  | "PARTIALLY_SATISFIED"
+  | "SATISFIED"
+  | "CANCELLED";
+
+export type InventoryDemand = {
+  id: string;
+  siteId: string;
+  medicationId: string;
+  preferredProductId: string | null;
+  fillId: string | null;
+  reason: "PARTIAL_COMPLETION" | "SCHEDULED_FILL" | "SHORTAGE" | "MANUAL";
+  status: InventoryDemandStatus;
+  quantityRequired: string | number;
+  quantitySatisfied: string | number;
+  dueAt: string | null;
+  note: string | null;
+  medication: Medication;
+  preferredProduct?: Product | null;
+  fill?: PrescriptionFill | null;
+  supplyLinks?: Array<{
+    id: string;
+    quantityPlanned: string | number;
+    quantityReceived: string | number;
+    purchaseOrderLine: PurchaseOrderLine & {
+      purchaseOrder: PurchaseOrder;
+    };
+  }>;
+};
+
+export type ReceivingDiscrepancyType =
+  | "SHORT_SHIPMENT"
+  | "OVERAGE"
+  | "WRONG_PRODUCT"
+  | "DAMAGED_PRODUCT"
+  | "LOT_EXPIRATION_MISMATCH"
+  | "INVOICE_MISMATCH"
+  | "DUPLICATE_SHIPMENT"
+  | "UNPLANNED_RECEIPT"
+  | "OTHER";
+
+export type ReceivingDiscrepancy = {
+  id: string;
+  siteId: string;
+  purchaseOrderLineId: string | null;
+  purchaseOrderReceiptId: string | null;
+  type: ReceivingDiscrepancyType;
+  status: "OPEN" | "RESOLVED" | "DISMISSED";
+  expectedQuantity: string | number | null;
+  observedQuantity: string | number | null;
+  detail: string;
+  resolutionNote: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  createdBy?: { id: string; displayName: string; role: UserRole };
+  resolvedBy?: { id: string; displayName: string; role: UserRole } | null;
+};
+
+export type InventoryIntelligenceException = {
+  kind: string;
+  severity: "INFO" | "WARNING" | "HIGH";
+  [key: string]: unknown;
+};
+
+export type InventoryProjection = {
+  balanceId: string;
+  product: Product & { medication: Medication };
+  lot: ProductLot;
+  expiration: ProductExpiration;
+  onHandQuantity: string;
+  reservedQuantity: string;
+  quarantinedQuantity: string;
+  availableQuantity: string;
+  positionedQuantity: string;
+  daysToExpiration: number;
+  weightedUnitCost: string | null;
+  projectedInventoryValue: string;
+  policy: InventoryPolicy | null;
+  locations: Array<{
+    id: string;
+    code: string;
+    name: string;
+    type: InventoryLocationType;
+    quantity: string;
+  }>;
+};
+
+export type InventoryIntelligence = {
+  generatedAt: string;
+  inventoryValue: string;
+  projections: InventoryProjection[];
+  demands: Array<
+    InventoryDemand & {
+      quantityRequired: string;
+      quantitySatisfied: string;
+      remainingQuantity: string;
+    }
+  >;
+  exceptions: InventoryIntelligenceException[];
+};
+
+export type TransferCustodyEvent = {
+  id: string;
+  inventoryTransferId: string;
+  type:
+    | "PACKED"
+    | "VERIFIED"
+    | "HANDED_OFF"
+    | "RECEIVED"
+    | "DISCREPANCY_REPORTED"
+    | "CANCELLED";
+  actorId: string;
+  actor?: { id: string; displayName: string; role: UserRole };
+  carrier: string | null;
+  trackingReference: string | null;
+  sealIdentifier: string | null;
+  note: string | null;
+  occurredAt: string;
 };
 
 export type InventoryTransfer = {
@@ -427,6 +609,7 @@ export type InventoryTransfer = {
   lotNumber: string;
   expirationDate: string;
   quantity: string | number;
+  unitCostSnapshot: string | number | null;
   status: InventoryTransferStatus;
   note: string | null;
   initiatedById: string;
@@ -451,6 +634,7 @@ export type InventoryTransfer = {
   receivedAt: string | null;
   cancelledAt: string | null;
   transactions: InventoryTransaction[];
+  custodyEvents?: TransferCustodyEvent[];
 };
 
 export type RecallAffectedFill = {
@@ -537,6 +721,7 @@ export type PurchaseOrder = {
   supplierName: string;
   status: PurchaseOrderStatus;
   note: string | null;
+  expectedDeliveryAt: string | null;
   createdById: string;
   createdBy: {
     id: string;

@@ -28,6 +28,7 @@ type ReceiptDraft = {
   lotNumber: string;
   expirationDate: string;
   invoiceReference: string;
+  idempotencyKey: string;
 };
 
 function qty(value: string | number) {
@@ -53,6 +54,7 @@ export function PurchaseOrders({
   const [orderNumber, setOrderNumber] = useState("");
   const [supplierName, setSupplierName] = useState("");
   const [note, setNote] = useState("");
+  const [expectedDeliveryAt, setExpectedDeliveryAt] = useState("");
   const [draftLines, setDraftLines] = useState<DraftLine[]>([
     { key: 1, productId: "", quantityOrdered: "", unitCost: "" },
   ]);
@@ -151,11 +153,15 @@ export function PurchaseOrders({
         orderNumber: orderNumber.trim(),
         supplierName: supplierName.trim(),
         note: note.trim() || undefined,
+        expectedDeliveryAt: expectedDeliveryAt
+          ? new Date(expectedDeliveryAt).toISOString()
+          : undefined,
         lines: normalized,
       });
       setOrderNumber("");
       setSupplierName("");
       setNote("");
+      setExpectedDeliveryAt("");
       setDraftLines([
         { key: 1, productId: "", quantityOrdered: "", unitCost: "" },
       ]);
@@ -219,6 +225,7 @@ export function PurchaseOrders({
           `${draft.expirationDate}T00:00:00.000Z`,
         ).toISOString(),
         invoiceReference: draft.invoiceReference.trim() || undefined,
+        idempotencyKey: draft.idempotencyKey,
       });
       setReceiptDrafts((current) => {
         const next = { ...current };
@@ -295,6 +302,15 @@ export function PurchaseOrders({
                 onChange={(event) => setNote(event.target.value)}
                 disabled={busy}
                 placeholder="Optional"
+              />
+            </label>
+            <label>
+              Expected delivery
+              <input
+                type="datetime-local"
+                value={expectedDeliveryAt}
+                onChange={(event) => setExpectedDeliveryAt(event.target.value)}
+                disabled={busy}
               />
             </label>
           </div>
@@ -415,6 +431,9 @@ export function PurchaseOrders({
                 <p className="cell-subtext">
                   {order.supplierName} · Created by {order.createdBy.displayName}
                   {" · "}{new Date(order.createdAt).toLocaleString()}
+                  {order.expectedDeliveryAt
+                    ? ` · Expected ${new Date(order.expectedDeliveryAt).toLocaleString()}`
+                    : ""}
                 </p>
               </div>
               {correctable &&
