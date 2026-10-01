@@ -75,11 +75,53 @@ describe("Phase 3H site inventory transfers", () => {
         sourceInventoryBalanceId: sourceBalanceId,
         quantity: 20,
         note: "Rebalance stock between demo pharmacies.",
+        carrier: "Demo Courier",
+        trackingNumber: `TRACK-${suffix}`,
+        sealIdentifier: `SEAL-${suffix}`,
+        custodyReference: `MANIFEST-${suffix}`,
+        idempotencyKey: `transfer-${suffix}`,
       },
     });
     expect(shipped.statusCode).toBe(201);
     expect(shipped.json().transfer.status).toBe("IN_TRANSIT");
+    expect(shipped.json().transfer.carrier).toBe("Demo Courier");
+    expect(shipped.json().transfer.trackingNumber).toBe(
+      `TRACK-${suffix}`,
+    );
     const transferId = shipped.json().transfer.id as string;
+
+    const replayedShip = await app.inject({
+      method: "POST",
+      url: "/api/inventory/transfers",
+      headers: primaryPharmacist,
+      payload: {
+        destinationSiteId: "site-demo-002",
+        sourceInventoryBalanceId: sourceBalanceId,
+        quantity: 20,
+        note: "Rebalance stock between demo pharmacies.",
+        carrier: "Demo Courier",
+        trackingNumber: `TRACK-${suffix}`,
+        sealIdentifier: `SEAL-${suffix}`,
+        custodyReference: `MANIFEST-${suffix}`,
+        idempotencyKey: `transfer-${suffix}`,
+      },
+    });
+    expect(replayedShip.statusCode).toBe(200);
+    expect(replayedShip.json().transfer.id).toBe(transferId);
+
+    const verifiedCustody = await app.inject({
+      method: "POST",
+      url: `/api/inventory/transfers/${transferId}/custody`,
+      headers: primaryPharmacist,
+      payload: {
+        type: "VERIFIED",
+        carrier: "Demo Courier",
+        trackingNumber: `TRACK-${suffix}`,
+        sealIdentifier: `SEAL-${suffix}`,
+        note: "Pharmacist verified transfer package and seal.",
+      },
+    });
+    expect(verifiedCustody.statusCode).toBe(201);
 
     let sourceBalance = await db.inventoryBalance.findUniqueOrThrow({
       where: { id: sourceBalanceId },
@@ -97,6 +139,12 @@ describe("Phase 3H site inventory transfers", () => {
       method: "POST",
       url: `/api/inventory/transfers/${transferId}/receive`,
       headers: northTech,
+      payload: {
+        receiptNote: "Seal intact on arrival.",
+        carrier: "Demo Courier",
+        trackingNumber: `TRACK-${suffix}`,
+        sealIdentifier: `SEAL-${suffix}`,
+      },
     });
     expect(destinationReceive.statusCode).toBe(200);
     expect(destinationReceive.json().transfer.status).toBe("RECEIVED");
@@ -105,6 +153,17 @@ describe("Phase 3H site inventory transfers", () => {
       where: { id: transferId },
     });
     expect(completed.destinationInventoryBalanceId).toBeTruthy();
+
+    const custodyEvents = await db.inventoryTransferCustodyEvent.findMany({
+      where: { transferId },
+      orderBy: { occurredAt: "asc" },
+    });
+    expect(custodyEvents.map((event) => event.type)).toEqual([
+      "PACKED",
+      "VERIFIED",
+      "RECEIVED",
+    ]);
+    expect(custodyEvents[1]?.sealIdentifier).toBe(`SEAL-${suffix}`);
 
     const destinationBalance = await db.inventoryBalance.findUniqueOrThrow({
       where: { id: completed.destinationInventoryBalanceId! },
