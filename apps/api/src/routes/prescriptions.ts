@@ -1042,10 +1042,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: "No refills remain on this prescription." });
       }
 
+      const legacyDirectSaleAllowedForTests =
+        process.env.NODE_ENV === "test" &&
+        process.env.ALLOW_LEGACY_DIRECT_SALE === "true";
+
       if (
         current.status === "READY" &&
         body.status === "SOLD" &&
-        process.env.ALLOW_LEGACY_DIRECT_SALE !== "true"
+        !legacyDirectSaleAllowedForTests
       ) {
         return reply.code(409).send({
           error:
