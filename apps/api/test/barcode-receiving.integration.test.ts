@@ -322,6 +322,52 @@ describe("barcode registry, receiving, and Product Fill", () => {
       recognizedAfterCorrection.json().product.medication.genericName,
     ).toBe("Lisinopril");
 
+    const oldDrugRescan = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fill.json().fill.id}/scan-barcode`,
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(oldDrugRescan.statusCode).toBe(409);
+    expect(oldDrugRescan.json().code).toBe("BARCODE_DRUG_MISMATCH");
+
+    const futureLisinoprilFill = await createLisinoprilFill();
+    const futureCorrectUse = await app.inject({
+      method: "POST",
+      url: `/api/fills/${futureLisinoprilFill.fillId}/scan-barcode`,
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(futureCorrectUse.statusCode).toBe(200);
+    expect(futureCorrectUse.json().fill.scannedNdc).toBe("99999-0001-01");
+    expect(futureCorrectUse.json().barcode.id).toBe(barcodeId);
+
+    const originalAssignmentAudit = await db.auditEvent.findFirst({
+      where: {
+        action: "RECEIVING_BARCODE_ASSIGNED",
+        entityType: "ProductBarcode",
+        entityId: barcodeId,
+      },
+      orderBy: { occurredAt: "asc" },
+      include: {
+        actor: {
+          select: {
+            displayName: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    expect(originalAssignmentAudit).toBeTruthy();
+    expect(originalAssignmentAudit?.actor?.role).toBe("TECHNICIAN");
+    const originalMetadata = originalAssignmentAudit?.metadata as Record<
+      string,
+      unknown
+    >;
+    expect(originalMetadata.productId).toBe("product-demo-atorvastatin-a");
+    expect(originalMetadata.ndc).toBe("99999-0020-01");
+
     const audit = await db.auditEvent.findFirst({
       where: {
         action: "PRODUCT_BARCODE_ASSIGNMENT_CORRECTED",
@@ -336,6 +382,20 @@ describe("barcode registry, receiving, and Product Fill", () => {
     expect(metadata.oldNdc).toBe("99999-0020-01");
     expect(metadata.newNdc).toBe("99999-0001-01");
     expect(metadata.reason).toContain("atorvastatin assignment");
+
+    const originalAssignment = metadata.originalAssignment as Record<
+      string,
+      unknown
+    >;
+    expect(originalAssignment.auditEventId).toBe(originalAssignmentAudit?.id);
+    expect(originalAssignment.actorId).toBe(originalAssignmentAudit?.actorId);
+    expect(originalAssignment.actorRole).toBe("TECHNICIAN");
+    expect(originalAssignment.occurredAt).toBe(
+      originalAssignmentAudit?.occurredAt.toISOString(),
+    );
+
+    const correctingActor = metadata.correctingActor as Record<string, unknown>;
+    expect(correctingActor.role).toBe("PHARMACIST");
   });
 
   it("requires lot and expiration for raw Product Fill barcode verification", async () => {
