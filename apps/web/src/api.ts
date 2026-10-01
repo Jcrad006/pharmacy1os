@@ -8,6 +8,12 @@ import type {
   ExceptionSummary,
   InterventionNote,
   Patient,
+  PatientCoverage,
+  Payer,
+  CoverageRelationship,
+  ClaimStandard,
+  BillingNdcStrategy,
+  ProductSelectionDirective,
   Prescriber,
   Medication,
   Manufacturer,
@@ -244,6 +250,8 @@ export async function updatePrescription(
   input: {
     prescriberId?: string;
     medicationId?: string;
+    prescribedProductId?: string | null;
+    productSelectionDirective?: ProductSelectionDirective;
     medicationName?: string;
     strength?: string | null;
     dosageForm?: string | null;
@@ -272,6 +280,8 @@ export async function createPrescription(
     patientId: string;
     prescriberId: string;
     medicationId?: string;
+    prescribedProductId?: string;
+    productSelectionDirective?: ProductSelectionDirective;
     rxNumber?: string;
     medicationName?: string;
     strength?: string;
@@ -364,7 +374,12 @@ export async function completeEmergencySupplyFollowUp(
 export async function scanFillProduct(
   devUser: string,
   fillId: string,
-  input: { ndc: string; lotNumber: string; expirationDate: string },
+  input: {
+    ndc: string;
+    lotNumber: string;
+    expirationDate: string;
+    sourceQuantity?: number;
+  },
 ) {
   return request<{
     fill: PrescriptionFill;
@@ -642,6 +657,7 @@ export async function scanFillBarcode(
   devUser: string,
   fillId: string,
   rawBarcode: string,
+  sourceQuantity?: number,
 ) {
   return request<{
     fill: PrescriptionFill;
@@ -661,10 +677,179 @@ export async function scanFillBarcode(
   }>(`/api/fills/${fillId}/scan-barcode`, {
     method: "POST",
     devUser,
-    body: JSON.stringify({ rawBarcode }),
+    body: JSON.stringify({ rawBarcode, sourceQuantity }),
   });
 }
 
+export async function removeFillProductSource(
+  devUser: string,
+  fillId: string,
+  sourceId: string,
+) {
+  return request<{
+    fill: PrescriptionFill;
+    sourceSummary: {
+      requiredQuantity: string;
+      reservedQuantity: string;
+      remainingQuantity: string;
+      complete: boolean;
+    };
+  }>(`/api/fills/${fillId}/product-sources/${sourceId}`, {
+    method: "DELETE",
+    devUser,
+  });
+}
+
+export async function documentNtiManufacturerConsent(
+  devUser: string,
+  fillId: string,
+  input: {
+    priorManufacturerId: string;
+    newManufacturerId: string;
+    prescriberConsentAt: string;
+    patientConsentAt: string;
+    note: string;
+  },
+) {
+  return request<{ consent: unknown }>(
+    `/api/fills/${fillId}/nti-manufacturer-consent`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function completeBiologicCommunication(
+  devUser: string,
+  fillId: string,
+  note: string,
+) {
+  return request<{ task: unknown }>(
+    `/api/fills/${fillId}/biologic-communication/complete`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ note }),
+    },
+  );
+}
+
+export async function updateMedicationCompliance(
+  devUser: string,
+  medicationId: string,
+  input: {
+    ncNarrowTherapeuticIndex?: boolean;
+    isBiological?: boolean;
+    hasFdaInterchangeableBiologicAlternative?: boolean;
+  },
+) {
+  return request<{ medication: Medication }>(
+    `/api/medications/${medicationId}/compliance`,
+    {
+      method: "PATCH",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function updateProductCompliance(
+  devUser: string,
+  productId: string,
+  input: {
+    therapeuticEquivalenceCode?: string | null;
+    isInterchangeableBiological?: boolean;
+  },
+) {
+  return request<{ product: Product }>(
+    `/api/products/${productId}/compliance`,
+    {
+      method: "PATCH",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getThirdPartyWorkspace(
+  devUser: string,
+  query?: string,
+) {
+  const params = new URLSearchParams();
+  if (query?.trim()) params.set("query", query.trim());
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return request<{
+    patients: Array<Patient & { coverages: PatientCoverage[] }>;
+    payers: Payer[];
+    maxCoveragePositions: number;
+  }>(`/api/third-party/workspace${suffix}`, { devUser });
+}
+
+export async function getPayers(devUser: string) {
+  const result = await request<{ payers: Payer[] }>(
+    "/api/third-party/payers",
+    { devUser },
+  );
+  return result.payers;
+}
+
+export async function createPayer(
+  devUser: string,
+  input: {
+    name: string;
+    bin?: string;
+    pcn?: string;
+    defaultGroupId?: string;
+    claimStandard?: ClaimStandard;
+    billingNdcStrategy?: BillingNdcStrategy;
+  },
+) {
+  return request<{ payer: Payer }>("/api/third-party/payers", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function savePatientCoverage(
+  devUser: string,
+  patientId: string,
+  position: number,
+  input: {
+    payerId: string;
+    memberId: string;
+    personCode?: string | null;
+    groupId?: string | null;
+    relationship?: CoverageRelationship;
+    cardholderName?: string | null;
+    cardholderDateOfBirth?: string | null;
+    effectiveDate?: string | null;
+    terminationDate?: string | null;
+    active?: boolean;
+  },
+) {
+  return request<{ coverage: PatientCoverage }>(
+    `/api/patients/${patientId}/coverages/${position}`,
+    {
+      method: "PUT",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function removePatientCoverage(
+  devUser: string,
+  patientId: string,
+  position: number,
+) {
+  return request<void>(
+    `/api/patients/${patientId}/coverages/${position}`,
+    { method: "DELETE", devUser },
+  );
+}
 
 export async function correctReceivingBarcode(
   devUser: string,
