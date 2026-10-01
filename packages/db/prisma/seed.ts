@@ -12,9 +12,12 @@ const db = new PrismaClient();
 
 const ids = {
   site: "site-demo-001",
+  site2: "site-demo-002",
   pharmacist: "user-demo-pharmacist",
   technician: "user-demo-technician",
   intern: "user-demo-intern",
+  pharmacist2: "user-demo-pharmacist-002",
+  technician2: "user-demo-technician-002",
   patient1: "patient-demo-001",
   patient2: "patient-demo-002",
   prescriber1: "prescriber-demo-001",
@@ -74,6 +77,21 @@ async function main() {
     },
   });
 
+  await db.pharmacySite.upsert({
+    where: { id: ids.site2 },
+    update: {
+      name: "Pharmacy1OS Demonstration Pharmacy — North",
+      phone: "555-0102",
+      ncpdpId: "DEMO002",
+    },
+    create: {
+      id: ids.site2,
+      name: "Pharmacy1OS Demonstration Pharmacy — North",
+      phone: "555-0102",
+      ncpdpId: "DEMO002",
+    },
+  });
+
   const staff = [
     [ids.pharmacist, "dev-pharmacist", "Morgan Pharmacist", UserRole.PHARMACIST],
     [ids.technician, "dev-technician", "Taylor Technician", UserRole.TECHNICIAN],
@@ -85,6 +103,41 @@ async function main() {
       where: { id },
       update: { externalAuthId, displayName, role, active: true },
       create: { id, siteId: ids.site, externalAuthId, displayName, role },
+    });
+  }
+
+  const secondaryStaff = [
+    [
+      ids.pharmacist2,
+      "dev-pharmacist-002",
+      "Alex North Pharmacist",
+      UserRole.PHARMACIST,
+    ],
+    [
+      ids.technician2,
+      "dev-technician-002",
+      "Sam North Technician",
+      UserRole.TECHNICIAN,
+    ],
+  ] as const;
+
+  for (const [id, externalAuthId, displayName, role] of secondaryStaff) {
+    await db.user.upsert({
+      where: { id },
+      update: {
+        siteId: ids.site2,
+        externalAuthId,
+        displayName,
+        role,
+        active: true,
+      },
+      create: {
+        id,
+        siteId: ids.site2,
+        externalAuthId,
+        displayName,
+        role,
+      },
     });
   }
 
