@@ -1,6 +1,13 @@
 CREATE TYPE "PosTransactionStatus" AS ENUM ('COMPLETED', 'VOIDED');
 CREATE TYPE "PosPriceBasis" AS ENUM ('THIRD_PARTY', 'CASH', 'COMPLETION_ALREADY_BILLED');
 CREATE TYPE "PaymentMethod" AS ENUM ('CASH', 'CARD', 'CHECK', 'OTHER');
+CREATE TYPE "PickupIdentityMethod" AS ENUM ('DATE_OF_BIRTH', 'ADDRESS', 'GOVERNMENT_ID', 'KNOWN_PATIENT', 'OTHER');
+CREATE TYPE "PickupSignatureMethod" AS ENUM ('ELECTRONIC_TYPED', 'EXTERNAL_DEVICE', 'PAPER');
+CREATE TYPE "WillCallPackageStatus" AS ENUM ('STAGED', 'PICKED_UP', 'RETURNED_TO_STOCK');
+
+ALTER TABLE "InventoryLocation" ADD COLUMN "barcode" TEXT;
+CREATE UNIQUE INDEX "InventoryLocation_siteId_barcode_key"
+  ON "InventoryLocation"("siteId", "barcode");
 
 CREATE TABLE "PointOfSaleTransaction" (
   "id" TEXT NOT NULL,
@@ -12,6 +19,13 @@ CREATE TABLE "PointOfSaleTransaction" (
   "totalTendered" DECIMAL(12,2) NOT NULL,
   "changeDue" DECIMAL(12,2) NOT NULL DEFAULT 0,
   "idempotencyKey" TEXT NOT NULL,
+  "pickupRecipientName" TEXT NOT NULL,
+  "pickupRelationship" TEXT,
+  "pickupIdentityMethod" "PickupIdentityMethod" NOT NULL,
+  "pickupVerifiedAt" TIMESTAMP(3) NOT NULL,
+  "pickupSignatureMethod" "PickupSignatureMethod" NOT NULL,
+  "pickupSignatureName" TEXT,
+  "pickupSignatureReference" TEXT,
   "createdById" TEXT NOT NULL,
   "voidedById" TEXT,
   "completedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -47,6 +61,22 @@ CREATE TABLE "PaymentTender" (
   CONSTRAINT "PaymentTender_pkey" PRIMARY KEY ("id")
 );
 
+
+CREATE TABLE "WillCallPackage" (
+  "id" TEXT NOT NULL,
+  "siteId" TEXT NOT NULL,
+  "fillId" TEXT NOT NULL,
+  "bagBarcode" TEXT NOT NULL,
+  "locationId" TEXT NOT NULL,
+  "status" "WillCallPackageStatus" NOT NULL DEFAULT 'STAGED',
+  "stagedById" TEXT NOT NULL,
+  "stagedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "pickedUpAt" TIMESTAMP(3),
+  "returnedAt" TIMESTAMP(3),
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "WillCallPackage_pkey" PRIMARY KEY ("id")
+);
+
 CREATE UNIQUE INDEX "PointOfSaleTransaction_receiptNumber_key"
   ON "PointOfSaleTransaction"("receiptNumber");
 CREATE UNIQUE INDEX "PointOfSaleTransaction_idempotencyKey_key"
@@ -71,6 +101,15 @@ CREATE INDEX "PaymentTender_transactionId_createdAt_idx"
   ON "PaymentTender"("transactionId", "createdAt");
 CREATE INDEX "PaymentTender_actorId_createdAt_idx"
   ON "PaymentTender"("actorId", "createdAt");
+
+CREATE UNIQUE INDEX "WillCallPackage_fillId_key"
+  ON "WillCallPackage"("fillId");
+CREATE UNIQUE INDEX "WillCallPackage_bagBarcode_key"
+  ON "WillCallPackage"("bagBarcode");
+CREATE INDEX "WillCallPackage_siteId_status_stagedAt_idx"
+  ON "WillCallPackage"("siteId", "status", "stagedAt");
+CREATE INDEX "WillCallPackage_locationId_status_idx"
+  ON "WillCallPackage"("locationId", "status");
 
 ALTER TABLE "PointOfSaleTransaction"
   ADD CONSTRAINT "PointOfSaleTransaction_siteId_fkey"
@@ -109,6 +148,24 @@ ALTER TABLE "PaymentTender"
 ALTER TABLE "PaymentTender"
   ADD CONSTRAINT "PaymentTender_actorId_fkey"
   FOREIGN KEY ("actorId") REFERENCES "User"("id")
+  ON DELETE RESTRICT ON UPDATE CASCADE;
+
+
+ALTER TABLE "WillCallPackage"
+  ADD CONSTRAINT "WillCallPackage_siteId_fkey"
+  FOREIGN KEY ("siteId") REFERENCES "PharmacySite"("id")
+  ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "WillCallPackage"
+  ADD CONSTRAINT "WillCallPackage_fillId_fkey"
+  FOREIGN KEY ("fillId") REFERENCES "PrescriptionFill"("id")
+  ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "WillCallPackage"
+  ADD CONSTRAINT "WillCallPackage_locationId_fkey"
+  FOREIGN KEY ("locationId") REFERENCES "InventoryLocation"("id")
+  ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "WillCallPackage"
+  ADD CONSTRAINT "WillCallPackage_stagedById_fkey"
+  FOREIGN KEY ("stagedById") REFERENCES "User"("id")
   ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "PointOfSaleTransaction"
