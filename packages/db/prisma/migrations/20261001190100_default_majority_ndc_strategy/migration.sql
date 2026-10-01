@@ -1,0 +1,6 @@
+ALTER TABLE "Payer"
+  ALTER COLUMN "billingNdcStrategy" SET DEFAULT 'MAJORITY_SOURCE';
+
+UPDATE "Payer"
+SET "billingNdcStrategy" = 'MAJORITY_SOURCE'
+WHERE "billingNdcStrategy" = 'REQUIRE_MANUAL_SELECTION';
