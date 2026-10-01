@@ -937,6 +937,9 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
     try {
       const actor = await resolveDevelopmentActor(request, "inventory:read");
       const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 86_400_000);
+      const ninetyDaysAgo = new Date(now.getTime() - 90 * 86_400_000);
+
       const [
         balances,
         policies,
@@ -944,6 +947,8 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
         transfers,
         purchaseOrders,
         discrepancies,
+        recentCycleDiscrepancies,
+        activeRecalls,
       ] = await Promise.all([
         db.inventoryBalance.findMany({
           where: { siteId: actor.siteId },
@@ -966,6 +971,18 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
                 id: true,
                 inventoryReservedAt: true,
                 quantity: true,
+              },
+            },
+            transactions: {
+              where: { occurredAt: { gte: thirtyDaysAgo } },
+              select: {
+                id: true,
+                type: true,
+                onHandDelta: true,
+                reservedDelta: true,
+                quarantinedDelta: true,
+                occurredAt: true,
+                source: true,
               },
             },
           },
@@ -1000,11 +1017,40 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
         db.receivingDiscrepancy.findMany({
           where: { siteId: actor.siteId, status: "OPEN" },
         }),
+        db.cycleCountLine.findMany({
+          where: {
+            cycleCountSession: { siteId: actor.siteId, status: "APPROVED" },
+            createdAt: { gte: ninetyDaysAgo },
+            discrepancy: { not: 0 },
+          },
+          select: {
+            inventoryBalanceId: true,
+            discrepancy: true,
+            createdAt: true,
+          },
+        }),
+        db.recallCase.findMany({
+          where: { siteId: actor.siteId, status: "ACTIVE" },
+          select: {
+            id: true,
+            productId: true,
+            lotNumberSearch: true,
+            reference: true,
+          },
+        }),
       ]);
 
       const policyMap = new Map(policies.map((policy) => [policy.policyKey, policy]));
       const exceptions: Array<Record<string, unknown>> = [];
       let inventoryValue = new Prisma.Decimal(0);
+
+      const discrepancyFrequency = new Map<string, number>();
+      for (const line of recentCycleDiscrepancies) {
+        discrepancyFrequency.set(
+          line.inventoryBalanceId,
+          (discrepancyFrequency.get(line.inventoryBalanceId) ?? 0) + 1,
+        );
+      }
 
       const projections = balances.map((balance) => {
         const available = balance.onHandQuantity
@@ -1040,12 +1086,109 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
           : new Prisma.Decimal(0);
         inventoryValue = inventoryValue.plus(projectedValue);
 
+        const dispense30 = balance.transactions
+          .filter((transaction) => transaction.type === "DISPENSE")
+          .reduce(
+            (sum, transaction) => sum.plus(transaction.onHandDelta.abs()),
+            new Prisma.Decimal(0),
+          );
+        const receive30 = balance.transactions
+          .filter((transaction) =>
+            ["RECEIVE", "TRANSFER_IN", "RETURN_TO_STOCK"].includes(
+              transaction.type,
+            ),
+          )
+          .reduce(
+            (sum, transaction) =>
+              sum.plus(
+                transaction.onHandDelta.gt(0)
+                  ? transaction.onHandDelta
+                  : new Prisma.Decimal(0),
+              ),
+            new Prisma.Decimal(0),
+          );
+        const adjustmentTransactions = balance.transactions.filter(
+          (transaction) => transaction.type === "ADJUSTMENT",
+        );
+        const adjustmentAbsolute30 = adjustmentTransactions.reduce(
+          (sum, transaction) => sum.plus(transaction.onHandDelta.abs()),
+          new Prisma.Decimal(0),
+        );
+        const shrink30 = adjustmentTransactions.reduce(
+          (sum, transaction) =>
+            transaction.onHandDelta.lt(0)
+              ? sum.plus(transaction.onHandDelta.abs())
+              : sum,
+          new Prisma.Decimal(0),
+        );
+        const movement30 = balance.transactions.reduce(
+          (sum, transaction) => sum.plus(transaction.onHandDelta.abs()),
+          new Prisma.Decimal(0),
+        );
+        const dailyDispense = dispense30.div(30);
+        const daysSupply =
+          dailyDispense.gt(0) ? available.div(dailyDispense) : null;
+        const annualizedTurnEstimate =
+          balance.onHandQuantity.gt(0)
+            ? dispense30.mul(12).div(balance.onHandQuantity)
+            : null;
+        const adjustmentRate =
+          movement30.gt(0)
+            ? adjustmentAbsolute30.div(movement30)
+            : new Prisma.Decimal(0);
+
         if (!positioned.eq(balance.onHandQuantity)) {
           exceptions.push({
             kind: "LOCATION_COVERAGE_MISMATCH",
             severity: "WARNING",
             balanceId: balance.id,
             detail: `Positioned ${positioned.toString()} vs on-hand ${balance.onHandQuantity.toString()}`,
+          });
+        }
+
+        if (!costQty.eq(balance.onHandQuantity)) {
+          exceptions.push({
+            kind: "COST_COVERAGE_MISMATCH",
+            severity: "INFO",
+            balanceId: balance.id,
+            costedQuantity: costQty.toString(),
+            onHandQuantity: balance.onHandQuantity.toString(),
+          });
+        }
+
+        if (adjustmentTransactions.length >= 5) {
+          exceptions.push({
+            kind: "FREQUENT_INVENTORY_ADJUSTMENTS",
+            severity: "WARNING",
+            balanceId: balance.id,
+            adjustmentCount30Days: adjustmentTransactions.length,
+            absoluteAdjustedQuantity: adjustmentAbsolute30.toString(),
+          });
+        }
+
+        if ((discrepancyFrequency.get(balance.id) ?? 0) >= 2) {
+          exceptions.push({
+            kind: "RECURRING_CYCLE_COUNT_DISCREPANCY",
+            severity: "WARNING",
+            balanceId: balance.id,
+            discrepancyCount90Days: discrepancyFrequency.get(balance.id),
+          });
+        }
+
+        const matchingRecall = activeRecalls.find(
+          (recall) =>
+            recall.productId === balance.productId &&
+            (recall.lotNumberSearch === null ||
+              recall.lotNumberSearch === balance.productLot.lotNumberSearch),
+        );
+        if (matchingRecall && available.gt(0)) {
+          exceptions.push({
+            kind: "RECALL_STOCK_NOT_FULLY_QUARANTINED",
+            severity: "HIGH",
+            balanceId: balance.id,
+            recallCaseId: matchingRecall.id,
+            recallReference: matchingRecall.reference,
+            availableQuantity: available.toString(),
           });
         }
 
@@ -1141,6 +1284,14 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
           daysToExpiration,
           weightedUnitCost: decimalString(weightedUnitCost),
           projectedInventoryValue: projectedValue.toString(),
+          movement30Days: movement30.toString(),
+          dispensed30Days: dispense30.toString(),
+          received30Days: receive30.toString(),
+          shrink30Days: shrink30.toString(),
+          adjustmentCount30Days: adjustmentTransactions.length,
+          adjustmentRate30Days: adjustmentRate.toString(),
+          daysSupply: decimalString(daysSupply),
+          annualizedTurnEstimate: decimalString(annualizedTurnEstimate),
           policy,
           locations: balance.positions.map((position) => ({
             id: position.location.id,
