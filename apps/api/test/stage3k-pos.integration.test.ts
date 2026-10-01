@@ -456,6 +456,87 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(await db.pointOfSaleLine.count({ where: { fillId } })).toBe(1);
   });
 
+  it("supports immediate pickup for a waiting patient without creating a Will Call package", async () => {
+    const patient = await makePatient();
+    const prescriptionId = await createPrescription(patient.id, 10);
+    const fillId = await createFill(prescriptionId, 10, 10);
+
+    const scanned = await scan(fillId, 10);
+    expect(scanned.json().adjudication.state).toBe("CASH_LABEL_READY");
+    await makeReady(prescriptionId);
+
+    const quote = await app.inject({
+      method: "POST",
+      url: "/api/pos/quote",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [fillId],
+        pickupFulfillmentMode: "IMMEDIATE",
+      },
+    });
+    expect(quote.statusCode).toBe(200);
+    expect(quote.json().quote.pickupFulfillmentMode).toBe("IMMEDIATE");
+    expect(quote.json().quote.lines[0]).toMatchObject({
+      pickupFulfillmentMode: "IMMEDIATE",
+      willCallPackageId: null,
+      bagBarcode: null,
+      willCallLocationId: null,
+    });
+    expect(Number(quote.json().quote.totalDue)).toBe(2.5);
+
+    const checkout = await app.inject({
+      method: "POST",
+      url: "/api/pos/checkout",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [fillId],
+        tenders: [{ method: "CASH", amount: 2.5 }],
+        pickupPackages: [],
+        pickupFulfillmentMode: "IMMEDIATE",
+        pickup: {
+          recipientName: "Phase3K Waiting Patient",
+          relationship: "Self",
+          identityMethod: "DATE_OF_BIRTH",
+          identityValue: "1990-01-01",
+          signatureMethod: "ELECTRONIC_TYPED",
+          signatureName: "Phase3K Waiting Patient",
+        },
+        idempotencyKey: `3k-immediate-${randomUUID()}`,
+      },
+    });
+    expect(checkout.statusCode).toBe(200);
+    expect(checkout.json().transaction.pickupFulfillmentMode).toBe("IMMEDIATE");
+    expect(
+      await db.willCallPackage.findUnique({ where: { fillId } }),
+    ).toBeNull();
+
+    const soldFill = await db.prescriptionFill.findUniqueOrThrow({
+      where: { id: fillId },
+    });
+    expect(soldFill.status).toBe("SOLD");
+
+    const stagedPrescriptionId = await createPrescription(patient.id, 8);
+    const stagedFillId = await createFill(stagedPrescriptionId, 8, 8);
+    const stagedScan = await scan(stagedFillId, 8);
+    expect(stagedScan.json().adjudication.state).toBe("CASH_LABEL_READY");
+    await makeReady(stagedPrescriptionId);
+    await stage(stagedFillId);
+
+    const stagedImmediateQuote = await app.inject({
+      method: "POST",
+      url: "/api/pos/quote",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [stagedFillId],
+        pickupFulfillmentMode: "IMMEDIATE",
+      },
+    });
+    expect(stagedImmediateQuote.statusCode).toBe(409);
+    expect(stagedImmediateQuote.json().code).toBe(
+      "IMMEDIATE_PICKUP_REQUIRES_UNSTAGED_FILL",
+    );
+  });
+
   it("uses the final active paid claim patient responsibility and rejects non-cash overpayment", async () => {
     const patient = await makePatient("PAID-COPAY1234-3K");
     const prescriptionId = await createPrescription(patient.id, 20);

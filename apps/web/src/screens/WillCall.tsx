@@ -8,6 +8,7 @@ import {
 import type {
   DevUser,
   PaymentMethod,
+  PickupFulfillmentMode,
   PickupIdentityMethod,
   PosQuote,
   PrescriptionQueueItem,
@@ -25,6 +26,7 @@ type CheckoutState = {
   method: PaymentMethod;
   amount: string;
   reference: string;
+  pickupFulfillmentMode: PickupFulfillmentMode;
   bagBarcode: string;
   recipientName: string;
   relationship: string;
@@ -94,18 +96,34 @@ export function WillCall({
     }
   }
 
-  async function beginCheckout(rx: PrescriptionQueueItem) {
+  async function beginCheckout(
+    rx: PrescriptionQueueItem,
+    pickupFulfillmentMode: PickupFulfillmentMode,
+  ) {
     const fill = readyFill(rx.fills);
     if (!fill) return;
-    if (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED") {
+    if (
+      pickupFulfillmentMode === "WILL_CALL" &&
+      (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED")
+    ) {
       onError("Stage the prescription in a Will Call location before checkout.");
+      return;
+    }
+    if (pickupFulfillmentMode === "IMMEDIATE" && fill.willCallPackage) {
+      onError(
+        "This prescription is already staged in Will Call. Use the staged bag checkout instead.",
+      );
       return;
     }
 
     setCheckoutBusy(true);
     onError(null);
     try {
-      const quote = await quotePosCheckout(devUser, [fill.id]);
+      const quote = await quotePosCheckout(
+        devUser,
+        [fill.id],
+        pickupFulfillmentMode,
+      );
       const due = String(quote.totalDue);
       setCheckout({
         fillId: fill.id,
@@ -113,6 +131,7 @@ export function WillCall({
         method: "CARD",
         amount: Number(due).toFixed(2),
         reference: "",
+        pickupFulfillmentMode,
         bagBarcode: "",
         recipientName: formatPatientName(rx.patient),
         relationship: "Self",
@@ -135,7 +154,10 @@ export function WillCall({
     const totalDue = Number(checkout.quote.totalDue);
     const tenderAmount = Number(checkout.amount);
 
-    if (!checkout.bagBarcode.trim()) {
+    if (
+      checkout.pickupFulfillmentMode === "WILL_CALL" &&
+      !checkout.bagBarcode.trim()
+    ) {
       onError("Scan or enter the Will Call bag barcode.");
       return;
     }
@@ -174,12 +196,16 @@ export function WillCall({
                 },
               ]
             : [],
-        pickupPackages: [
-          {
-            fillId: checkout.fillId,
-            bagBarcode: checkout.bagBarcode,
-          },
-        ],
+        pickupPackages:
+          checkout.pickupFulfillmentMode === "WILL_CALL"
+            ? [
+                {
+                  fillId: checkout.fillId,
+                  bagBarcode: checkout.bagBarcode,
+                },
+              ]
+            : [],
+        pickupFulfillmentMode: checkout.pickupFulfillmentMode,
         pickup: {
           recipientName: checkout.recipientName,
           relationship: checkout.relationship.trim() || null,
@@ -361,27 +387,47 @@ export function WillCall({
                       <dd>{money(quoteLine.amountDue)}</dd>
                     </div>
                     <div>
-                      <dt>Expected location</dt>
-                      <dd>{quoteLine.willCallLocationCode}</dd>
+                      <dt>Pickup path</dt>
+                      <dd>
+                        {activeCheckout.pickupFulfillmentMode === "IMMEDIATE"
+                          ? "Immediate — patient waiting"
+                          : "Will Call"}
+                      </dd>
                     </div>
+                    {activeCheckout.pickupFulfillmentMode === "WILL_CALL" && (
+                      <div>
+                        <dt>Expected location</dt>
+                        <dd>{quoteLine.willCallLocationCode}</dd>
+                      </div>
+                    )}
                   </dl>
 
+                  {activeCheckout.pickupFulfillmentMode === "IMMEDIATE" && (
+                    <p className="muted">
+                      Patient waiting: this verified prescription will be handed
+                      directly to the recipient. No Will Call bag or bin staging
+                      is required.
+                    </p>
+                  )}
+
                   <div className="form-grid">
-                    <label>
-                      Scan Will Call bag
-                      <input
-                        value={activeCheckout.bagBarcode}
-                        onChange={(event) =>
-                          setCheckout((current) =>
-                            current
-                              ? { ...current, bagBarcode: event.target.value }
-                              : current,
-                          )
-                        }
-                        placeholder={quoteLine.bagBarcode}
-                        autoFocus
-                      />
-                    </label>
+                    {activeCheckout.pickupFulfillmentMode === "WILL_CALL" && (
+                      <label>
+                        Scan Will Call bag
+                        <input
+                          value={activeCheckout.bagBarcode}
+                          onChange={(event) =>
+                            setCheckout((current) =>
+                              current
+                                ? { ...current, bagBarcode: event.target.value }
+                                : current,
+                            )
+                          }
+                          placeholder={quoteLine.bagBarcode ?? ""}
+                          autoFocus
+                        />
+                      </label>
+                    )}
                     <label>
                       Pickup recipient
                       <input
@@ -523,8 +569,8 @@ export function WillCall({
 
                   {Number(activeCheckout.quote.totalDue) === 0 && (
                     <p className="muted">
-                      No tender is required. Bag scan, identity verification, and
-                      signature are still required to record pickup.
+                      No tender is required. Identity verification and signature
+                      are still required to record pickup.
                     </p>
                   )}
 
@@ -552,49 +598,66 @@ export function WillCall({
                   Open
                 </button>
                 {willCallPackage?.status !== "STAGED" ? (
-                  <button
-                    className="secondary-button"
-                    disabled={!canProcess(user) || loading || checkoutBusy || !fill}
-                    onClick={() =>
-                      fill &&
-                      setStaging({
-                        fillId: fill.id,
-                        bagBarcode: "",
-                        locationBarcode: "",
-                      })
-                    }
-                  >
-                    Stage Bag
-                  </button>
+                  <>
+                    <button
+                      className="secondary-button"
+                      disabled={
+                        !canProcess(user) ||
+                        loading ||
+                        checkoutBusy ||
+                        !fill ||
+                        Boolean(activeCheckout)
+                      }
+                      onClick={() =>
+                        fill &&
+                        setStaging({
+                          fillId: fill.id,
+                          bagBarcode: "",
+                          locationBarcode: "",
+                        })
+                      }
+                    >
+                      Stage Bag
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!canSell(user) || loading || checkoutBusy || !fill}
+                      onClick={() => void beginCheckout(rx, "IMMEDIATE")}
+                    >
+                      Patient Waiting — Pickup Now
+                    </button>
+                  </>
                 ) : (
-                  <button
-                    className="secondary-button"
-                    disabled={!canProcess(user) || loading || checkoutBusy || !fill}
-                    onClick={() =>
-                      fill &&
-                      setStaging({
-                        fillId: fill.id,
-                        bagBarcode: willCallPackage.bagBarcode,
-                        locationBarcode: willCallPackage.location.barcode ?? "",
-                      })
-                    }
-                  >
-                    Relocate
-                  </button>
+                  <>
+                    <button
+                      className="secondary-button"
+                      disabled={
+                        !canProcess(user) ||
+                        loading ||
+                        checkoutBusy ||
+                        !fill ||
+                        Boolean(activeCheckout)
+                      }
+                      onClick={() =>
+                        fill &&
+                        setStaging({
+                          fillId: fill.id,
+                          bagBarcode: willCallPackage.bagBarcode,
+                          locationBarcode: willCallPackage.location.barcode ?? "",
+                        })
+                      }
+                    >
+                      Relocate
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!canSell(user) || loading || checkoutBusy || !fill}
+                      onClick={() => void beginCheckout(rx, "WILL_CALL")}
+                    >
+                      Checkout
+                    </button>
+                  </>
                 )}
-                <button
-                  className="primary-button"
-                  disabled={
-                    !canSell(user) ||
-                    loading ||
-                    checkoutBusy ||
-                    !fill ||
-                    willCallPackage?.status !== "STAGED"
-                  }
-                  onClick={() => void beginCheckout(rx)}
-                >
-                  Checkout
-                </button>
                 <button
                   className="secondary-button"
                   disabled={

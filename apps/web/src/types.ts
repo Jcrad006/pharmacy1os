@@ -1139,6 +1139,7 @@ export type PosPriceBasis =
   | "CASH"
   | "COMPLETION_ALREADY_BILLED";
 export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "OTHER";
+export type PickupFulfillmentMode = "WILL_CALL" | "IMMEDIATE";
 export type PickupIdentityMethod =
   | "DATE_OF_BIRTH"
   | "ADDRESS"
@@ -1184,16 +1185,18 @@ export type PosQuoteLine = {
   cashUnitPriceSnapshot: string | number | null;
   cashPricingSnapshot: unknown;
   amountDue: string | number;
-  willCallPackageId: string;
-  bagBarcode: string;
-  willCallLocationId: string;
-  willCallLocationCode: string;
-  willCallLocationName: string;
+  pickupFulfillmentMode: PickupFulfillmentMode;
+  willCallPackageId: string | null;
+  bagBarcode: string | null;
+  willCallLocationId: string | null;
+  willCallLocationCode: string | null;
+  willCallLocationName: string | null;
   willCallLocationBarcode: string | null;
 };
 
 export type PosQuote = {
   patientId: string;
+  pickupFulfillmentMode: PickupFulfillmentMode;
   lines: PosQuoteLine[];
   totalDue: string | number;
 };
@@ -1232,6 +1235,7 @@ export type PointOfSaleTransaction = {
   totalTendered: string | number;
   changeDue: string | number;
   idempotencyKey: string;
+  pickupFulfillmentMode: PickupFulfillmentMode;
   pickupRecipientName: string;
   pickupRelationship: string | null;
   pickupIdentityMethod: PickupIdentityMethod;
