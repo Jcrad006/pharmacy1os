@@ -266,7 +266,8 @@ export type InventoryTransactionType =
   | "DISPOSE"
   | "TRANSFER_OUT"
   | "TRANSFER_IN"
-  | "TRANSFER_CANCEL_RETURN";
+  | "TRANSFER_CANCEL_RETURN"
+  | "MOVE_LOCATION";
 
 export type InventoryTransaction = {
   id: string;
@@ -282,6 +283,9 @@ export type InventoryTransaction = {
   reason: string | null;
   source: string | null;
   reference: string | null;
+  idempotencyKey: string | null;
+  unitCost: string | number | null;
+  extendedCost: string | number | null;
   occurredAt: string;
   actor?: {
     displayName: string;
@@ -391,6 +395,218 @@ export type InventoryHold = {
   updatedAt: string;
   inventoryBalance: InventoryBalance;
   transactions: InventoryTransaction[];
+  carrier: string | null;
+  trackingNumber: string | null;
+  sealIdentifier: string | null;
+  custodyReference: string | null;
+  custodyEvents?: InventoryCustodyEvent[];
+};
+
+export type InventoryLocationType =
+  | "SHELF"
+  | "BIN"
+  | "REFRIGERATOR"
+  | "FREEZER"
+  | "SAFE"
+  | "RECEIVING"
+  | "QUARANTINE"
+  | "RETURN_TO_VENDOR"
+  | "WILL_CALL"
+  | "OTHER";
+
+export type InventoryStockState = "AVAILABLE" | "QUARANTINED";
+
+export type InventoryLocation = {
+  id: string;
+  siteId: string;
+  code: string;
+  name: string;
+  type: InventoryLocationType;
+  active: boolean;
+  isDefaultReceiving: boolean;
+  isDefaultDispensing: boolean;
+  isQuarantine: boolean;
+  temperatureMinC: string | number | null;
+  temperatureMaxC: string | number | null;
+  createdAt: string;
+  updatedAt: string;
+  stockPositions?: InventoryStockPosition[];
+};
+
+export type InventoryStockPosition = {
+  id: string;
+  inventoryBalanceId: string;
+  locationId: string;
+  location: InventoryLocation;
+  state: InventoryStockState;
+  quantity: string | number;
+  createdAt: string;
+  updatedAt: string;
+  inventoryBalance?: InventoryBalance;
+};
+
+export type InventoryAllocationStatus =
+  | "ACTIVE"
+  | "COMMITTED"
+  | "RELEASED";
+
+export type InventoryAllocation = {
+  id: string;
+  siteId: string;
+  fillId: string;
+  inventoryBalanceId: string;
+  actorId: string | null;
+  quantity: string | number;
+  status: InventoryAllocationStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+  fill?: PrescriptionFill & {
+    prescription?: {
+      id: string;
+      rxNumber: string | null;
+      medicationName: string;
+    };
+  };
+};
+
+export type InventoryDemandStatus =
+  | "OPEN"
+  | "READY"
+  | "FULFILLED"
+  | "CANCELLED";
+
+export type InventoryDemandSource =
+  | "FILL"
+  | "COMPLETION"
+  | "REORDER"
+  | "MANUAL";
+
+export type InventoryDemand = {
+  id: string;
+  siteId: string;
+  medicationId: string;
+  productId: string | null;
+  fillId: string | null;
+  source: InventoryDemandSource;
+  requiredQuantity: string | number;
+  availableQuantity: string | number;
+  status: InventoryDemandStatus;
+  neededBy: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  fulfilledAt: string | null;
+  medication: Medication;
+  product?: Product | null;
+  fill?: PrescriptionFill & {
+    prescription?: {
+      id: string;
+      rxNumber: string | null;
+      patient?: Patient;
+    };
+  };
+};
+
+export type InventoryPolicy = {
+  id: string;
+  siteId: string;
+  scope: "SITE" | "PRODUCT";
+  policyKey: string;
+  productId: string | null;
+  reorderPoint: string | number | null;
+  targetStockLevel: string | number | null;
+  minShelfLifeDays: number;
+  expirationWarningDays: number;
+  fefoEnabled: boolean;
+  staleReservationHours: number;
+  staleTransferHours: number;
+  purchaseOrderOverdueDays: number;
+  technicianAdjustmentThreshold: string | number | null;
+  preferredSupplierName: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  product?: (Product & { medication?: Medication }) | null;
+};
+
+export type ReceivingDiscrepancyType =
+  | "SHORT_SHIPMENT"
+  | "OVERAGE"
+  | "WRONG_PRODUCT"
+  | "DAMAGED_PRODUCT"
+  | "LOT_EXPIRATION_MISMATCH"
+  | "INVOICE_MISMATCH"
+  | "DUPLICATE_SHIPMENT"
+  | "UNEXPECTED_PRODUCT"
+  | "OTHER";
+
+export type ReceivingDiscrepancy = {
+  id: string;
+  siteId: string;
+  purchaseOrderId: string | null;
+  purchaseOrderLineId: string | null;
+  receiptId: string | null;
+  expectedProductId: string | null;
+  observedProductId: string | null;
+  type: ReceivingDiscrepancyType;
+  expectedQuantity: string | number | null;
+  observedQuantity: string | number | null;
+  note: string | null;
+  status: "OPEN" | "RESOLVED";
+  createdById: string;
+  resolvedById: string | null;
+  resolutionNote: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  createdBy?: { displayName: string; role: UserRole };
+  resolvedBy?: { displayName: string; role: UserRole } | null;
+  expectedProduct?: (Product & { medication?: Medication }) | null;
+  observedProduct?: (Product & { medication?: Medication }) | null;
+};
+
+export type InventoryExceptionType =
+  | "BELOW_REORDER_POINT"
+  | "EXPIRING_SOON"
+  | "STALE_RESERVATION"
+  | "TRANSFER_STUCK"
+  | "PURCHASE_ORDER_OVERDUE"
+  | "UNALLOCATED_DEMAND"
+  | "POSITION_IMBALANCE"
+  | "MISSING_ACQUISITION_COST";
+
+export type InventoryException = {
+  id: string;
+  siteId: string;
+  fingerprint: string;
+  type: InventoryExceptionType;
+  status: "OPEN" | "ACKNOWLEDGED" | "RESOLVED";
+  severity: DurSeverity;
+  entityType: string;
+  entityId: string | null;
+  title: string;
+  detail: string;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  acknowledgedById: string | null;
+  acknowledgedAt: string | null;
+  resolvedById: string | null;
+  resolvedAt: string | null;
+  resolutionNote: string | null;
+};
+
+export type InventoryCustodyEvent = {
+  id: string;
+  transferId: string;
+  siteId: string;
+  actorId: string;
+  type: "PACKED" | "VERIFIED" | "HANDED_OFF" | "RECEIVED" | "EXCEPTION";
+  carrier: string | null;
+  trackingNumber: string | null;
+  sealIdentifier: string | null;
+  note: string | null;
+  occurredAt: string;
+  actor?: { id: string; displayName: string; role: UserRole };
+  site?: { id: string; name: string };
 };
 
 export type InventoryBalance = {
@@ -411,6 +627,8 @@ export type InventoryBalance = {
   productLot?: ProductLot;
   productExpiration?: ProductExpiration;
   transactions?: InventoryTransaction[];
+  stockPositions?: InventoryStockPosition[];
+  allocations?: InventoryAllocation[];
 };
 
 export type InventoryTransfer = {
@@ -450,7 +668,12 @@ export type InventoryTransfer = {
   shippedAt: string;
   receivedAt: string | null;
   cancelledAt: string | null;
+  carrier: string | null;
+  trackingNumber: string | null;
+  sealIdentifier: string | null;
+  custodyReference: string | null;
   transactions: InventoryTransaction[];
+  custodyEvents?: InventoryCustodyEvent[];
 };
 
 export type RecallAffectedFill = {
@@ -514,6 +737,9 @@ export type PurchaseOrderReceipt = {
   lotNumber: string;
   expirationDate: string;
   invoiceReference: string | null;
+  unitCost: string | number | null;
+  extendedCost: string | number | null;
+  idempotencyKey: string | null;
   receivedAt: string;
 };
 

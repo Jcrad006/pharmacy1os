@@ -206,6 +206,28 @@
 - [x] Ordered-vs-received quantity reconciliation with over-receipt prevention
 - [x] PO receipts linked to inventory balances and immutable RECEIVE transactions
 - [x] Pharmacist/admin cancellation of unreceived purchase-order remainder
+- [x] Physical inventory locations by pharmacy site (shelf/bin/refrigerator/freezer/safe/receiving/quarantine/will-call/other)
+- [x] Stock positions linking physical quantity to balance + location + usable/quarantine state
+- [x] Automatic site bootstrap of required storage/quarantine locations and default inventory policy
+- [x] Explicit fill-allocation records linking reserved quantity to the prescription fill that owns it
+- [x] Inventory demand/backorder records for completion fills, reorder demand, and future supply planning
+- [x] Partial-fill completion automatically creates a dated inventory demand for the remaining quantity
+- [x] Inventory-demand readiness recalculates when stock is received, returned, quarantined, released, disposed, adjusted, or transferred
+- [x] Site/product inventory policy model for reorder point, target stock, FEFO, shelf life, expiration warning, and stale-work thresholds
+- [x] Automatic reorder demand when product inventory drops below configured policy
+- [x] FEFO lot/expiration recommendations with minimum remaining shelf-life enforcement
+- [x] Receiving discrepancy cases for shortage, overage, wrong product, damage, lot/expiration mismatch, invoice mismatch, duplicate shipment, and unexpected product
+- [x] Pharmacist/admin-controlled receiving discrepancy resolution with audit trail
+- [x] Idempotency keys for receiving, PO receipts, and site-transfer shipment to prevent duplicate stock movements
+- [x] Receipt-level acquisition unit cost and extended-cost history on immutable inventory transactions
+- [x] Historical inventory balance reconstruction from the immutable ledger at an arbitrary date/time
+- [x] Automated inventory exception engine for reorder, expiration, stale reservations/transfers, overdue POs, uncovered demand, stock-position imbalance, and missing acquisition cost
+- [x] Transfer chain-of-custody metadata including carrier, tracking, seal/tamper ID, manifest/reference, and custody events
+- [x] F8 receiving captures physical location, acquisition cost, and idempotency key
+- [x] F9 architecture control center for locations, stock moves, demand/backorders, policy, FEFO, historical projections, exceptions, and discrepancies
+- [x] F9 transfer workstation displays and records chain-of-custody events
+- [x] PO receiving supports physical receiving location and idempotency key
+- [x] Database-backed regression tests for physical positions, allocations, idempotency, projections, demand, FEFO/policy, discrepancies, and transfer custody
 
 ## Phase 3I — Dispensing continuity
 - [x] Technician-entered partial fill before product reservation

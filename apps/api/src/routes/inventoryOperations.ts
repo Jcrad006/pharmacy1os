@@ -23,6 +23,18 @@ type TransferCreateBody = {
   sourceInventoryBalanceId?: string;
   quantity?: number;
   note?: string;
+  carrier?: string;
+  trackingNumber?: string;
+  sealIdentifier?: string;
+  custodyReference?: string;
+  idempotencyKey?: string;
+};
+
+type TransferReceiveBody = {
+  receiptNote?: string;
+  carrier?: string;
+  trackingNumber?: string;
+  sealIdentifier?: string;
 };
 
 type TransferCancelBody = {
@@ -56,6 +68,8 @@ type PurchaseOrderReceiveBody = {
   lotNumber?: string;
   expirationDate?: string;
   invoiceReference?: string;
+  locationId?: string;
+  idempotencyKey?: string;
 };
 
 function sendKnownError(reply: any, error: unknown) {
@@ -108,6 +122,17 @@ const transferInclude = {
     select: { id: true, displayName: true, role: true },
   },
   transactions: {
+    orderBy: { occurredAt: "asc" as const },
+  },
+  custodyEvents: {
+    include: {
+      actor: {
+        select: { id: true, displayName: true, role: true },
+      },
+      site: {
+        select: { id: true, name: true },
+      },
+    },
     orderBy: { occurredAt: "asc" as const },
   },
 };
@@ -252,6 +277,14 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
           actorId: actor.id,
           quantity: body.quantity!,
           note: body.note,
+          carrier: body.carrier,
+          trackingNumber: body.trackingNumber,
+          sealIdentifier: body.sealIdentifier,
+          custodyReference: body.custodyReference,
+          idempotencyKey:
+            body.idempotencyKey?.trim() ||
+            String(request.headers["x-idempotency-key"] ?? "").trim() ||
+            null,
         });
 
         await writeAuditEvent(tx, {
@@ -267,6 +300,10 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
             quantity: body.quantity,
             inventoryTransactionId: created.transaction.id,
             note: body.note?.trim() || null,
+            carrier: body.carrier?.trim() || null,
+            trackingNumber: body.trackingNumber?.trim() || null,
+            sealIdentifier: body.sealIdentifier?.trim() || null,
+            custodyReference: body.custodyReference?.trim() || null,
           },
         });
 
@@ -278,7 +315,7 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
         include: transferInclude,
       });
 
-      return reply.code(201).send({ transfer });
+      return reply.code(result.replayed ? 200 : 201).send({ transfer });
     } catch (error) {
       return sendKnownError(reply, error);
     }
@@ -288,12 +325,17 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
     try {
       const actor = await resolveDevelopmentActor(request, "inventory:write");
       const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as TransferReceiveBody;
 
       const result = await db.$transaction(async (tx) => {
         const received = await receiveInventoryTransfer(tx, {
           transferId: id,
           destinationSiteId: actor.siteId,
           actorId: actor.id,
+          receiptNote: body.receiptNote,
+          carrier: body.carrier,
+          trackingNumber: body.trackingNumber,
+          sealIdentifier: body.sealIdentifier,
         });
 
         await writeAuditEvent(tx, {
@@ -621,6 +663,11 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
             lotNumber,
             expirationDate,
             invoiceReference: body.invoiceReference,
+            locationId: body.locationId,
+            idempotencyKey:
+              body.idempotencyKey?.trim() ||
+              String(request.headers["x-idempotency-key"] ?? "").trim() ||
+              null,
           });
 
           await writeAuditEvent(tx, {
@@ -636,6 +683,11 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
               lotNumber,
               expirationDate: expirationDate.toISOString(),
               invoiceReference: body.invoiceReference?.trim() || null,
+              locationId: body.locationId ?? null,
+              idempotencyKey:
+                body.idempotencyKey?.trim() ||
+                String(request.headers["x-idempotency-key"] ?? "").trim() ||
+                null,
               inventoryBalanceId: received.balance.id,
               inventoryTransactionId: received.transaction.id,
             },

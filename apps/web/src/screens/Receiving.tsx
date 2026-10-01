@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   assignReceivingBarcode,
   correctReceivingBarcode,
+  getInventoryLocations,
   getMedications,
   receiveInventoryStock,
   scanReceivingBarcode,
@@ -14,6 +15,7 @@ import type {
   ProductBarcode,
   ProductExpiration,
   ProductLot,
+  InventoryLocation,
 } from "../types";
 import { canCorrectInventory, canWriteInventory } from "../workflow";
 
@@ -45,6 +47,7 @@ export function Receiving({
   const [rawBarcode, setRawBarcode] = useState("");
   const [result, setResult] = useState<ReceivingResult | null>(null);
   const [medications, setMedications] = useState<Medication[]>([]);
+  const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [correctionProductId, setCorrectionProductId] = useState("");
   const [correctionReason, setCorrectionReason] = useState("");
@@ -52,6 +55,9 @@ export function Receiving({
   const [receiveQuantity, setReceiveQuantity] = useState("");
   const [receiveSource, setReceiveSource] = useState("");
   const [receiveReference, setReceiveReference] = useState("");
+  const [receiveLocationId, setReceiveLocationId] = useState("");
+  const [receiveUnitCost, setReceiveUnitCost] = useState("");
+  const [receiptIdempotencyKey, setReceiptIdempotencyKey] = useState("");
   const [receiptMessage, setReceiptMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const writable = canWriteInventory(user);
@@ -59,13 +65,23 @@ export function Receiving({
 
   useEffect(() => {
     if (!devUser) return;
-    void getMedications(devUser)
-      .then((items) => setMedications(items.filter((item) => item.active)))
+    void Promise.all([
+      getMedications(devUser),
+      getInventoryLocations(devUser),
+    ])
+      .then(([items, nextLocations]) => {
+        setMedications(items.filter((item) => item.active));
+        setLocations(nextLocations.filter((location) => location.active));
+        const receivingDefault = nextLocations.find(
+          (location) => location.active && location.isDefaultReceiving,
+        );
+        setReceiveLocationId(receivingDefault?.id ?? "");
+      })
       .catch((error) =>
         onError(
           error instanceof Error
             ? error.message
-            : "Unable to load Drug/Product catalog.",
+            : "Unable to load receiving catalog and inventory locations.",
         ),
       );
   }, [devUser]);
@@ -95,6 +111,7 @@ export function Receiving({
         setCorrectionReason("");
         setCorrectionWarning(null);
         setReceiptMessage(null);
+        setReceiptIdempotencyKey(crypto.randomUUID());
       }
     } catch (error) {
       onError(
@@ -155,6 +172,10 @@ export function Receiving({
         quantity,
         source: receiveSource.trim() || undefined,
         reference: receiveReference.trim() || undefined,
+        locationId: receiveLocationId || undefined,
+        unitCost: receiveUnitCost ? Number(receiveUnitCost) : undefined,
+        idempotencyKey:
+          receiptIdempotencyKey || crypto.randomUUID(),
       });
 
       setReceiptMessage(
@@ -162,6 +183,8 @@ export function Receiving({
       );
       setReceiveQuantity("");
       setReceiveReference("");
+      setReceiveUnitCost("");
+      setReceiptIdempotencyKey(crypto.randomUUID());
     } catch (error) {
       onError(
         error instanceof Error ? error.message : "Unable to receive inventory.",
@@ -226,6 +249,8 @@ export function Receiving({
     setReceiveQuantity("");
     setReceiveSource("");
     setReceiveReference("");
+    setReceiveUnitCost("");
+    setReceiptIdempotencyKey("");
     setReceiptMessage(null);
     onError(null);
   }
@@ -363,6 +388,50 @@ export function Receiving({
                       onChange={(event) => setReceiveReference(event.target.value)}
                       disabled={!writable || busy}
                       placeholder="Optional"
+                    />
+                  </label>
+                  <label>
+                    Physical location
+                    <select
+                      value={receiveLocationId}
+                      onChange={(event) =>
+                        setReceiveLocationId(event.target.value)
+                      }
+                      disabled={!writable || busy}
+                    >
+                      <option value="">Use site receiving default</option>
+                      {locations
+                        .filter((location) => !location.isQuarantine)
+                        .map((location) => (
+                          <option key={location.id} value={location.id}>
+                            {location.code} · {location.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    Acquisition cost / dispensing unit
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={receiveUnitCost}
+                      onChange={(event) =>
+                        setReceiveUnitCost(event.target.value)
+                      }
+                      disabled={!writable || busy}
+                      placeholder="Optional"
+                    />
+                  </label>
+                  <label>
+                    Receipt idempotency key
+                    <input
+                      value={receiptIdempotencyKey}
+                      onChange={(event) =>
+                        setReceiptIdempotencyKey(event.target.value)
+                      }
+                      disabled={!writable || busy}
+                      placeholder="Generated automatically"
                     />
                   </label>
                 </div>

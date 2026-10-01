@@ -10,6 +10,7 @@ import { InventoryHolds } from "./InventoryHolds";
 import { InventoryTransfers } from "./InventoryTransfers";
 import { InventoryRecalls } from "./InventoryRecalls";
 import { PurchaseOrders } from "./PurchaseOrders";
+import { InventoryArchitecture } from "./InventoryArchitecture";
 
 function quantity(value: string | number) {
   return Number(value).toLocaleString(undefined, {
@@ -273,6 +274,14 @@ export function Inventory({
           </div>
         </div>
       )}
+      <InventoryArchitecture
+        devUser={devUser}
+        user={user}
+        balances={balances}
+        onError={onError}
+        onInventoryChanged={refreshOperations}
+      />
+
       <InventoryTransfers
         devUser={devUser}
         user={user}

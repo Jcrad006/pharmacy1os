@@ -1757,3 +1757,160 @@ kbd {
     grid-column: auto;
   }
 }
+
+
+.inventory-architecture-panel {
+  margin-top: 24px;
+  border-color: #cbded4;
+}
+
+.inventory-architecture-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.inventory-architecture-card {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  border: 1px solid #dce7e1;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fbfdfc;
+}
+
+.inventory-architecture-card h3 {
+  margin: 0;
+}
+
+.architecture-wide {
+  grid-column: 1 / -1;
+}
+
+.architecture-form {
+  display: grid;
+  gap: 9px;
+}
+
+.architecture-form input,
+.architecture-form select,
+.architecture-form textarea {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+  color: #1f2c27;
+  font: inherit;
+}
+
+.architecture-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #4c5e55;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.architecture-check input {
+  width: auto;
+}
+
+.architecture-location-list {
+  display: grid;
+  gap: 7px;
+}
+
+.architecture-location-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 4px 10px;
+  border: 1px solid #e2e9e5;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+}
+
+.architecture-location-row small {
+  grid-column: 1 / -1;
+  color: #6f7e77;
+}
+
+.architecture-result {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #d5e2db;
+  border-radius: 9px;
+  padding: 10px 11px;
+  background: #f4f9f6;
+}
+
+.architecture-result small {
+  color: #6a7972;
+}
+
+.architecture-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.architecture-discrepancy-form {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: end;
+}
+
+.custody-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 180px;
+}
+
+.custody-summary span,
+.custody-summary small {
+  display: block;
+}
+
+.custody-summary small {
+  color: #6c7a73;
+  font-size: 11px;
+}
+
+.inventory-transfer-table {
+  min-width: 1240px;
+}
+
+.po-receipt-form {
+  grid-template-columns:
+    80px 105px 135px 120px
+    minmax(125px, .8fr) minmax(160px, 1fr) auto;
+}
+
+.po-receipt-form select {
+  min-width: 0;
+  border: 1px solid #cfdad4;
+  border-radius: 7px;
+  padding: 7px 8px;
+  background: white;
+}
+
+@media (max-width: 1000px) {
+  .inventory-architecture-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .architecture-wide {
+    grid-column: auto;
+  }
+
+  .architecture-discrepancy-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .architecture-metrics {
+    grid-template-columns: 1fr;
+  }
+}

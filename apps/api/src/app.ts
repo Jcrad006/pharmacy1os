@@ -14,6 +14,7 @@ import { catalogRoutes } from "./routes/catalog.js";
 import { receivingRoutes } from "./routes/receiving.js";
 import { inventoryRoutes } from "./routes/inventory.js";
 import { inventoryOperationsRoutes } from "./routes/inventoryOperations.js";
+import { inventoryArchitectureRoutes } from "./routes/inventoryArchitecture.js";
 
 type BuildAppOptions = {
   serveWeb?: boolean;
@@ -67,6 +68,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(receivingRoutes, { prefix: "/api" });
   app.register(inventoryRoutes, { prefix: "/api" });
   app.register(inventoryOperationsRoutes, { prefix: "/api" });
+  app.register(inventoryArchitectureRoutes, { prefix: "/api" });
 
   if (options.serveWeb) {
     const webRoot = resolve(

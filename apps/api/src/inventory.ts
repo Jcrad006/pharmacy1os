@@ -4,16 +4,14 @@ import {
   type InventoryHoldReason,
 } from "@prisma/client";
 
-export class InventoryError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    public readonly code: string,
-    message: string,
-    public readonly details?: Record<string, unknown>,
-  ) {
-    super(message);
-  }
-}
+import { InventoryError } from "./inventoryError.js";
+export { InventoryError } from "./inventoryError.js";
+import {
+  adjustStockPosition,
+  fulfillDemandForFill,
+  reconcileDemandAvailability,
+  moveStockState,
+} from "./inventoryArchitecture.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -115,9 +113,35 @@ export async function receiveInventory(
     source?: string | null;
     reference?: string | null;
     reason?: string | null;
+    locationId?: string | null;
+    idempotencyKey?: string | null;
+    unitCost?: number | string | Prisma.Decimal | null;
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
+
+  if (input.idempotencyKey) {
+    const existing = await tx.inventoryTransaction.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+      include: { inventoryBalance: true },
+    });
+    if (existing) {
+      if (existing.type !== "RECEIVE") {
+        throw new InventoryError(
+          409,
+          "IDEMPOTENCY_KEY_CONFLICT",
+          "This idempotency key was already used for a different inventory operation.",
+          { transactionId: existing.id, type: existing.type },
+        );
+      }
+      return {
+        balance: existing.inventoryBalance,
+        transaction: existing,
+        quarantineHold: null,
+        replayed: true,
+      };
+    }
+  }
 
   const balance = await tx.inventoryBalance.upsert({
     where: {
@@ -145,6 +169,26 @@ export async function receiveInventory(
     },
   });
 
+  await adjustStockPosition(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: locked.id,
+    state: "AVAILABLE",
+    delta: quantity,
+    locationId: input.locationId,
+  });
+
+  const unitCost =
+    input.unitCost === null || input.unitCost === undefined
+      ? null
+      : decimal(input.unitCost);
+  if (unitCost && unitCost.lt(0)) {
+    throw new InventoryError(
+      400,
+      "INVALID_ACQUISITION_COST",
+      "Acquisition unit cost cannot be negative.",
+    );
+  }
+
   const transaction = await tx.inventoryTransaction.create({
     data: {
       siteId: input.siteId,
@@ -156,8 +200,19 @@ export async function receiveInventory(
       reason: input.reason?.trim() || "Inventory received",
       source: input.source?.trim() || null,
       reference: input.reference?.trim() || null,
+      idempotencyKey: input.idempotencyKey?.trim() || null,
+      unitCost,
+      extendedCost: unitCost ? unitCost.mul(quantity) : null,
     },
   });
+
+  const product = await tx.product.findUnique({
+    where: { id: input.productId },
+    select: { medicationId: true },
+  });
+  if (product) {
+    await reconcileDemandAvailability(tx, input.siteId, product.medicationId);
+  }
 
   const lot = await tx.productLot.findUnique({
     where: { id: input.productLotId },
@@ -263,6 +318,23 @@ export async function releaseInventoryReservation(
       reason: input.reason,
     },
   });
+
+  await tx.inventoryAllocation.updateMany({
+    where: { fillId: fill.id, status: "ACTIVE" },
+    data: { status: "RELEASED", resolvedAt: new Date() },
+  });
+
+  const releasedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (releasedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      releasedProduct.medicationId,
+    );
+  }
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
@@ -394,6 +466,19 @@ export async function reserveInventoryForFill(
     },
   });
 
+  await tx.inventoryAllocation.create({
+    data: {
+      siteId: input.siteId,
+      fillId: fill.id,
+      inventoryBalanceId: locked.id,
+      actorId: input.actorId,
+      quantity,
+      status: "ACTIVE",
+    },
+  });
+
+  await fulfillDemandForFill(tx, fill.id, input.productId);
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -478,6 +563,18 @@ export async function commitInventoryForFill(
     },
   });
 
+  await adjustStockPosition(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: balance.id,
+    state: "AVAILABLE",
+    delta: quantity.negated(),
+  });
+
+  await tx.inventoryAllocation.updateMany({
+    where: { fillId: fill.id, status: "ACTIVE" },
+    data: { status: "COMMITTED", resolvedAt: new Date() },
+  });
+
   const committedAt = new Date();
   await tx.inventoryTransaction.create({
     data: {
@@ -540,6 +637,25 @@ export async function returnInventoryForFill(
       onHandQuantity: balance.onHandQuantity.plus(quantity),
     },
   });
+
+  await adjustStockPosition(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: balance.id,
+    state: "AVAILABLE",
+    delta: quantity,
+  });
+
+  const returnedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (returnedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      returnedProduct.medicationId,
+    );
+  }
 
   const returnedAt = new Date();
   await tx.inventoryTransaction.create({
@@ -612,6 +728,13 @@ export async function adjustInventoryBalance(
     data: { onHandQuantity: newOnHand },
   });
 
+  await adjustStockPosition(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: balance.id,
+    state: "AVAILABLE",
+    delta,
+  });
+
   const transaction = await tx.inventoryTransaction.create({
     data: {
       siteId: input.siteId,
@@ -625,6 +748,18 @@ export async function adjustInventoryBalance(
       reference: input.reference?.trim() || null,
     },
   });
+
+  const adjustedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (adjustedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      adjustedProduct.medicationId,
+    );
+  }
 
   return { balance: updated, transaction };
 }
@@ -691,6 +826,14 @@ export async function quarantineInventory(
     },
   });
 
+  await moveStockState(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: balance.id,
+    quantity,
+    fromState: "AVAILABLE",
+    toState: "QUARANTINED",
+  });
+
   const transaction = await tx.inventoryTransaction.create({
     data: {
       siteId: input.siteId,
@@ -706,6 +849,18 @@ export async function quarantineInventory(
       reference: hold.id,
     },
   });
+
+  const quarantinedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (quarantinedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      quarantinedProduct.medicationId,
+    );
+  }
 
   return { balance: updated, hold, transaction };
 }
@@ -764,6 +919,14 @@ export async function releaseInventoryHold(
     },
   });
 
+  await moveStockState(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: balance.id,
+    quantity: hold.quantity,
+    fromState: "QUARANTINED",
+    toState: "AVAILABLE",
+  });
+
   const transaction = await tx.inventoryTransaction.create({
     data: {
       siteId: input.siteId,
@@ -790,6 +953,18 @@ export async function releaseInventoryHold(
       dispositionType: null,
     },
   });
+
+  const releasedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (releasedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      releasedProduct.medicationId,
+    );
+  }
 
   return { balance: updated, hold: resolved, transaction };
 }
@@ -854,6 +1029,13 @@ export async function disposeInventoryHold(
     },
   });
 
+  await adjustStockPosition(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: balance.id,
+    state: "QUARANTINED",
+    delta: hold.quantity.negated(),
+  });
+
   const transaction = await tx.inventoryTransaction.create({
     data: {
       siteId: input.siteId,
@@ -880,6 +1062,18 @@ export async function disposeInventoryHold(
       dispositionType: input.dispositionType,
     },
   });
+
+  const disposedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (disposedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      disposedProduct.medicationId,
+    );
+  }
 
   return { balance: updated, hold: resolved, transaction };
 }

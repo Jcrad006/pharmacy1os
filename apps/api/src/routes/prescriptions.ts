@@ -25,6 +25,10 @@ import {
   reserveInventoryForFill,
   returnInventoryForFill,
 } from "../inventory.js";
+import {
+  cancelDemandForFill,
+  createOrUpdateFillDemand,
+} from "../inventoryArchitecture.js";
 
 type CreatePrescriptionBody = {
   patientId?: string;
@@ -991,6 +995,16 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             data: { status: "CANCELLED" },
           });
 
+          await cancelDemandForFill(tx, currentActiveFill.id);
+
+          const linkedCompletions = await tx.prescriptionFill.findMany({
+            where: {
+              completionOfFillId: currentActiveFill.id,
+              status: "SCHEDULED",
+            },
+            select: { id: true },
+          });
+
           await tx.prescriptionFill.updateMany({
             where: {
               completionOfFillId: currentActiveFill.id,
@@ -998,6 +1012,10 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             },
             data: { status: "CANCELLED" },
           });
+
+          for (const completion of linkedCompletions) {
+            await cancelDemandForFill(tx, completion.id);
+          }
         }
 
         const rx = await tx.prescription.update({
@@ -1348,6 +1366,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             authorizedQuantity: rootAuthorizedQuantity,
             status: "SCHEDULED",
           },
+        });
+
+        await createOrUpdateFillDemand(tx, {
+          fillId: completion.id,
+          source: "COMPLETION",
+          note:
+            body.reason?.trim() ||
+            "Remaining quantity required to complete a partial fill.",
         });
 
         await writeAuditEvent(tx, {
@@ -2235,6 +2261,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           },
         });
 
+        const linkedCompletions = await tx.prescriptionFill.findMany({
+          where: {
+            completionOfFillId: id,
+            status: "SCHEDULED",
+          },
+          select: { id: true },
+        });
+
         await tx.prescriptionFill.updateMany({
           where: {
             completionOfFillId: id,
@@ -2242,6 +2276,10 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           },
           data: { status: "CANCELLED" },
         });
+
+        for (const completion of linkedCompletions) {
+          await cancelDemandForFill(tx, completion.id);
+        }
 
         const rx = await tx.prescription.update({
           where: { id: fill.prescriptionId },

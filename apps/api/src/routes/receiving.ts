@@ -28,6 +28,9 @@ type ReceiveStockBody = {
   quantity?: number;
   source?: string;
   reference?: string;
+  locationId?: string;
+  unitCost?: number;
+  idempotencyKey?: string;
 };
 
 const productInclude = (siteId: string) => ({
@@ -250,9 +253,16 @@ export async function receivingRoutes(app: FastifyInstance) {
           source: body.source,
           reference: body.reference,
           reason: "Inventory received from scanned stock",
+          locationId: body.locationId,
+          unitCost: body.unitCost,
+          idempotencyKey:
+            body.idempotencyKey?.trim() ||
+            String(request.headers["x-idempotency-key"] ?? "").trim() ||
+            null,
         });
 
-        await writeAuditEvent(tx, {
+        if (!received.replayed) {
+          await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
           action: "INVENTORY_STOCK_RECEIVED",
@@ -269,8 +279,15 @@ export async function receivingRoutes(app: FastifyInstance) {
             quantity,
             source: body.source?.trim() || null,
             reference: body.reference?.trim() || null,
+            locationId: body.locationId ?? null,
+            unitCost: body.unitCost ?? null,
+            idempotencyKey:
+              body.idempotencyKey?.trim() ||
+              String(request.headers["x-idempotency-key"] ?? "").trim() ||
+              null,
           },
         });
+        }
 
         return {
           traceability,
@@ -278,8 +295,8 @@ export async function receivingRoutes(app: FastifyInstance) {
         };
       });
 
-      return reply.code(201).send({
-        status: "RECEIVED",
+      return reply.code(result.replayed ? 200 : 201).send({
+        status: result.replayed ? "REPLAYED" : "RECEIVED",
         parsed,
         barcode,
         product: barcode.product,

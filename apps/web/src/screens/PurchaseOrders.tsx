@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import {
   cancelPurchaseOrder,
   createPurchaseOrder,
+  getInventoryLocations,
   getMedications,
   getPurchaseOrders,
   receivePurchaseOrderLine,
 } from "../api";
 import type {
   DevUser,
+  InventoryLocation,
   Medication,
   PurchaseOrder,
 } from "../types";
@@ -28,6 +30,8 @@ type ReceiptDraft = {
   lotNumber: string;
   expirationDate: string;
   invoiceReference: string;
+  locationId: string;
+  idempotencyKey: string;
 };
 
 function qty(value: string | number) {
@@ -50,6 +54,7 @@ export function PurchaseOrders({
 }) {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [medications, setMedications] = useState<Medication[]>([]);
+  const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [orderNumber, setOrderNumber] = useState("");
   const [supplierName, setSupplierName] = useState("");
   const [note, setNote] = useState("");
@@ -66,12 +71,14 @@ export function PurchaseOrders({
   async function refresh() {
     if (!devUser) return;
     try {
-      const [nextOrders, nextMedications] = await Promise.all([
+      const [nextOrders, nextMedications, nextLocations] = await Promise.all([
         getPurchaseOrders(devUser),
         getMedications(devUser),
+        getInventoryLocations(devUser),
       ]);
       setOrders(nextOrders);
       setMedications(nextMedications);
+      setLocations(nextLocations.filter((location) => location.active));
     } catch (error) {
       onError(
         error instanceof Error
@@ -178,6 +185,9 @@ export function PurchaseOrders({
         lotNumber: "",
         expirationDate: "",
         invoiceReference: "",
+        locationId:
+          locations.find((location) => location.isDefaultReceiving)?.id ?? "",
+        idempotencyKey: crypto.randomUUID(),
       }
     );
   }
@@ -219,6 +229,8 @@ export function PurchaseOrders({
           `${draft.expirationDate}T00:00:00.000Z`,
         ).toISOString(),
         invoiceReference: draft.invoiceReference.trim() || undefined,
+        locationId: draft.locationId || undefined,
+        idempotencyKey: draft.idempotencyKey || crypto.randomUUID(),
       });
       setReceiptDrafts((current) => {
         const next = { ...current };
@@ -548,6 +560,40 @@ export function PurchaseOrders({
                                   )
                                 }
                                 disabled={busy}
+                              />
+                              <select
+                                value={draft.locationId}
+                                onChange={(event) =>
+                                  updateReceipt(
+                                    line.id,
+                                    "locationId",
+                                    event.target.value,
+                                  )
+                                }
+                                disabled={busy}
+                                aria-label="Receipt location"
+                              >
+                                <option value="">Site receiving default</option>
+                                {locations
+                                  .filter((location) => !location.isQuarantine)
+                                  .map((location) => (
+                                    <option key={location.id} value={location.id}>
+                                      {location.code}
+                                    </option>
+                                  ))}
+                              </select>
+                              <input
+                                value={draft.idempotencyKey}
+                                onChange={(event) =>
+                                  updateReceipt(
+                                    line.id,
+                                    "idempotencyKey",
+                                    event.target.value,
+                                  )
+                                }
+                                disabled={busy}
+                                placeholder="Receipt key"
+                                aria-label="Receipt idempotency key"
                               />
                               <button
                                 type="button"
