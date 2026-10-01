@@ -5,6 +5,11 @@ import { writeAuditEvent } from "../audit.js";
 import { parseBarcode } from "../barcode.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
 import { InventoryError, receiveInventory } from "../inventory.js";
+import {
+  claimInventoryOperationKey,
+  completeInventoryOperationKey,
+  InventoryArchitectureError,
+} from "../inventoryArchitecture.js";
 
 type ScanBody = {
   rawBarcode?: string;
@@ -28,6 +33,8 @@ type ReceiveStockBody = {
   quantity?: number;
   source?: string;
   reference?: string;
+  locationId?: string;
+  unitCost?: number;
 };
 
 const productInclude = (siteId: string) => ({
@@ -224,7 +231,55 @@ export async function receivingRoutes(app: FastifyInstance) {
         });
       }
 
+      const idempotencyKey =
+        typeof request.headers["idempotency-key"] === "string"
+          ? request.headers["idempotency-key"]
+          : null;
+
       const result = await db.$transaction(async (tx) => {
+        const operationKey = await claimInventoryOperationKey(tx, {
+          siteId: actor.siteId,
+          operationType: "RECEIVING_STOCK",
+          idempotencyKey,
+        });
+
+        if (operationKey.duplicate) {
+          if (!operationKey.record?.resultEntityId) {
+            throw new InventoryArchitectureError(
+              409,
+              "IDEMPOTENT_OPERATION_IN_PROGRESS",
+              "A receiving operation with this idempotency key is already in progress.",
+            );
+          }
+          const priorTransaction = await tx.inventoryTransaction.findUnique({
+            where: { id: operationKey.record.resultEntityId },
+          });
+          if (!priorTransaction) {
+            throw new InventoryArchitectureError(
+              409,
+              "IDEMPOTENT_OPERATION_RESULT_MISSING",
+              "The prior receiving operation could not be reconstructed.",
+            );
+          }
+          const priorBalance = await tx.inventoryBalance.findUniqueOrThrow({
+            where: { id: priorTransaction.inventoryBalanceId },
+          });
+          const traceability = await recordTraceability(tx, {
+            siteId: actor.siteId,
+            productId: barcode.productId,
+            lotNumber,
+            expirationDate,
+          });
+          return {
+            duplicate: true,
+            traceability,
+            balance: priorBalance,
+            transaction: priorTransaction,
+            quarantineHold: null,
+            costLayer: null,
+          };
+        }
+
         const traceability = await recordTraceability(tx, {
           siteId: actor.siteId,
           productId: barcode.productId,
@@ -250,6 +305,9 @@ export async function receivingRoutes(app: FastifyInstance) {
           source: body.source,
           reference: body.reference,
           reason: "Inventory received from scanned stock",
+          locationId: body.locationId,
+          unitCost: body.unitCost,
+          preferredLocationTypes: ["RECEIVING", "UNASSIGNED"],
         });
 
         await writeAuditEvent(tx, {
@@ -269,17 +327,26 @@ export async function receivingRoutes(app: FastifyInstance) {
             quantity,
             source: body.source?.trim() || null,
             reference: body.reference?.trim() || null,
+            locationId: body.locationId ?? null,
+            unitCost: body.unitCost ?? null,
+            idempotencyKey,
           },
         });
 
+        await completeInventoryOperationKey(tx, operationKey.record?.id, {
+          resultEntityType: "InventoryTransaction",
+          resultEntityId: received.transaction.id,
+        });
+
         return {
+          duplicate: false,
           traceability,
           ...received,
         };
       });
 
       return reply.code(201).send({
-        status: "RECEIVED",
+        status: result.duplicate ? "DUPLICATE_IGNORED" : "RECEIVED",
         parsed,
         barcode,
         product: barcode.product,
@@ -294,10 +361,15 @@ export async function receivingRoutes(app: FastifyInstance) {
         transaction: result.transaction,
       });
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof InventoryArchitectureError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
+          ...(error instanceof InventoryError ||
+          error instanceof InventoryArchitectureError
             ? { code: error.code, details: error.details }
             : {}),
         });
