@@ -456,6 +456,140 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(await db.pointOfSaleLine.count({ where: { fillId } })).toBe(1);
   });
 
+  it("tracks relocate/rebag history, retires old bag barcodes, and closes the active barcode at pickup", async () => {
+    const patient = await makePatient();
+    const prescriptionId = await createPrescription(patient.id, 12);
+    const fillId = await createFill(prescriptionId, 12, 12);
+
+    const scanned = await scan(fillId, 12);
+    expect(scanned.json().adjudication.state).toBe("CASH_LABEL_READY");
+    await makeReady(prescriptionId);
+
+    const firstLocationBarcode =
+      `WC-HIST-A-${randomUUID().slice(0, 8)}`.toUpperCase();
+    const secondLocationBarcode =
+      `WC-HIST-B-${randomUUID().slice(0, 8)}`.toUpperCase();
+
+    for (const [barcode, suffix] of [
+      [firstLocationBarcode, "A"],
+      [secondLocationBarcode, "B"],
+    ] as const) {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/inventory/locations",
+        headers: pharmacistHeaders,
+        payload: {
+          code: `WCH${suffix}${randomUUID().replace(/-/g, "").slice(0, 6)}`.toUpperCase(),
+          name: `Phase 3K History Bin ${suffix}`,
+          type: "WILL_CALL",
+          barcode,
+        },
+      });
+      expect(created.statusCode).toBe(201);
+    }
+
+    const firstBag =
+      `WC-HISTORY-OLD-${randomUUID().slice(0, 8)}`.toUpperCase();
+    const nextBag =
+      `WC-HISTORY-NEW-${randomUUID().slice(0, 8)}`.toUpperCase();
+
+    const staged = await stage(fillId, firstBag, firstLocationBarcode);
+    expect(staged.bagBarcode).toBe(firstBag);
+
+    const relocated = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/will-call/relocate`,
+      headers: technicianHeaders,
+      payload: { locationBarcode: secondLocationBarcode },
+    });
+    expect(relocated.statusCode).toBe(200);
+    expect(relocated.json().package.location.barcode).toBe(
+      secondLocationBarcode,
+    );
+
+    const rebagged = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/will-call/rebag`,
+      headers: technicianHeaders,
+      payload: { bagBarcode: nextBag },
+    });
+    expect(rebagged.statusCode).toBe(200);
+    expect(rebagged.json().package.bagBarcode).toBe(nextBag);
+
+    const oldScan = await app.inject({
+      method: "GET",
+      url: `/api/will-call/packages/scan/${encodeURIComponent(firstBag)}`,
+      headers: technicianHeaders,
+    });
+    expect(oldScan.statusCode).toBe(409);
+    expect(oldScan.json().code).toBe("VOID_BAG_BARCODE");
+    expect(oldScan.json().details.currentBagBarcode).toBe(nextBag);
+
+    const reuseOld = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/will-call/rebag`,
+      headers: technicianHeaders,
+      payload: { bagBarcode: firstBag },
+    });
+    expect(reuseOld.statusCode).toBe(409);
+    expect(reuseOld.json().code).toBe("BAG_BARCODE_RETIRED");
+
+    const activeBeforePickup = await db.willCallBagBarcode.findMany({
+      where: { packageId: staged.id },
+      orderBy: { assignedAt: "asc" },
+    });
+    expect(activeBeforePickup.map((item) => [item.barcode, item.status])).toEqual([
+      [firstBag, "VOIDED"],
+      [nextBag, "ACTIVE"],
+    ]);
+
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/fills/${fillId}/will-call/history`,
+      headers: technicianHeaders,
+    });
+    expect(history.statusCode).toBe(200);
+    expect(
+      history.json().events.map((event: { eventType: string }) => event.eventType),
+    ).toEqual(["REBAGGED", "RELOCATED", "STAGED"]);
+
+    const quote = await app.inject({
+      method: "POST",
+      url: "/api/pos/quote",
+      headers: technicianHeaders,
+      payload: { fillIds: [fillId] },
+    });
+    expect(quote.statusCode).toBe(200);
+    expect(Number(quote.json().quote.totalDue)).toBe(3);
+
+    const checkout = await app.inject({
+      method: "POST",
+      url: "/api/pos/checkout",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [fillId],
+        tenders: [{ method: "CASH", amount: 3 }],
+        ...pickup(fillId, nextBag),
+        idempotencyKey: `3k-history-pickup-${randomUUID()}`,
+      },
+    });
+    expect(checkout.statusCode).toBe(200);
+
+    const activeAfterPickup = await db.willCallBagBarcode.findUniqueOrThrow({
+      where: { barcode: nextBag },
+    });
+    expect(activeAfterPickup.status).toBe("VOIDED");
+    expect(activeAfterPickup.voidedAt).not.toBeNull();
+
+    const finalHistory = await app.inject({
+      method: "GET",
+      url: `/api/fills/${fillId}/will-call/history`,
+      headers: technicianHeaders,
+    });
+    expect(finalHistory.statusCode).toBe(200);
+    expect(finalHistory.json().events[0].eventType).toBe("PICKED_UP");
+  });
+
   it("supports immediate pickup for a waiting patient without creating a Will Call package", async () => {
     const patient = await makePatient();
     const prescriptionId = await createPrescription(patient.id, 10);

@@ -3455,16 +3455,44 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           await cancelDemandForFill(tx, completion.id);
         }
 
-        await tx.willCallPackage.updateMany({
+        const stagedPackage = await tx.willCallPackage.findFirst({
           where: {
             fillId: id,
             status: "STAGED",
           },
-          data: {
-            status: "RETURNED_TO_STOCK",
-            returnedAt: new Date(),
-          },
+          include: { location: true },
         });
+        if (stagedPackage) {
+          const returnedAt = new Date();
+          await tx.willCallPackage.update({
+            where: { id: stagedPackage.id },
+            data: {
+              status: "RETURNED_TO_STOCK",
+              returnedAt,
+            },
+          });
+          await tx.willCallBagBarcode.updateMany({
+            where: {
+              packageId: stagedPackage.id,
+              status: "ACTIVE",
+            },
+            data: {
+              status: "VOIDED",
+              voidedAt: returnedAt,
+            },
+          });
+          await tx.willCallEvent.create({
+            data: {
+              siteId: actor.siteId,
+              packageId: stagedPackage.id,
+              eventType: "RETURNED_TO_STOCK",
+              actorId: actor.id,
+              oldBagBarcode: stagedPackage.bagBarcode,
+              fromLocationId: stagedPackage.locationId,
+              occurredAt: returnedAt,
+            },
+          });
+        }
 
         const rx = await tx.prescription.update({
           where: { id: fill.prescriptionId },
