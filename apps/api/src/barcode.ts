@@ -75,12 +75,16 @@ function parseParenthesizedGs1(raw: string, value: string) {
 
   for (let index = 0; index < matches.length; index += 1) {
     const match = matches[index];
+    if (!match) continue;
+
+    const ai = match[1];
+    if (!ai) continue;
+
     const start = (match.index ?? 0) + match[0].length;
-    const end =
-      index + 1 < matches.length
-        ? matches[index + 1].index ?? value.length
-        : value.length;
-    fields.set(match[1], value.slice(start, end).replaceAll(GS, "").trim());
+    const nextMatch = matches[index + 1];
+    const end = nextMatch?.index ?? value.length;
+
+    fields.set(ai, value.slice(start, end).replaceAll(GS, "").trim());
   }
 
   const gtin = fields.get("01");
