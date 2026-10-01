@@ -391,7 +391,6 @@ export type InventoryHold = {
   updatedAt: string;
   inventoryBalance: InventoryBalance;
   transactions: InventoryTransaction[];
-  custodyEvents?: TransferCustodyEvent[];
 };
 
 export type InventoryBalance = {
@@ -630,6 +629,7 @@ export type InventoryTransfer = {
   receivedAt: string | null;
   cancelledAt: string | null;
   transactions: InventoryTransaction[];
+  custodyEvents?: TransferCustodyEvent[];
 };
 
 export type RecallAffectedFill = {
