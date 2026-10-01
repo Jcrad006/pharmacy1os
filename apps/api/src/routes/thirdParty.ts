@@ -12,6 +12,7 @@ import {
 } from "../security/devIdentity.js";
 import {
   adjudicateFillClaims,
+  assertNoActivePaidClaimsForPatientCoverageMutation,
   ClaimError,
   markLabelPrintJobPrinted,
   reverseClaimTransaction,
@@ -285,6 +286,11 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "Active payer not found." });
       }
 
+      await assertNoActivePaidClaimsForPatientCoverageMutation(
+        patient.id,
+        actor.siteId,
+      );
+
       const coverage = await db.$transaction(async (tx) => {
         const existing = await tx.patientCoverage.findUnique({
           where: {
@@ -358,8 +364,13 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
 
       return { coverage };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -389,6 +400,11 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "Coverage not found." });
       }
 
+      await assertNoActivePaidClaimsForPatientCoverageMutation(
+        coverage.patientId,
+        actor.siteId,
+      );
+
       await db.$transaction(async (tx) => {
         await tx.patientCoverage.delete({ where: { id: coverage.id } });
         await writeAuditEvent(tx, {
@@ -408,8 +424,13 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
       });
       return reply.code(204).send();
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof ClaimError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof ClaimError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
