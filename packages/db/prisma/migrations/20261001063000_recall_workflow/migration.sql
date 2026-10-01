@@ -25,6 +25,9 @@ CREATE TABLE "InventoryRecall" (
 
 CREATE INDEX "InventoryRecall_siteId_productLotId_status_idx"
   ON "InventoryRecall"("siteId", "productLotId", "status");
+CREATE UNIQUE INDEX "InventoryRecall_one_open_per_site_lot_key"
+  ON "InventoryRecall"("siteId", "productLotId")
+  WHERE "status" = 'OPEN';
 CREATE INDEX "InventoryRecall_siteId_status_initiatedAt_idx"
   ON "InventoryRecall"("siteId", "status", "initiatedAt");
 CREATE INDEX "InventoryRecall_productId_productLotId_idx"
