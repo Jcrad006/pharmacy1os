@@ -844,6 +844,13 @@ model PrescriptionLabel {
   medicationSnapshot    String
   sigSnapshot           String
   physicalQuantity      Decimal                 @db.Decimal(10, 3)
+  containerQuantity     Decimal                 @db.Decimal(10, 3)
+  bottleNumber          Int                     @default(1)
+  bottleCount           Int                     @default(1)
+  physicalProductIdSnapshot String?
+  physicalNdcSnapshot   String?
+  manufacturerSnapshot  String?
+  productDescriptionSnapshot String?
   payerIntendedQuantity Decimal?                @db.Decimal(10, 3)
   daysSupply            Int?
   billedNdcSnapshot     String?
@@ -853,7 +860,7 @@ model PrescriptionLabel {
   voidReason            String?
   printJobs             LabelPrintJob[]
 
-  @@unique([fillId, version])
+  @@unique([fillId, version, bottleNumber])
   @@index([siteId, status, generatedAt])
   @@index([claimTransactionId])
 }

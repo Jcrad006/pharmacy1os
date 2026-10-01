@@ -265,7 +265,7 @@ export function ThirdParty({
       await load(query);
       onError(
         result.adjudication.state === "PAID_LABEL_READY"
-          ? "Claim paid. Dispensing label is queued for printing."
+          ? `Claim paid. ${result.adjudication.labels.length} bottle label${result.adjudication.labels.length === 1 ? "" : "s"} queued.`
           : result.adjudication.state === "REJECTED"
             ? "Claim remains rejected. Review the payer response below."
             : result.adjudication.state === "ERROR"
@@ -289,21 +289,33 @@ export function ThirdParty({
       return;
     }
 
-    popup.document.title = `Rx label ${label.rxNumberSnapshot ?? label.id}`;
+    popup.document.title = `Rx label ${label.rxNumberSnapshot ?? label.id} · Bottle ${label.bottleNumber} of ${label.bottleCount}`;
     const sheet = popup.document.createElement("pre");
     sheet.style.whiteSpace = "pre-wrap";
     sheet.style.fontFamily = "system-ui, sans-serif";
     sheet.style.fontSize = "16px";
     sheet.style.padding = "24px";
     sheet.textContent = [
-      `Rx ${label.rxNumberSnapshot ?? "—"} · label v${label.version}`,
+      `Rx ${label.rxNumberSnapshot ?? "—"} · label set v${label.version}`,
+      `BOTTLE ${label.bottleNumber} OF ${label.bottleCount}`,
       label.patientNameSnapshot,
       label.medicationSnapshot,
+      label.productDescriptionSnapshot
+        ? `Product: ${label.productDescriptionSnapshot}`
+        : "",
+      label.manufacturerSnapshot
+        ? `Manufacturer: ${label.manufacturerSnapshot}`
+        : "",
+      label.physicalNdcSnapshot
+        ? `NDC: ${label.physicalNdcSnapshot}`
+        : "",
+      `Quantity: ${String(label.containerQuantity)} / ${String(label.physicalQuantity)} total`,
       `SIG: ${label.sigSnapshot}`,
-      `Qty: ${String(label.physicalQuantity)}`,
       `Days supply: ${label.daysSupply ?? "—"}`,
       `Prescriber: ${label.prescriberNameSnapshot}`,
-      label.billedNdcSnapshot ? `Billed NDC: ${label.billedNdcSnapshot}` : "",
+      label.billedNdcSnapshot
+        ? `Claim billed NDC: ${label.billedNdcSnapshot}`
+        : "",
     ].filter(Boolean).join("\n");
     popup.document.body.appendChild(sheet);
     popup.focus();
@@ -468,9 +480,11 @@ export function ThirdParty({
             <span className="queue-count">{printQueue.length}</span>
           </div>
           <p className="directory-help">
-            Labels enter this queue only after an eligible paid claim, a linked
-            completion of that paid claim, or a cash fill. Quantity shown is the
-            physical dispense quantity, not the payer-intended claim quantity.
+            Each distinct physical NDC receives its own bottle label and queue
+            item after an eligible paid claim, a linked completion of that paid
+            claim, or a cash fill. Bottle 1 is the largest physical NDC quantity
+            (with the claim NDC used as the tie-breaker); each label shows its
+            bottle quantity out of the total physical dispense quantity.
           </p>
           <div className="coverage-slot-list">
             {printQueue.map((job) => (
@@ -486,10 +500,24 @@ export function ThirdParty({
                   <span className="status-chip">QUEUED</span>
                 </div>
                 <div className="coverage-payer-metadata">
+                  <span>
+                    Bottle {job.label.bottleNumber} of {job.label.bottleCount}
+                  </span>
                   <span>{job.label.medicationSnapshot}</span>
-                  <span>Physical qty {String(job.label.physicalQuantity)}</span>
+                  <span>
+                    {job.label.productDescriptionSnapshot ?? "Physical product"}
+                  </span>
+                  <span>
+                    Qty {String(job.label.containerQuantity)} /{" "}
+                    {String(job.label.physicalQuantity)} total
+                  </span>
                   <span>Days {job.label.daysSupply ?? "—"}</span>
-                  <span>NDC {job.label.billedNdcSnapshot ?? "cash / none"}</span>
+                  <span>
+                    NDC {job.label.physicalNdcSnapshot ?? "—"}
+                    {job.label.manufacturerSnapshot
+                      ? ` · ${job.label.manufacturerSnapshot}`
+                      : ""}
+                  </span>
                 </div>
                 <p className="directory-help">SIG: {job.label.sigSnapshot}</p>
                 {editable && (

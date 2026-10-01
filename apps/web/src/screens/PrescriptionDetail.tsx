@@ -388,7 +388,7 @@ export function PrescriptionDetail({
       });
       const suffix =
         result.adjudication?.state === "PAID_LABEL_READY"
-          ? " Claim paid and dispensing label queued."
+          ? ` Claim paid and ${result.adjudication.labels.length} bottle label${result.adjudication.labels.length === 1 ? "" : "s"} queued.`
           : result.adjudication?.state === "REJECTED"
             ? " Claim rejected and routed to Third Party."
             : result.adjudication?.state === "ERROR"
@@ -1299,8 +1299,11 @@ export function PrescriptionDetail({
                     tie-break selection. If the physical source mix is corrected
                     after payment, the active claim is reversed before the
                     corrected fill is re-adjudicated. The claim still uses the
-                    payer-intended full-fill quantity while the dispensing label
-                    uses the physical quantity in this part.
+                    payer-intended full-fill quantity. Each distinct physical NDC
+                    receives its own bottle label, ordered by physical quantity,
+                    with Bottle 1 representing the largest/majority NDC. Each
+                    bottle label records that NDC's quantity out of the total
+                    physical quantity for the dispense part.
                   </p>
                 </div>
 

@@ -1074,6 +1074,13 @@ export type PrescriptionLabel = {
   medicationSnapshot: string;
   sigSnapshot: string;
   physicalQuantity: string | number;
+  containerQuantity: string | number;
+  bottleNumber: number;
+  bottleCount: number;
+  physicalProductIdSnapshot: string | null;
+  physicalNdcSnapshot: string | null;
+  manufacturerSnapshot: string | null;
+  productDescriptionSnapshot: string | null;
   payerIntendedQuantity: string | number | null;
   daysSupply: number | null;
   billedNdcSnapshot: string | null;
@@ -1103,4 +1110,6 @@ export type ClaimAdjudicationResult = {
   transactions: ClaimTransaction[];
   label: PrescriptionLabel | null;
   printJob: LabelPrintJob | null;
+  labels: PrescriptionLabel[];
+  printJobs: LabelPrintJob[];
 };
