@@ -33,11 +33,14 @@ type PolicyBody = {
   productId?: string | null;
   reorderPoint?: number | null;
   parLevel?: number | null;
+  maxStockLevel?: number | null;
   minShelfLifeDays?: number | null;
   expirationWarningDays?: number;
   fefoEnabled?: boolean;
   preferredSupplierName?: string | null;
   adjustmentApprovalThreshold?: number | null;
+  allowTechnicianAdjustments?: boolean;
+  requiredLocationType?: string | null;
   requireTransferSecondCheck?: boolean;
   staleReservationHours?: number;
 };
@@ -311,6 +314,9 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
         (body.parLevel !== undefined &&
           body.parLevel !== null &&
           body.parLevel < 0) ||
+        (body.maxStockLevel !== undefined &&
+          body.maxStockLevel !== null &&
+          body.maxStockLevel < 0) ||
         (body.minShelfLifeDays !== undefined &&
           body.minShelfLifeDays !== null &&
           body.minShelfLifeDays < 0) ||
@@ -335,6 +341,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             productId: body.productId ?? null,
             reorderPoint: body.reorderPoint ?? null,
             parLevel: body.parLevel ?? null,
+            maxStockLevel: body.maxStockLevel ?? null,
             minShelfLifeDays: body.minShelfLifeDays ?? null,
             expirationWarningDays: body.expirationWarningDays ?? 90,
             fefoEnabled: body.fefoEnabled ?? true,
@@ -342,6 +349,11 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
               body.preferredSupplierName?.trim() || null,
             adjustmentApprovalThreshold:
               body.adjustmentApprovalThreshold ?? null,
+            allowTechnicianAdjustments:
+              body.allowTechnicianAdjustments ?? false,
+            requiredLocationType: body.requiredLocationType
+              ? (body.requiredLocationType as any)
+              : null,
             requireTransferSecondCheck:
               body.requireTransferSecondCheck ?? false,
             staleReservationHours: body.staleReservationHours ?? 24,
@@ -353,6 +365,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             productId: body.productId ?? null,
             reorderPoint: body.reorderPoint ?? null,
             parLevel: body.parLevel ?? null,
+            maxStockLevel: body.maxStockLevel ?? null,
             minShelfLifeDays: body.minShelfLifeDays ?? null,
             expirationWarningDays: body.expirationWarningDays ?? 90,
             fefoEnabled: body.fefoEnabled ?? true,
@@ -360,6 +373,11 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
               body.preferredSupplierName?.trim() || null,
             adjustmentApprovalThreshold:
               body.adjustmentApprovalThreshold ?? null,
+            allowTechnicianAdjustments:
+              body.allowTechnicianAdjustments ?? false,
+            requiredLocationType: body.requiredLocationType
+              ? (body.requiredLocationType as any)
+              : null,
             requireTransferSecondCheck:
               body.requireTransferSecondCheck ?? false,
             staleReservationHours: body.staleReservationHours ?? 24,
@@ -1044,6 +1062,42 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             availableQuantity: available.toString(),
             reorderPoint: policy.reorderPoint.toString(),
           });
+        }
+
+        if (
+          policy?.maxStockLevel !== null &&
+          policy?.maxStockLevel !== undefined &&
+          balance.onHandQuantity.gt(policy.maxStockLevel)
+        ) {
+          exceptions.push({
+            kind: "ABOVE_MAX_STOCK",
+            severity: "INFO",
+            balanceId: balance.id,
+            productId: balance.productId,
+            onHandQuantity: balance.onHandQuantity.toString(),
+            maxStockLevel: policy.maxStockLevel.toString(),
+          });
+        }
+
+        if (policy?.requiredLocationType) {
+          const misplaced = balance.positions.filter(
+            (position) =>
+              position.quantity.gt(0) &&
+              position.location.type !== policy.requiredLocationType,
+          );
+          if (misplaced.length > 0) {
+            exceptions.push({
+              kind: "STORAGE_POLICY_MISMATCH",
+              severity: "HIGH",
+              balanceId: balance.id,
+              requiredLocationType: policy.requiredLocationType,
+              locations: misplaced.map((position) => ({
+                code: position.location.code,
+                type: position.location.type,
+                quantity: position.quantity.toString(),
+              })),
+            });
+          }
         }
 
         if (
