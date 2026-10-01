@@ -416,19 +416,14 @@ export async function receivingRoutes(app: FastifyInstance) {
           },
         });
 
-        let traceability = { lot: null, expiration: null } as {
-          lot: Awaited<ReturnType<typeof tx.productLot.findFirst>>;
-          expiration: Awaited<ReturnType<typeof tx.productExpiration.findFirst>>;
-        };
-
-        if (parsed) {
-          traceability = await recordTraceability(tx, {
-            siteId: actor.siteId,
-            productId: newProduct.id,
-            lotNumber: parsed.lotNumber,
-            expirationDate: parsed.expirationDate,
-          });
-        }
+        const traceability = parsed
+          ? await recordTraceability(tx, {
+              siteId: actor.siteId,
+              productId: newProduct.id,
+              lotNumber: parsed.lotNumber,
+              expirationDate: parsed.expirationDate,
+            })
+          : { lot: null, expiration: null };
 
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
