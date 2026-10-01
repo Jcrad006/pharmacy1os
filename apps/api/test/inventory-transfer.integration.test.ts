@@ -21,7 +21,9 @@ afterAll(async () => {
 
 describe("Phase 3H site inventory transfers", () => {
   it("ships, receives, and cancels inventory with source/destination ledger entries", async () => {
-    const suffix = randomUUID().replace(/-/g, "").slice(0, 6);
+    const suffix = Math.floor(Math.random() * 1_000_000)
+      .toString()
+      .padStart(6, "0");
     const gtin = `0033333${suffix}0`;
     const lotNumber = `XFER-${suffix}`;
     const rawBarcode = `(01)${gtin}(17)291231(10)${lotNumber}`;
