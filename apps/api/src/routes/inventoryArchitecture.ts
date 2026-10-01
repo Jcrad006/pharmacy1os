@@ -519,6 +519,70 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/inventory/exceptions/:id/resolve", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:correct");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as { resolutionNote?: string };
+      const resolutionNote = body.resolutionNote?.trim();
+
+      if (!resolutionNote) {
+        return reply.code(400).send({
+          error: "An inventory-exception resolution note is required.",
+        });
+      }
+
+      const exception = await db.inventoryException.findFirst({
+        where: { id, siteId: actor.siteId },
+      });
+
+      if (!exception) {
+        return reply.code(404).send({
+          error: "Inventory exception not found.",
+        });
+      }
+
+      if (exception.status === "RESOLVED") {
+        return reply.code(409).send({
+          error: "Inventory exception is already resolved.",
+        });
+      }
+
+      const resolved = await db.$transaction(async (tx) => {
+        const updated = await tx.inventoryException.update({
+          where: { id },
+          data: {
+            status: "RESOLVED",
+            resolvedById: actor.id,
+            resolvedAt: new Date(),
+            resolutionNote,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "INVENTORY_EXCEPTION_RESOLVED",
+          entityType: "InventoryException",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            type: exception.type,
+            entityType: exception.entityType,
+            entityId: exception.entityId,
+            resolutionNote,
+          },
+        });
+
+        return updated;
+      });
+
+      return { exception: resolved };
+    } catch (error) {
+      return knownError(reply, error);
+    }
+  });
+
   app.post("/inventory/discrepancies", async (request, reply) => {
     try {
       const actor = await resolveDevelopmentActor(request, "inventory:write");
