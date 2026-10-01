@@ -180,7 +180,11 @@
 - [x] All-or-nothing pharmacist/admin approval with audited ledger adjustments
 - [x] Cycle-count rejection without inventory mutation
 - [x] Cycle-count workstation embedded in F9 Inventory
-- [ ] Inventory transfers between pharmacy sites
+- [x] Inventory transfers between pharmacy sites
+- [x] Pharmacist/admin-controlled transfer shipment from available stock
+- [x] Destination-site receipt with recreated lot/expiration traceability
+- [x] In-transit cancellation with source-ledger restoration
+- [x] Explicit TRANSFER_OUT / TRANSFER_IN / TRANSFER_CANCEL_RETURN ledger movements
 - [x] Damaged/expired/quarantined stock disposition
 - [x] Quarantined quantity excluded from Product Fill availability
 - [x] Staff quarantine action with reason code and optional note
@@ -189,8 +193,19 @@
 - [x] Immutable quarantine/release/disposition ledger deltas and audit events
 - [x] Cycle-count snapshots and stale checks include quarantined quantity
 - [x] F9 quarantine hold queue with active and resolved history
-- [ ] Recall workflow linking affected on-hand stock and dispensed fills
-- [ ] Purchase orders and wholesaler receiving reconciliation
+- [x] Recall workflow linking affected on-hand stock and dispensed fills
+- [x] Product-wide or lot-specific recall cases
+- [x] Automatic quarantine of currently available recalled stock
+- [x] Automatic quarantine of newly received stock under an active recall
+- [x] Recalled stock blocked at Product Fill reservation and pharmacist verification
+- [x] Sold-fill/patient exposure linkage for recall follow-up
+- [x] Recall closure documentation without silently releasing quarantine holds
+- [x] Purchase orders and wholesaler receiving reconciliation
+- [x] Multi-line purchase orders by product/NDC
+- [x] Partial receipt tracking with lot/expiration and invoice reference
+- [x] Ordered-vs-received quantity reconciliation with over-receipt prevention
+- [x] PO receipts linked to inventory balances and immutable RECEIVE transactions
+- [x] Pharmacist/admin cancellation of unreceived purchase-order remainder
 
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
