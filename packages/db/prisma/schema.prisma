@@ -625,7 +625,6 @@ model CycleCountSession {
   lines         CycleCountLine[]
 
   @@index([siteId, status, createdAt])
-  @@index([siteId, expectedDeliveryAt, status])
   @@index([createdById, createdAt])
   @@index([submittedById, submittedAt])
   @@index([reviewedById, reviewedAt])
@@ -811,6 +810,7 @@ model PurchaseOrder {
 
   @@unique([siteId, orderNumber])
   @@index([siteId, status, createdAt])
+  @@index([siteId, expectedDeliveryAt, status])
   @@index([supplierName])
 }
 
