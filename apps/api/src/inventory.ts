@@ -115,6 +115,12 @@ export async function receiveInventory(
     source?: string | null;
     reference?: string | null;
     reason?: string | null;
+    locationId?: string | null;
+    unitCost?: number | string | Prisma.Decimal | null;
+    preferredLocationTypes?: Array<
+      "DISPENSING" | "RECEIVING" | "REFRIGERATOR" | "FREEZER" | "SAFE" |
+      "QUARANTINE" | "RETURN_TO_VENDOR" | "OVERFLOW" | "UNASSIGNED" | "OTHER"
+    >;
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
@@ -159,6 +165,27 @@ export async function receiveInventory(
     },
   });
 
+  await addInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: locked.id,
+    quantity,
+    actorId: input.actorId,
+    locationId: input.locationId,
+    reason: input.reason?.trim() || "Inventory received",
+    preferredTypes: input.preferredLocationTypes ?? ["RECEIVING", "UNASSIGNED"],
+  });
+
+  const costLayer = await recordInventoryCostLayer(tx, {
+    siteId: input.siteId,
+    inventoryBalanceId: locked.id,
+    productId: input.productId,
+    sourceTransactionId: transaction.id,
+    quantity,
+    unitCost: input.unitCost,
+    sourceType: input.source?.trim() || "RECEIVE",
+    reference: input.reference,
+  });
+
   const lot = await tx.productLot.findUnique({
     where: { id: input.productLotId },
     select: { lotNumber: true, lotNumberSearch: true },
@@ -194,10 +221,11 @@ export async function receiveInventory(
       balance: held.balance,
       transaction,
       quarantineHold: held.hold,
+      costLayer,
     };
   }
 
-  return { balance: updated, transaction, quarantineHold: null };
+  return { balance: updated, transaction, quarantineHold: null, costLayer };
 }
 
 export async function releaseInventoryReservation(
@@ -492,6 +520,20 @@ export async function commitInventoryForFill(
     },
   });
 
+  await removeInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    reason: "Dispensed inventory removed from physical stock",
+  });
+
+  const costConsumption = await consumeInventoryCostLayers(tx, {
+    balanceId: balance.id,
+    fillId: fill.id,
+    quantity,
+  });
+
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
@@ -500,7 +542,7 @@ export async function commitInventoryForFill(
     },
   });
 
-  return { committedAt };
+  return { committedAt, costConsumption };
 }
 
 export async function returnInventoryForFill(
@@ -554,6 +596,16 @@ export async function returnInventoryForFill(
       reason: input.reason,
     },
   });
+
+  await addInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    reason: input.reason,
+    preferredTypes: ["DISPENSING", "UNASSIGNED"],
+  });
+  await reverseInventoryCostConsumption(tx, fill.id);
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
@@ -625,6 +677,25 @@ export async function adjustInventoryBalance(
       reference: input.reference?.trim() || null,
     },
   });
+
+  if (delta.gt(0)) {
+    await addInventoryPosition(tx, {
+      siteId: input.siteId,
+      balanceId: balance.id,
+      quantity: delta,
+      actorId: input.actorId,
+      reason: input.reason,
+      preferredTypes: ["UNASSIGNED"],
+    });
+  } else {
+    await removeInventoryPosition(tx, {
+      siteId: input.siteId,
+      balanceId: balance.id,
+      quantity: delta.abs(),
+      actorId: input.actorId,
+      reason: input.reason,
+    });
+  }
 
   return { balance: updated, transaction };
 }
@@ -868,6 +939,14 @@ export async function disposeInventoryHold(
       source: input.dispositionType,
       reference: hold.id,
     },
+  });
+
+  await removeInventoryPosition(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity: hold.quantity,
+    actorId: input.actorId,
+    reason: `Disposition: ${input.dispositionType}`,
   });
 
   const resolved = await tx.inventoryHold.update({
