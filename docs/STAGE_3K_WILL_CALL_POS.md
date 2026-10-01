@@ -11,12 +11,14 @@ Pharmacist verifies fill
         ↓
 READY + committed inventory + active label
         ↓
-Stage physical prescription
-        ↓
-WillCallPackage
-  - unique bag barcode
-  - active WILL_CALL location/bin
-  - optional scanned location barcode
+        ├── patient waiting → IMMEDIATE pickup (no bag/bin staging)
+        │
+        └── patient not waiting → Stage physical prescription
+                                  ↓
+                            WillCallPackage
+                              - unique bag barcode
+                              - active WILL_CALL location/bin
+                              - optional scanned location barcode
         ↓
 Pickup quote
   - insured: final active paid COB patient responsibility
@@ -41,7 +43,9 @@ Atomic POS completion
 
 Each pharmacy site receives a default `WILL_CALL` inventory location during migration/bootstrap. Additional Will Call bins can be configured in the inventory architecture workspace. Locations may have a unique site-scoped barcode.
 
-A Ready fill must be staged into exactly one `WillCallPackage`. That package owns a unique bag barcode and points to the physical Will Call location. The pickup API refuses to quote an unstaged fill and refuses checkout when the scanned bag does not match the selected fill.
+A Ready fill that enters physical Will Call must be staged into exactly one `WillCallPackage`. That package owns a unique bag barcode and points to the physical Will Call location. A normal `WILL_CALL` pickup refuses to quote an unstaged fill and refuses checkout when the scanned bag does not match the selected fill.
+
+A separate `IMMEDIATE` fulfillment mode is available when the patient is physically waiting at the pharmacy at the time the pharmacist verifies the fill. Immediate pickup requires the fill to be `READY`, to have an active label, and to have **no** Will Call package. It skips bag/bin staging but does not skip the controlled POS boundary: patient amount, identity verification, signature, tender, claim linkage, sale-state transitions, and audit events are still required. If the fill has already been staged, staff must use the normal Will Call checkout rather than bypassing the package scan.
 
 The package lifecycle is intentionally simple:
 
@@ -112,7 +116,7 @@ The older generic prescription-status endpoint blocks direct `READY → SOLD` tr
 
 ## Audit and idempotency
 
-Each checkout has a unique idempotency key and unique receipt number. Retrying the same idempotency key replays the prior POS result instead of creating a second sale.
+Each checkout has a unique idempotency key and unique receipt number. Retrying the same idempotency key replays the prior POS result instead of creating a second sale. The POS transaction also persists whether pickup occurred through `WILL_CALL` or `IMMEDIATE` fulfillment so reporting and audit history preserve the physical workflow used.
 
 Audit events record the transaction, fill, price basis, claim link, Will Call package/location, patient amount, tender methods, and pickup-verification method. Sensitive verification input that does not need to be retained, such as the DOB value entered at pickup, is not copied into the audit metadata.
 
