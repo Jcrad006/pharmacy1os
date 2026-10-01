@@ -125,11 +125,18 @@ export function InventoryArchitecture({
   const [policyMedicationId, setPolicyMedicationId] = useState("");
   const [reorderPoint, setReorderPoint] = useState("");
   const [parLevel, setParLevel] = useState("");
+  const [maxStockLevel, setMaxStockLevel] = useState("");
   const [minShelfLifeDays, setMinShelfLifeDays] = useState("");
   const [expirationWarningDays, setExpirationWarningDays] = useState("90");
   const [preferredSupplier, setPreferredSupplier] = useState("");
   const [staleReservationHours, setStaleReservationHours] = useState("24");
   const [fefoEnabled, setFefoEnabled] = useState(true);
+  const [allowTechnicianAdjustments, setAllowTechnicianAdjustments] =
+    useState(false);
+  const [requiredLocationType, setRequiredLocationType] =
+    useState<InventoryLocationType | "">("");
+  const [adjustmentApprovalThreshold, setAdjustmentApprovalThreshold] =
+    useState("");
   const [requireTransferSecondCheck, setRequireTransferSecondCheck] =
     useState(false);
 
@@ -366,12 +373,18 @@ export function InventoryArchitecture({
           policyScope === "MEDICATION" ? policyMedicationId : null,
         reorderPoint: reorderPoint ? Number(reorderPoint) : null,
         parLevel: parLevel ? Number(parLevel) : null,
+        maxStockLevel: maxStockLevel ? Number(maxStockLevel) : null,
         minShelfLifeDays: minShelfLifeDays
           ? Number(minShelfLifeDays)
           : null,
         expirationWarningDays: Number(expirationWarningDays || 90),
         fefoEnabled,
         preferredSupplierName: preferredSupplier.trim() || null,
+        adjustmentApprovalThreshold: adjustmentApprovalThreshold
+          ? Number(adjustmentApprovalThreshold)
+          : null,
+        allowTechnicianAdjustments,
+        requiredLocationType: requiredLocationType || null,
         requireTransferSecondCheck,
         staleReservationHours: Number(staleReservationHours || 24),
       }),
@@ -981,6 +994,10 @@ export function InventoryArchitecture({
               <input value={parLevel} onChange={(e) => setParLevel(e.target.value)} type="number" min="0" />
             </label>
             <label>
+              Maximum stock level
+              <input value={maxStockLevel} onChange={(e) => setMaxStockLevel(e.target.value)} type="number" min="0" />
+            </label>
+            <label>
               Minimum shelf life (days)
               <input value={minShelfLifeDays} onChange={(e) => setMinShelfLifeDays(e.target.value)} type="number" min="0" />
             </label>
@@ -995,6 +1012,46 @@ export function InventoryArchitecture({
             <label>
               Preferred supplier
               <input value={preferredSupplier} onChange={(e) => setPreferredSupplier(e.target.value)} />
+            </label>
+            <label>
+              Required storage type
+              <select
+                value={requiredLocationType}
+                onChange={(event) =>
+                  setRequiredLocationType(
+                    event.target.value as InventoryLocationType | "",
+                  )
+                }
+              >
+                <option value="">No required storage type</option>
+                {locationTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type.replaceAll("_", " ")}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Technician adjustment threshold
+              <input
+                value={adjustmentApprovalThreshold}
+                onChange={(event) =>
+                  setAdjustmentApprovalThreshold(event.target.value)
+                }
+                type="number"
+                min="0"
+                placeholder="Maximum technician-adjustable quantity"
+              />
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={allowTechnicianAdjustments}
+                onChange={(event) =>
+                  setAllowTechnicianAdjustments(event.target.checked)
+                }
+              />
+              Allow technician/intern adjustments within threshold
             </label>
             <label className="checkbox-label">
               <input type="checkbox" checked={fefoEnabled} onChange={(e) => setFefoEnabled(e.target.checked)} />
@@ -1024,7 +1081,9 @@ export function InventoryArchitecture({
                 <th>Policy</th>
                 <th>Reorder</th>
                 <th>Par</th>
+                <th>Max</th>
                 <th>Min shelf</th>
+                <th>Storage</th>
                 <th>FEFO</th>
                 <th>Supplier</th>
               </tr>
@@ -1035,7 +1094,9 @@ export function InventoryArchitecture({
                   <td>{policy.policyKey}</td>
                   <td>{quantity(policy.reorderPoint)}</td>
                   <td>{quantity(policy.parLevel)}</td>
+                  <td>{quantity(policy.maxStockLevel)}</td>
                   <td>{policy.minShelfLifeDays ?? "—"}</td>
+                  <td>{policy.requiredLocationType?.replaceAll("_", " ") ?? "—"}</td>
                   <td>{policy.fefoEnabled ? "Yes" : "No"}</td>
                   <td>{policy.preferredSupplierName ?? "—"}</td>
                 </tr>
