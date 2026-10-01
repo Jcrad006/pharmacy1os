@@ -4,7 +4,9 @@
   "private": true,
   "description": "Linux-friendly pharmacy operations platform",
   "packageManager": "pnpm@10.17.1",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "pnpm --parallel --filter @pharmacy1os/api --filter @pharmacy1os/web dev",
     "build": "pnpm -r build",
@@ -15,6 +17,7 @@
     "db:migrate": "pnpm --filter @pharmacy1os/db migrate",
     "db:deploy": "pnpm --filter @pharmacy1os/db migrate:deploy",
     "db:seed": "pnpm --filter @pharmacy1os/db seed",
-    "db:studio": "pnpm --filter @pharmacy1os/db studio"
+    "db:studio": "pnpm --filter @pharmacy1os/db studio",
+    "start": "SERVE_WEB=true pnpm --filter @pharmacy1os/api start"
   }
 }
