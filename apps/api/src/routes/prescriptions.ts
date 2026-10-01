@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type {
-  FillStatus,
-  PrescriptionStatus,
+import {
   Prisma,
+  type FillStatus,
+  type PrescriptionStatus,
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
