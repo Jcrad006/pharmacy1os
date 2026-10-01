@@ -55,7 +55,9 @@ import type {
   PickupFulfillmentMode,
   PickupIdentityMethod,
   PickupSignatureMethod,
+  WillCallEvent,
   WillCallPackage,
+  WillCallScanResult,
 } from "./types";
 
 type ApiOptions = RequestInit & {
@@ -138,6 +140,60 @@ export async function stageWillCallPackage(
       devUser,
       body: JSON.stringify(input ?? {}),
     },
+  );
+}
+
+export async function rebagWillCallPackage(
+  devUser: string,
+  fillId: string,
+  bagBarcode: string,
+) {
+  return request<{ package: WillCallPackage }>(
+    `/api/fills/${fillId}/will-call/rebag`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ bagBarcode }),
+    },
+  );
+}
+
+export async function relocateWillCallPackage(
+  devUser: string,
+  fillId: string,
+  input: {
+    locationId?: string | null;
+    locationBarcode?: string | null;
+  },
+) {
+  return request<{ package: WillCallPackage }>(
+    `/api/fills/${fillId}/will-call/relocate`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function getWillCallHistory(
+  devUser: string,
+  fillId: string,
+) {
+  const result = await request<{ events: WillCallEvent[] }>(
+    `/api/fills/${fillId}/will-call/history`,
+    { devUser },
+  );
+  return result.events;
+}
+
+export async function scanWillCallBarcode(
+  devUser: string,
+  barcode: string,
+) {
+  return request<WillCallScanResult>(
+    `/api/will-call/packages/scan/${encodeURIComponent(barcode.trim())}`,
+    { devUser },
   );
 }
 
