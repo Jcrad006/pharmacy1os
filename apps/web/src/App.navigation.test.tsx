@@ -100,6 +100,15 @@ describe("primary workstation buttons", () => {
       });
 
       expect(container.querySelector("h1")?.textContent).toBe(expectedHeading);
+
+      if (expectedHeading === "Inventory Ledger") {
+        const text = container.textContent ?? "";
+        expect(text).toContain("Inter-site transfers");
+        expect(text).toContain("Purchase orders");
+        expect(text).toContain("Recall management");
+        expect(text).toContain("Quarantine & disposition");
+        expect(text).toContain("Cycle counts");
+      }
     }
   });
 });
