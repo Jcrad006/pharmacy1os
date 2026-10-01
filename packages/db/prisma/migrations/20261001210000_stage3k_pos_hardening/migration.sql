@@ -9,6 +9,42 @@ ALTER TABLE "InventoryLocation" ADD COLUMN "barcode" TEXT;
 CREATE UNIQUE INDEX "InventoryLocation_siteId_barcode_key"
   ON "InventoryLocation"("siteId", "barcode");
 
+
+INSERT INTO "InventoryLocation" (
+  "id",
+  "siteId",
+  "code",
+  "name",
+  "type",
+  "active",
+  "isDefaultReceiving",
+  "isDefaultDispensing",
+  "isQuarantine",
+  "barcode",
+  "createdAt",
+  "updatedAt"
+)
+SELECT
+  'location-will-call-' || site."id",
+  site."id",
+  'WILL-CALL',
+  'Will Call',
+  'WILL_CALL'::"InventoryLocationType",
+  true,
+  false,
+  false,
+  false,
+  'WC-DEFAULT-' || site."id",
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+FROM "PharmacySite" site
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM "InventoryLocation" existing
+  WHERE existing."siteId" = site."id"
+    AND existing."code" = 'WILL-CALL'
+);
+
 CREATE TABLE "PointOfSaleTransaction" (
   "id" TEXT NOT NULL,
   "siteId" TEXT NOT NULL,
