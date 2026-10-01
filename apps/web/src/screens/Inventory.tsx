@@ -5,6 +5,7 @@ import {
 } from "../api";
 import type { DevUser, InventoryBalance } from "../types";
 import { canCorrectInventory } from "../workflow";
+import { CycleCounts } from "./CycleCounts";
 
 function quantity(value: string | number) {
   return Number(value).toLocaleString(undefined, {
@@ -260,6 +261,12 @@ export function Inventory({
           </div>
         </div>
       )}
+      <CycleCounts
+        devUser={devUser}
+        user={user}
+        onError={onError}
+        onBalancesChanged={refresh}
+      />
     </section>
   );
 }
