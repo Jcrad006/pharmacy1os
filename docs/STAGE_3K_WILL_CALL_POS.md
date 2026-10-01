@@ -45,16 +45,28 @@ Each pharmacy site receives a default `WILL_CALL` inventory location during migr
 
 A Ready fill that enters physical Will Call must be staged into exactly one `WillCallPackage`. That package owns a unique bag barcode and points to the physical Will Call location. A normal `WILL_CALL` pickup refuses to quote an unstaged fill and refuses checkout when the scanned bag does not match the selected fill.
 
+F3 is scan-first. The workstation keeps a scanner landing field available when no other action is active. Scanning an active bag opens that staged prescription's pickup flow; scanning a Will Call bin shows the staged packages currently assigned there. During initial staging, scanners that send Enter can drive the sequence as `bag → bin → confirm` without mouse input. Focus returns to the scanner after completed staging, pickup, cancellation, or return-to-stock work.
+
 A separate `IMMEDIATE` fulfillment mode is available when the patient is physically waiting at the pharmacy at the time the pharmacist verifies the fill. Immediate pickup requires the fill to be `READY`, to have an active label, and to have **no** Will Call package. It skips bag/bin staging but does not skip the controlled POS boundary: patient amount, identity verification, signature, tender, claim linkage, sale-state transitions, and audit events are still required. If the fill has already been staged, staff must use the normal Will Call checkout rather than bypassing the package scan.
 
-The package lifecycle is intentionally simple:
+The package lifecycle remains intentionally simple:
 
 ```text
 STAGED → PICKED_UP
    └──→ RETURNED_TO_STOCK
 ```
 
-A sold package cannot be restaged through the normal staging endpoint.
+Physical changes inside the `STAGED` state are explicit operations rather than generic restaging:
+
+- **Move Bin** changes the package's Will Call location while keeping the same bag barcode.
+- **Replace Bag** assigns a new physical bag barcode while keeping the package/fill identity.
+- The old barcode is permanently retired and cannot be reused for another prescription.
+- Scanning a retired barcode returns a specific warning and identifies the current bag when the package is still active.
+- The staging endpoint refuses to silently overwrite an already-staged package; staff must use the explicit move or replace-bag action.
+
+Every physical transition is recorded in `WillCallEvent` history as `STAGED`, `RELOCATED`, `REBAGGED`, `PICKED_UP`, or `RETURNED_TO_STOCK`. F3 can display this custody history with the acting staff member, timestamp, prior/new bag barcode, and prior/new location where applicable.
+
+A sold or returned package cannot be restaged through the normal staging endpoint.
 
 ## Patient amount due
 
@@ -118,7 +130,7 @@ The older generic prescription-status endpoint blocks direct `READY → SOLD` tr
 
 Each checkout has a unique idempotency key and unique receipt number. Retrying the same idempotency key replays the prior POS result instead of creating a second sale. The POS transaction also persists whether pickup occurred through `WILL_CALL` or `IMMEDIATE` fulfillment so reporting and audit history preserve the physical workflow used.
 
-Audit events record the transaction, fill, price basis, claim link, Will Call package/location, patient amount, tender methods, and pickup-verification method. Sensitive verification input that does not need to be retained, such as the DOB value entered at pickup, is not copied into the audit metadata.
+Audit events record the transaction, fill, price basis, claim link, Will Call package/location, patient amount, tender methods, and pickup-verification method. In addition, the domain-specific `WillCallEvent` timeline preserves physical custody history independently of the general audit log. Sensitive verification input that does not need to be retained, such as the DOB value entered at pickup, is not copied into the audit metadata.
 
 ## Deferred from Stage 3K
 
