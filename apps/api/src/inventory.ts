@@ -464,6 +464,8 @@ export async function adjustInventoryBalance(
     actorId: string;
     delta: number | string | Prisma.Decimal;
     reason: string;
+    source?: string | null;
+    reference?: string | null;
   },
 ) {
   const delta = decimal(input.delta);
@@ -508,6 +510,8 @@ export async function adjustInventoryBalance(
       onHandDelta: delta,
       reservedDelta: 0,
       reason: input.reason.trim(),
+      source: input.source?.trim() || null,
+      reference: input.reference?.trim() || null,
     },
   });
 
