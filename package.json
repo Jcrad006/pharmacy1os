@@ -18,6 +18,11 @@
     "db:deploy": "pnpm --filter @pharmacy1os/db migrate:deploy",
     "db:seed": "pnpm --filter @pharmacy1os/db seed",
     "db:studio": "pnpm --filter @pharmacy1os/db studio",
-    "start": "SERVE_WEB=true pnpm --filter @pharmacy1os/api start"
+    "start": "SERVE_WEB=true pnpm --filter @pharmacy1os/api start",
+    "backup:create": "pnpm --filter @pharmacy1os/api backup create",
+    "backup:list": "pnpm --filter @pharmacy1os/api backup list",
+    "backup:scan": "pnpm --filter @pharmacy1os/api backup scan",
+    "backup:verify": "pnpm --filter @pharmacy1os/api backup verify",
+    "backup:restore": "pnpm --filter @pharmacy1os/api backup restore"
   }
 }
