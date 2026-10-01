@@ -578,7 +578,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
       const labels = await db.prescriptionLabel.findMany({
         where: { fillId, siteId: actor.siteId },
         include: { printJobs: { orderBy: { queuedAt: "asc" } } },
-        orderBy: { version: "asc" },
+        orderBy: [{ version: "asc" }, { bottleNumber: "asc" }],
       });
       return { transactions, labels };
     } catch (error) {
