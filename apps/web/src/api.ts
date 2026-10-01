@@ -681,6 +681,36 @@ export async function scanFillBarcode(
   });
 }
 
+export async function setFillBillingProduct(
+  devUser: string,
+  fillId: string,
+  productId: string | null,
+) {
+  return request<{ fill: PrescriptionFill }>(
+    `/api/fills/${fillId}/billing-product`,
+    {
+      method: "PUT",
+      devUser,
+      body: JSON.stringify({ productId }),
+    },
+  );
+}
+
+export async function setFillPackaging(
+  devUser: string,
+  fillId: string,
+  dispensedInOriginalContainer: boolean,
+) {
+  return request<{ fill: PrescriptionFill }>(
+    `/api/fills/${fillId}/packaging`,
+    {
+      method: "PUT",
+      devUser,
+      body: JSON.stringify({ dispensedInOriginalContainer }),
+    },
+  );
+}
+
 export async function removeFillProductSource(
   devUser: string,
   fillId: string,
