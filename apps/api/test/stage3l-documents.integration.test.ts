@@ -17,7 +17,8 @@ process.env.DOCUMENT_STORAGE_ROOT = resolve(
 const app = buildApp();
 const technicianHeaders = { "x-dev-user": "dev-technician" };
 const internHeaders = { "x-dev-user": "dev-intern" };
-const cashierHeaders = { "x-dev-user": "dev-cashier" };
+const cashierExternalAuthId = "stage3l-cashier-" + randomUUID();
+const cashierHeaders = { "x-dev-user": cashierExternalAuthId };
 const siteId = "site-demo-001";
 const prescriberId = "prescriber-demo-001";
 
@@ -73,9 +74,22 @@ beforeAll(async () => {
     force: true,
   });
   await app.ready();
+  await db.user.create({
+    data: {
+      id: "user-stage3l-cashier-" + randomUUID(),
+      siteId,
+      externalAuthId: cashierExternalAuthId,
+      displayName: "Stage 3L Cashier",
+      role: "CASHIER",
+      active: true,
+    },
+  });
 });
 
 afterAll(async () => {
+  await db.user.deleteMany({
+    where: { externalAuthId: cashierExternalAuthId },
+  });
   await app.close();
   await db.$disconnect();
   await rm(process.env.DOCUMENT_STORAGE_ROOT!, {
