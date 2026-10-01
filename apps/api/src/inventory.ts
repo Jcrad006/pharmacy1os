@@ -4,16 +4,8 @@ import {
   type InventoryHoldReason,
 } from "@prisma/client";
 
-export class InventoryError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    public readonly code: string,
-    message: string,
-    public readonly details?: Record<string, unknown>,
-  ) {
-    super(message);
-  }
-}
+import { InventoryError } from "./inventoryError.js";
+export { InventoryError } from "./inventoryError.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
