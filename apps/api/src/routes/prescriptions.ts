@@ -38,6 +38,11 @@ import {
   cancelDemandForFill,
   createOrUpdateFillDemand,
 } from "../inventoryArchitecture.js";
+import {
+  adjudicateFillClaims,
+  assertFillBillingReadyForReview,
+  ClaimError,
+} from "../claims/service.js";
 
 type CreatePrescriptionBody = {
   patientId?: string;
@@ -82,6 +87,7 @@ type TransitionBody = {
 type CreateFillBody = {
   scheduledFor?: string;
   quantity?: number;
+  daysSupply?: number;
 };
 
 type CreatePartialFillBody = {
@@ -207,6 +213,34 @@ function parseDate(value?: string | null) {
   if (!value) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "invalid" : date;
+}
+
+async function tryAutoAdjudication(
+  fillId: string,
+  actor: { id: string; siteId: string },
+  requestId?: string,
+) {
+  try {
+    return await adjudicateFillClaims(fillId, {
+      siteId: actor.siteId,
+      actorId: actor.id,
+      requestId,
+      retryRejected: false,
+    });
+  } catch (error) {
+    if (error instanceof ClaimError) {
+      return {
+        state: "BLOCKED" as const,
+        code: error.code,
+        error: error.message,
+        details: error.details,
+        transactions: [],
+        label: null,
+        printJob: null,
+      };
+    }
+    throw error;
+  }
 }
 
 function activeFill(
