@@ -63,29 +63,68 @@ export interface ClaimAdapter {
   ): Promise<CanonicalClaimResponse>;
 }
 
+export type PhysicalClaimSource = {
+  productId: string;
+  quantity: number;
+};
+
 export function requireBillingNdcSelection(input: {
-  physicalProductIds: string[];
+  physicalSources: PhysicalClaimSource[];
   billingProductId?: string | null;
   billingNdcStrategy: BillingNdcStrategy;
 }) {
-  const uniqueProducts = new Set(input.physicalProductIds);
+  const quantities = new Map<string, number>();
+  for (const source of input.physicalSources) {
+    if (!Number.isFinite(source.quantity) || source.quantity <= 0) continue;
+    quantities.set(
+      source.productId,
+      (quantities.get(source.productId) ?? 0) + source.quantity,
+    );
+  }
+
+  const uniqueProducts = new Set(quantities.keys());
   if (uniqueProducts.size === 0) {
-    throw new Error("At least one physical product source is required before claim construction.");
+    throw new Error("At least one positive physical product source is required before claim construction.");
   }
   if (uniqueProducts.size === 1) {
-    return input.billingProductId ?? input.physicalProductIds[0]!;
+    return [...uniqueProducts][0]!;
   }
-  if (
-    input.billingNdcStrategy === "SINGLE_SOURCE_ONLY" &&
-    uniqueProducts.size > 1
-  ) {
+  if (input.billingNdcStrategy === "SINGLE_SOURCE_ONLY") {
     throw new Error("This payer does not permit a split-product billing workflow.");
   }
-  if (!input.billingProductId) {
-    throw new Error("A billed NDC/product must be explicitly selected for a split-product fill.");
+
+  const selectedIsPhysical =
+    Boolean(input.billingProductId) &&
+    uniqueProducts.has(input.billingProductId!);
+
+  if (
+    input.billingNdcStrategy === "REQUIRE_MANUAL_SELECTION" ||
+    input.billingNdcStrategy === "PAYER_CONFIGURED"
+  ) {
+    if (!selectedIsPhysical) {
+      throw new Error("A billed NDC/product must be explicitly selected from the physical products used for this split fill.");
+    }
+    return input.billingProductId!;
   }
-  if (!uniqueProducts.has(input.billingProductId)) {
-    throw new Error("The billed product must be one of the physical products used for this fill.");
+
+  const maximumQuantity = Math.max(...quantities.values());
+  const majorityProducts = [...quantities.entries()]
+    .filter(([, quantity]) => quantity === maximumQuantity)
+    .map(([productId]) => productId);
+
+  if (majorityProducts.length === 1) {
+    return majorityProducts[0]!;
   }
-  return input.billingProductId;
+
+  if (
+    input.billingNdcStrategy === "MAJORITY_SOURCE" &&
+    input.billingProductId &&
+    majorityProducts.includes(input.billingProductId)
+  ) {
+    return input.billingProductId;
+  }
+
+  throw new Error(
+    "The split fill has an exact quantity tie between NDCs. Explicitly select one of the tied physical products before adjudication.",
+  );
 }
