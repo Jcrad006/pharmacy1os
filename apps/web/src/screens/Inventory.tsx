@@ -6,6 +6,7 @@ import {
 import type { DevUser, InventoryBalance } from "../types";
 import { canCorrectInventory } from "../workflow";
 import { CycleCounts } from "./CycleCounts";
+import { InventoryHolds } from "./InventoryHolds";
 
 function quantity(value: string | number) {
   return Number(value).toLocaleString(undefined, {
@@ -121,6 +122,7 @@ export function Inventory({
               <th>Expiration</th>
               <th>On hand</th>
               <th>Reserved</th>
+              <th>Quarantined</th>
               <th>Available</th>
               <th>Last movement</th>
               <th></th>
@@ -155,6 +157,7 @@ export function Inventory({
                   </td>
                   <td>{quantity(balance.onHandQuantity)}</td>
                   <td>{quantity(balance.reservedQuantity)}</td>
+                  <td>{quantity(balance.quarantinedQuantity)}</td>
                   <td>
                     <strong>{quantity(balance.availableQuantity)}</strong>
                   </td>
@@ -190,7 +193,7 @@ export function Inventory({
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="empty-state">
+                <td colSpan={9} className="empty-state">
                   No inventory balances match this view.
                 </td>
               </tr>
@@ -261,6 +264,14 @@ export function Inventory({
           </div>
         </div>
       )}
+      <InventoryHolds
+        devUser={devUser}
+        user={user}
+        balances={balances}
+        onError={onError}
+        onBalancesChanged={refresh}
+      />
+
       <CycleCounts
         devUser={devUser}
         user={user}
