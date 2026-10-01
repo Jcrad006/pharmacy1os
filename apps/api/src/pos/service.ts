@@ -1360,6 +1360,27 @@ export async function checkoutFills(
               pickedUpAt: soldAt,
             },
           });
+          await tx.willCallBagBarcode.updateMany({
+            where: {
+              packageId: current.willCallPackage.id,
+              status: "ACTIVE",
+            },
+            data: {
+              status: "VOIDED",
+              voidedAt: soldAt,
+            },
+          });
+          await tx.willCallEvent.create({
+            data: {
+              siteId: context.siteId,
+              packageId: current.willCallPackage.id,
+              eventType: "PICKED_UP",
+              actorId: context.actorId,
+              oldBagBarcode: current.willCallPackage.bagBarcode,
+              fromLocationId: current.willCallPackage.locationId,
+              occurredAt: soldAt,
+            },
+          });
         }
 
         if (current.billingAnchorFillId && current.quantity) {
