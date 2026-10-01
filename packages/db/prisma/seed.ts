@@ -14,6 +14,7 @@ const db = new PrismaClient();
 const ids = {
   site: "site-demo-001",
   site2: "site-demo-002",
+  admin: "user-demo-admin",
   pharmacist: "user-demo-pharmacist",
   technician: "user-demo-technician",
   intern: "user-demo-intern",
@@ -97,6 +98,7 @@ async function main() {
   await ensureSiteInventoryInfrastructure(db, ids.site2);
 
   const staff = [
+    [ids.admin, "dev-admin", "Avery Administrator", UserRole.ADMIN],
     [ids.pharmacist, "dev-pharmacist", "Morgan Pharmacist", UserRole.PHARMACIST],
     [ids.technician, "dev-technician", "Taylor Technician", UserRole.TECHNICIAN],
     [ids.intern, "dev-intern", "Jordan Intern", UserRole.INTERN],
