@@ -1042,6 +1042,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: "No refills remain on this prescription." });
       }
 
+      if (
+        current.status === "READY" &&
+        body.status === "SOLD" &&
+        process.env.ALLOW_LEGACY_DIRECT_SALE !== "true"
+      ) {
+        return reply.code(409).send({
+          error:
+            "Ready prescriptions must be completed through the controlled POS pickup workflow.",
+          code: "POS_CHECKOUT_REQUIRED",
+        });
+      }
+
       const currentActiveFill = activeFill(current.fills);
 
       if (
