@@ -49,6 +49,9 @@ import type {
   FillInterruptionReason,
   PrescriptionQueueItem,
   PrescriptionStatus,
+  PosQuote,
+  PointOfSaleTransaction,
+  PaymentMethod,
 } from "./types";
 
 type ApiOptions = RequestInit & {
@@ -112,6 +115,41 @@ export async function getWillCall(devUser: string) {
     { devUser },
   );
   return result.prescriptions;
+}
+
+
+export async function quotePosCheckout(
+  devUser: string,
+  fillIds: string[],
+) {
+  const result = await request<{ quote: PosQuote }>("/api/pos/quote", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({ fillIds }),
+  });
+  return result.quote;
+}
+
+export async function checkoutPos(
+  devUser: string,
+  input: {
+    fillIds: string[];
+    tenders: Array<{
+      method: PaymentMethod;
+      amount: number | string;
+      reference?: string | null;
+    }>;
+    idempotencyKey: string;
+  },
+) {
+  return request<{
+    transaction: PointOfSaleTransaction;
+    replayed: boolean;
+  }>("/api/pos/checkout", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getPrescription(devUser: string, id: string) {
