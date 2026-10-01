@@ -588,3 +588,37 @@ export async function scanFillBarcode(
     body: JSON.stringify({ rawBarcode }),
   });
 }
+
+
+export async function correctReceivingBarcode(
+  devUser: string,
+  barcodeId: string,
+  input: {
+    productId: string;
+    reason: string;
+    rawBarcode?: string;
+  },
+) {
+  return request<{
+    status: "CORRECTED";
+    barcode: ProductBarcode;
+    product: Product & { medication: Medication };
+    traceability: {
+      lot: ProductLot | null;
+      expiration: ProductExpiration | null;
+    };
+    safetyReview: {
+      oldProduct: Product & { medication: Medication };
+      historicalUseCount: number;
+      oldTraceabilityMatches: {
+        lot: boolean;
+        expiration: boolean;
+      };
+      message: string | null;
+    };
+  }>(`/api/receiving/barcodes/${barcodeId}/correct`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
