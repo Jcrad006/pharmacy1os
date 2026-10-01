@@ -850,6 +850,18 @@ export async function quarantineInventory(
     },
   });
 
+  const quarantinedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (quarantinedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      quarantinedProduct.medicationId,
+    );
+  }
+
   return { balance: updated, hold, transaction };
 }
 
@@ -941,6 +953,18 @@ export async function releaseInventoryHold(
       dispositionType: null,
     },
   });
+
+  const releasedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (releasedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      releasedProduct.medicationId,
+    );
+  }
 
   return { balance: updated, hold: resolved, transaction };
 }
@@ -1038,6 +1062,18 @@ export async function disposeInventoryHold(
       dispositionType: input.dispositionType,
     },
   });
+
+  const disposedProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  if (disposedProduct) {
+    await reconcileDemandAvailability(
+      tx,
+      input.siteId,
+      disposedProduct.medicationId,
+    );
+  }
 
   return { balance: updated, hold: resolved, transaction };
 }
