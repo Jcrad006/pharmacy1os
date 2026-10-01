@@ -521,7 +521,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const reverse = await app.inject({
       method: "POST",
       url: `/api/third-party/claims/${claim.id}/reverse`,
-      headers: technicianHeaders,
+      headers: pharmacistHeaders,
     });
     expect(reverse.statusCode).toBe(409);
     expect(reverse.json().code).toBe("POS_SALE_LOCKS_CLAIM");
