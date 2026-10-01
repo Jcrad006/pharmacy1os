@@ -48,6 +48,9 @@ CREATE TYPE "ReceivingDiscrepancyStatus" AS ENUM (
 );
 
 ALTER TABLE "InventoryTransfer" ADD COLUMN "unitCostSnapshot" DECIMAL(12,6);
+ALTER TABLE "PurchaseOrder" ADD COLUMN "expectedDeliveryAt" TIMESTAMP(3);
+CREATE INDEX "PurchaseOrder_siteId_expectedDeliveryAt_status_idx"
+  ON "PurchaseOrder"("siteId", "expectedDeliveryAt", "status");
 
 CREATE TYPE "TransferCustodyEventType" AS ENUM (
   'PACKED',
