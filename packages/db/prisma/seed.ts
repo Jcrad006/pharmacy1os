@@ -1,5 +1,6 @@
 import {
   FillStatus,
+  InventoryTransactionType,
   PrescriberContactType,
   PrescriberIdentifierType,
   PrescriptionStatus,
@@ -49,6 +50,14 @@ const ids = {
   barcodeLisinoprilA: "barcode-demo-lisinopril-a",
   barcodeLisinoprilB: "barcode-demo-lisinopril-b",
   barcodeAtorvastatinA: "barcode-demo-atorvastatin-a",
+  inventoryLisinoprilA1: "inventory-demo-lisinopril-a1",
+  inventoryLisinoprilA2: "inventory-demo-lisinopril-a2",
+  inventoryLisinoprilB1: "inventory-demo-lisinopril-b1",
+  inventoryAtorvastatinA1: "inventory-demo-atorvastatin-a1",
+  inventoryTxLisinoprilA1: "inventory-tx-demo-lisinopril-a1",
+  inventoryTxLisinoprilA2: "inventory-tx-demo-lisinopril-a2",
+  inventoryTxLisinoprilB1: "inventory-tx-demo-lisinopril-b1",
+  inventoryTxAtorvastatinA1: "inventory-tx-demo-atorvastatin-a1",
   rx1: "rx-demo-001",
   rx2: "rx-demo-002",
 };
@@ -545,6 +554,89 @@ async function main() {
         siteId: ids.site,
         productId: expiration.productId,
         expirationDate: expiration.expirationDate,
+      },
+    });
+  }
+
+  const inventorySeeds = [
+    {
+      balanceId: ids.inventoryLisinoprilA1,
+      transactionId: ids.inventoryTxLisinoprilA1,
+      productId: ids.productLisinoprilA,
+      productLotId: ids.lotLisinoprilA1,
+      productExpirationId: ids.expirationLisinoprilA1,
+      quantity: 1000,
+    },
+    {
+      balanceId: ids.inventoryLisinoprilA2,
+      transactionId: ids.inventoryTxLisinoprilA2,
+      productId: ids.productLisinoprilA,
+      productLotId: ids.lotLisinoprilA2,
+      productExpirationId: ids.expirationLisinoprilA2,
+      quantity: 500,
+    },
+    {
+      balanceId: ids.inventoryLisinoprilB1,
+      transactionId: ids.inventoryTxLisinoprilB1,
+      productId: ids.productLisinoprilB,
+      productLotId: ids.lotLisinoprilB1,
+      productExpirationId: ids.expirationLisinoprilB1,
+      quantity: 2000,
+    },
+    {
+      balanceId: ids.inventoryAtorvastatinA1,
+      transactionId: ids.inventoryTxAtorvastatinA1,
+      productId: ids.productAtorvastatinA,
+      productLotId: ids.lotAtorvastatinA1,
+      productExpirationId: ids.expirationAtorvastatinA1,
+      quantity: 900,
+    },
+  ];
+
+  for (const item of inventorySeeds) {
+    await db.inventoryBalance.upsert({
+      where: { id: item.balanceId },
+      update: {
+        siteId: ids.site,
+        productId: item.productId,
+        productLotId: item.productLotId,
+        productExpirationId: item.productExpirationId,
+        onHandQuantity: item.quantity,
+        reservedQuantity: 0,
+      },
+      create: {
+        id: item.balanceId,
+        siteId: ids.site,
+        productId: item.productId,
+        productLotId: item.productLotId,
+        productExpirationId: item.productExpirationId,
+        onHandQuantity: item.quantity,
+        reservedQuantity: 0,
+      },
+    });
+
+    await db.inventoryTransaction.upsert({
+      where: { id: item.transactionId },
+      update: {
+        siteId: ids.site,
+        inventoryBalanceId: item.balanceId,
+        type: InventoryTransactionType.RECEIVE,
+        onHandDelta: item.quantity,
+        reservedDelta: 0,
+        reason: "Synthetic opening inventory",
+        source: "SEED",
+        reference: "PHARMACY1OS_DEMO",
+      },
+      create: {
+        id: item.transactionId,
+        siteId: ids.site,
+        inventoryBalanceId: item.balanceId,
+        type: InventoryTransactionType.RECEIVE,
+        onHandDelta: item.quantity,
+        reservedDelta: 0,
+        reason: "Synthetic opening inventory",
+        source: "SEED",
+        reference: "PHARMACY1OS_DEMO",
       },
     });
   }
