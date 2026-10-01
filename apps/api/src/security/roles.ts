@@ -23,6 +23,10 @@ export const permissions = [
   "inventory:read",
   "inventory:write",
   "inventory:correct",
+  "thirdparty:read",
+  "thirdparty:write",
+  "thirdparty:override",
+  "product:compliance",
   "user:manage",
   "audit:read",
 ] as const;
@@ -45,6 +49,10 @@ export const rolePermissions: Record<Role, readonly Permission[]> = {
     "inventory:read",
     "inventory:write",
     "inventory:correct",
+    "thirdparty:read",
+    "thirdparty:write",
+    "thirdparty:override",
+    "product:compliance",
     "audit:read",
   ],
   TECHNICIAN: [
@@ -57,6 +65,8 @@ export const rolePermissions: Record<Role, readonly Permission[]> = {
     "prescription:sell",
     "inventory:read",
     "inventory:write",
+    "thirdparty:read",
+    "thirdparty:write",
   ],
   INTERN: [
     "patient:read",
@@ -66,6 +76,7 @@ export const rolePermissions: Record<Role, readonly Permission[]> = {
     "prescription:edit",
     "prescription:process",
     "inventory:read",
+    "thirdparty:read",
   ],
   CASHIER: ["patient:read", "prescription:read", "prescription:sell"],
   AUDITOR: ["audit:read"],
