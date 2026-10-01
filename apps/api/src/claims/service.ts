@@ -190,7 +190,14 @@ async function createOrReuseLabel(
   const physicalQuantity = fill.quantity;
   const payerIntendedQuantity =
     fill.payerIntendedQuantity ?? fill.intendedQuantity ?? fill.quantity;
+  const claimTransaction = claimTransactionId
+    ? await db.claimTransaction.findFirst({
+        where: { id: claimTransactionId, siteId: context.siteId },
+        select: { billedNdc: true },
+      })
+    : null;
   const billedNdc =
+    claimTransaction?.billedNdc ??
     fill.billingProduct?.ndc ??
     (fill.productSources.length === 1
       ? fill.productSources[0]!.ndcSnapshot
