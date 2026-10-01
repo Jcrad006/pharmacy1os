@@ -145,12 +145,19 @@ async function makeReady(prescriptionId: string) {
   expect(ready.statusCode).toBe(200);
 }
 
-async function stage(fillId: string, bagBarcode?: string) {
+async function stage(
+  fillId: string,
+  bagBarcode?: string,
+  locationBarcode?: string,
+) {
   const response = await app.inject({
     method: "POST",
     url: `/api/fills/${fillId}/will-call/stage`,
     headers: technicianHeaders,
-    payload: bagBarcode ? { bagBarcode } : {},
+    payload: {
+      ...(bagBarcode ? { bagBarcode } : {}),
+      ...(locationBarcode ? { locationBarcode } : {}),
+    },
   });
   expect(response.statusCode).toBe(200);
   return response.json().package as {
@@ -289,12 +296,43 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(beforeStage.statusCode).toBe(409);
     expect(beforeStage.json().code).toBe("WILL_CALL_STAGING_REQUIRED");
 
-    const cashBagBarcode = `WC-BAG-CASH-3K-${randomUUID().slice(0, 8)}`.toUpperCase();
-    const staged = await stage(fillId, cashBagBarcode);
+    const locationBarcode =
+      `WC-BIN-3K-${randomUUID().slice(0, 8)}`.toUpperCase();
+    const locationCode =
+      `WC3K${randomUUID().replace(/-/g, "").slice(0, 7)}`.toUpperCase();
+    const createdLocation = await app.inject({
+      method: "POST",
+      url: "/api/inventory/locations",
+      headers: pharmacistHeaders,
+      payload: {
+        code: locationCode,
+        name: "Phase 3K Pickup Bin",
+        type: "WILL_CALL",
+        barcode: locationBarcode,
+      },
+    });
+    expect(createdLocation.statusCode).toBe(201);
+
+    const cashBagBarcode =
+      `WC-BAG-CASH-3K-${randomUUID().slice(0, 8)}`.toUpperCase();
+    const staged = await stage(fillId, cashBagBarcode, locationBarcode);
     expect(staged.status).toBe("STAGED");
     expect(staged.bagBarcode).toBe(cashBagBarcode);
-    expect(staged.location.code).toBe("WILL-CALL");
-    expect(staged.location.barcode).toBe(`WC-DEFAULT-${siteId}`.toUpperCase());
+    expect(staged.location.code).toBe(locationCode);
+    expect(staged.location.barcode).toBe(locationBarcode);
+
+    const locationScan = await app.inject({
+      method: "GET",
+      url: `/api/will-call/packages/scan/${encodeURIComponent(locationBarcode)}`,
+      headers: technicianHeaders,
+    });
+    expect(locationScan.statusCode).toBe(200);
+    expect(locationScan.json().scanType).toBe("LOCATION");
+    expect(
+      locationScan.json().packages.some(
+        (item: { fillId: string }) => item.fillId === fillId,
+      ),
+    ).toBe(true);
 
     const quote = await app.inject({
       method: "POST",
@@ -308,7 +346,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       fillId,
       priceBasis: "CASH",
       bagBarcode: cashBagBarcode,
-      willCallLocationCode: "WILL-CALL",
+      willCallLocationCode: locationCode,
     });
     expect(Number(quote.json().quote.lines[0].cashUnitPriceSnapshot)).toBe(0.25);
 
