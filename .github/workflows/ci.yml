@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase3d-barcode-registry-receiving]
+    branches: [main, phase3e-pharmacist-barcode-correction]
   pull_request:
   workflow_dispatch:
 

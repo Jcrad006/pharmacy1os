@@ -1113,3 +1113,31 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+.receiving-correction {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 2px solid #e4c4c4;
+}
+.receiving-correction label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+.receiving-correction select,
+.receiving-correction textarea {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: white;
+  color: #1c2924;
+  font: inherit;
+}
+.receiving-correction textarea {
+  resize: vertical;
+}

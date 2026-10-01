@@ -8,6 +8,7 @@ process.env.ALLOW_DEV_IDENTITY = "true";
 
 const app = buildApp();
 const technicianHeaders = { "x-dev-user": "dev-technician" };
+const pharmacistHeaders = { "x-dev-user": "dev-pharmacist" };
 
 beforeAll(async () => {
   await app.ready();
@@ -204,6 +205,137 @@ describe("barcode registry, receiving, and Product Fill", () => {
     expect(response.json().code).toBe("BARCODE_DRUG_MISMATCH");
     expect(response.json().expectedDrug.genericName).toBe("Lisinopril");
     expect(response.json().scannedDrug.genericName).toBe("Atorvastatin");
+  });
+
+  it("allows only a pharmacist to correct a wrong receiving barcode assignment and flags historical fill use", async () => {
+    const digits = Math.floor(Math.random() * 1_000_000)
+      .toString()
+      .padStart(6, "0");
+    const gtin = `0077777${digits}0`;
+    const rawBarcode = `(01)${gtin}(17)291231(10)CORR-${digits}`;
+
+    const wrongAssignment = await app.inject({
+      method: "POST",
+      url: "/api/receiving/assign",
+      headers: technicianHeaders,
+      payload: {
+        rawBarcode,
+        productId: "product-demo-atorvastatin-a",
+        isPrimary: false,
+      },
+    });
+
+    expect(wrongAssignment.statusCode).toBe(201);
+    const barcodeId = wrongAssignment.json().barcode.id as string;
+
+    const atorvastatinRx = await app.inject({
+      method: "POST",
+      url: "/api/prescriptions",
+      headers: technicianHeaders,
+      payload: {
+        patientId: "patient-demo-002",
+        prescriberId: "prescriber-demo-002",
+        medicationId: "medication-demo-atorvastatin-20",
+        rxNumber: `CORR-${digits}`,
+        sig: "Take 1 tablet by mouth once daily",
+        quantityWritten: 30,
+        refillsAllowed: 0,
+      },
+    });
+    expect(atorvastatinRx.statusCode).toBe(201);
+
+    const rxId = atorvastatinRx.json().prescription.id as string;
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${rxId}/status`,
+          headers: technicianHeaders,
+          payload: { status: "DUR_REVIEW" },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const fill = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${rxId}/fills`,
+      headers: technicianHeaders,
+      payload: { quantity: 30 },
+    });
+    expect(fill.statusCode).toBe(201);
+
+    const unsafeHistoricalUse = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fill.json().fill.id}/scan-barcode`,
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(unsafeHistoricalUse.statusCode).toBe(200);
+    expect(unsafeHistoricalUse.json().fill.scannedNdc).toBe("99999-0020-01");
+
+    const technicianCorrection = await app.inject({
+      method: "POST",
+      url: `/api/receiving/barcodes/${barcodeId}/correct`,
+      headers: technicianHeaders,
+      payload: {
+        productId: "product-demo-lisinopril-a",
+        reason: "Wrong Drug/NDC selected during receiving.",
+        rawBarcode,
+      },
+    });
+    expect(technicianCorrection.statusCode).toBe(403);
+
+    const pharmacistCorrection = await app.inject({
+      method: "POST",
+      url: `/api/receiving/barcodes/${barcodeId}/correct`,
+      headers: pharmacistHeaders,
+      payload: {
+        productId: "product-demo-lisinopril-a",
+        reason: "Barcode belongs to lisinopril; atorvastatin assignment was entered in error.",
+        rawBarcode,
+      },
+    });
+
+    expect(pharmacistCorrection.statusCode).toBe(200);
+    expect(pharmacistCorrection.json().status).toBe("CORRECTED");
+    expect(pharmacistCorrection.json().product.id).toBe(
+      "product-demo-lisinopril-a",
+    );
+    expect(pharmacistCorrection.json().safetyReview.historicalUseCount).toBe(1);
+    expect(pharmacistCorrection.json().safetyReview.message).toContain(
+      "previously used",
+    );
+
+    const recognizedAfterCorrection = await app.inject({
+      method: "POST",
+      url: "/api/receiving/scan",
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+
+    expect(recognizedAfterCorrection.statusCode).toBe(200);
+    expect(recognizedAfterCorrection.json().status).toBe("KNOWN");
+    expect(recognizedAfterCorrection.json().product.id).toBe(
+      "product-demo-lisinopril-a",
+    );
+    expect(
+      recognizedAfterCorrection.json().product.medication.genericName,
+    ).toBe("Lisinopril");
+
+    const audit = await db.auditEvent.findFirst({
+      where: {
+        action: "PRODUCT_BARCODE_ASSIGNMENT_CORRECTED",
+        entityType: "ProductBarcode",
+        entityId: barcodeId,
+      },
+      orderBy: { occurredAt: "desc" },
+    });
+
+    expect(audit).toBeTruthy();
+    const metadata = audit?.metadata as Record<string, unknown>;
+    expect(metadata.oldNdc).toBe("99999-0020-01");
+    expect(metadata.newNdc).toBe("99999-0001-01");
+    expect(metadata.reason).toContain("atorvastatin assignment");
   });
 
   it("requires lot and expiration for raw Product Fill barcode verification", async () => {

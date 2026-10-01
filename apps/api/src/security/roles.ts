@@ -21,6 +21,7 @@ export const permissions = [
   "clinical:document",
   "inventory:read",
   "inventory:write",
+  "inventory:correct",
   "user:manage",
   "audit:read",
 ] as const;
@@ -41,6 +42,7 @@ export const rolePermissions: Record<Role, readonly Permission[]> = {
     "clinical:document",
     "inventory:read",
     "inventory:write",
+    "inventory:correct",
     "audit:read",
   ],
   TECHNICIAN: [

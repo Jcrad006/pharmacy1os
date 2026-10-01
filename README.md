@@ -169,3 +169,10 @@ This preference is local to the workstation prototype and is not yet a productio
 The barcode registry stores stable product identifiers separately from variable lot and expiration data. A receiving scan can resolve a known product or flag an unknown barcode for assignment. GS1 AI (01) is treated as the stable GTIN identifier, while parsed lot and expiration values are recorded under the recognized NDC at the pharmacy site. Product Fill uses the same registry and still requires the resolved NDC to belong to the Drug selected during Data Entry.
 
 Third-party adjudication and prescription-label printing remain intentionally deferred to later phases.
+
+
+## Barcode-assignment correction safety
+
+Barcode-to-product mappings created during receiving are correctable, but correction is restricted to pharmacists and administrators through the dedicated inventory-correction permission. A correction requires the replacement NDC/product and a documented reason. Pharmacy1OS preserves the original assignment in the audit trail, records the old and new Drug/NDC, and warns when the barcode had already been used on prescription fills.
+
+A correction never blindly deletes lot or expiration records from the old NDC. Matching old traceability is surfaced for pharmacist review because those records may represent legitimate stock independent of the incorrect barcode mapping.

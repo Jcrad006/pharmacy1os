@@ -137,3 +137,8 @@ export function canWriteInventory(user?: DevUser) {
     user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
   );
 }
+
+
+export function canCorrectInventory(user?: DevUser) {
+  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+}

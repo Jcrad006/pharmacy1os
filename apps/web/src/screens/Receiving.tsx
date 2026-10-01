@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   assignReceivingBarcode,
+  correctReceivingBarcode,
   getMedications,
   scanReceivingBarcode,
 } from "../api";
@@ -13,7 +14,7 @@ import type {
   ProductExpiration,
   ProductLot,
 } from "../types";
-import { canWriteInventory } from "../workflow";
+import { canCorrectInventory, canWriteInventory } from "../workflow";
 
 type ReceivingResult = {
   status: "KNOWN" | "UNKNOWN";
@@ -44,8 +45,12 @@ export function Receiving({
   const [result, setResult] = useState<ReceivingResult | null>(null);
   const [medications, setMedications] = useState<Medication[]>([]);
   const [selectedProductId, setSelectedProductId] = useState("");
+  const [correctionProductId, setCorrectionProductId] = useState("");
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionWarning, setCorrectionWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const writable = canWriteInventory(user);
+  const correctable = canCorrectInventory(user);
 
   useEffect(() => {
     if (!devUser) return;
@@ -81,6 +86,9 @@ export function Receiving({
       setResult(next);
       if (next.status === "KNOWN" && next.product) {
         setSelectedProductId(next.product.id);
+        setCorrectionProductId("");
+        setCorrectionReason("");
+        setCorrectionWarning(null);
       }
     } catch (error) {
       onError(
@@ -120,6 +128,46 @@ export function Receiving({
     }
   }
 
+  async function correctKnownAssignment() {
+    if (
+      !result ||
+      result.status !== "KNOWN" ||
+      !result.barcode ||
+      !correctionProductId ||
+      !correctionReason.trim()
+    ) {
+      return;
+    }
+
+    setBusy(true);
+    onError(null);
+    try {
+      const corrected = await correctReceivingBarcode(
+        devUser,
+        result.barcode.id,
+        {
+          productId: correctionProductId,
+          reason: correctionReason.trim(),
+          rawBarcode,
+        },
+      );
+
+      setCorrectionWarning(corrected.safetyReview.message);
+      const refreshed = await scanReceivingBarcode(devUser, rawBarcode);
+      setResult(refreshed);
+      setCorrectionProductId("");
+      setCorrectionReason("");
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to correct barcode assignment.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function createNewProduct() {
     localStorage.setItem("pharmacy1os.pendingBarcode", rawBarcode);
     onOpenCatalog();
@@ -129,6 +177,9 @@ export function Receiving({
     setRawBarcode("");
     setResult(null);
     setSelectedProductId("");
+    setCorrectionProductId("");
+    setCorrectionReason("");
+    setCorrectionWarning(null);
     onError(null);
   }
 
@@ -226,6 +277,76 @@ export function Receiving({
                 Barcode recognized. Parsed lot/expiration data has been registered
                 under this NDC when present.
               </p>
+
+              {correctable && result.barcode && (
+                <div className="receiving-correction">
+                  <div>
+                    <p className="eyebrow">Pharmacist safety correction</p>
+                    <h3>Correct barcode assignment</h3>
+                    <p className="catalog-help">
+                      Use only when this barcode was previously linked to the wrong
+                      Drug/NDC. A reason is required and the original assignment is
+                      preserved in the audit trail.
+                    </p>
+                  </div>
+
+                  <label>
+                    Correct product / NDC
+                    <select
+                      value={correctionProductId}
+                      onChange={(event) =>
+                        setCorrectionProductId(event.target.value)
+                      }
+                      disabled={busy}
+                    >
+                      <option value="">Select corrected NDC</option>
+                      {products
+                        .filter(({ product }) => product.id !== result.product?.id)
+                        .map(({ medication, product }) => (
+                          <option key={product.id} value={product.id}>
+                            {productLabel(medication, product)}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Correction reason
+                    <textarea
+                      rows={3}
+                      value={correctionReason}
+                      onChange={(event) =>
+                        setCorrectionReason(event.target.value)
+                      }
+                      placeholder="Example: Technician linked this GTIN to the wrong lisinopril manufacturer/NDC during receiving."
+                      disabled={busy}
+                    />
+                  </label>
+
+                  <button
+                    className="danger-button"
+                    type="button"
+                    disabled={
+                      busy ||
+                      !correctionProductId ||
+                      !correctionReason.trim()
+                    }
+                    onClick={() =>
+                      window.confirm(
+                        "Correct this barcode-to-product assignment? This action is audited and affects future scans.",
+                      ) && void correctKnownAssignment()
+                    }
+                  >
+                    Correct barcode assignment
+                  </button>
+
+                  {correctionWarning && (
+                    <p className="clinical-gate-warning">
+                      {correctionWarning}
+                    </p>
+                  )}
+                </div>
+              )}
             </>
           ) : (
             <>

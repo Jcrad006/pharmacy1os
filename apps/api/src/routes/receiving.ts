@@ -16,6 +16,12 @@ type AssignBody = {
   note?: string;
 };
 
+type CorrectBarcodeBody = {
+  productId?: string;
+  reason?: string;
+  rawBarcode?: string;
+};
+
 const productInclude = (siteId: string) => ({
   medication: true,
   manufacturer: true,
@@ -258,4 +264,219 @@ export async function receivingRoutes(app: FastifyInstance) {
       throw error;
     }
   });
+
+  app.post("/receiving/barcodes/:id/correct", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:correct");
+      const barcodeId = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as CorrectBarcodeBody;
+      const reason = body.reason?.trim();
+
+      if (!body.productId || !reason) {
+        return reply.code(400).send({
+          error: "productId and a correction reason are required.",
+        });
+      }
+
+      const [barcode, newProduct] = await Promise.all([
+        db.productBarcode.findUnique({
+          where: { id: barcodeId },
+          include: {
+            product: {
+              include: {
+                medication: true,
+                manufacturer: true,
+              },
+            },
+          },
+        }),
+        db.product.findUnique({
+          where: { id: body.productId },
+          include: productInclude(actor.siteId),
+        }),
+      ]);
+
+      if (!barcode) {
+        return reply.code(404).send({ error: "Barcode assignment not found." });
+      }
+
+      if (!newProduct || !newProduct.active) {
+        return reply.code(404).send({ error: "Active replacement product not found." });
+      }
+
+      if (barcode.productId === newProduct.id) {
+        return reply.code(409).send({
+          error: "The barcode is already assigned to that product.",
+        });
+      }
+
+      const parsed = body.rawBarcode?.trim()
+        ? parseBarcode(body.rawBarcode)
+        : null;
+
+      if (
+        parsed &&
+        (parsed.type !== barcode.type ||
+          parsed.identifierSearch !== barcode.identifierSearch)
+      ) {
+        return reply.code(409).send({
+          error:
+            "The rescanned barcode does not match the barcode assignment being corrected.",
+          code: "CORRECTION_BARCODE_MISMATCH",
+        });
+      }
+
+      const historicalUseEvents = await db.auditEvent.findMany({
+        where: {
+          siteId: actor.siteId,
+          action: "FILL_BARCODE_SCAN_VERIFIED",
+        },
+        select: { metadata: true },
+      });
+
+      const historicalUseCount = historicalUseEvents.filter((event) => {
+        const metadata =
+          event.metadata && typeof event.metadata === "object"
+            ? (event.metadata as Record<string, unknown>)
+            : null;
+        return metadata?.productBarcodeId === barcode.id;
+      }).length;
+
+      let oldTraceabilityMatches = {
+        lot: false,
+        expiration: false,
+      };
+
+      if (parsed?.lotNumber) {
+        const lotNumberSearch = parsed.lotNumber
+          .replace(/[^A-Za-z0-9]/g, "")
+          .toUpperCase();
+        oldTraceabilityMatches.lot = Boolean(
+          await db.productLot.findFirst({
+            where: {
+              siteId: actor.siteId,
+              productId: barcode.productId,
+              lotNumberSearch,
+              active: true,
+            },
+            select: { id: true },
+          }),
+        );
+      }
+
+      if (parsed?.expirationDate) {
+        oldTraceabilityMatches.expiration = Boolean(
+          await db.productExpiration.findFirst({
+            where: {
+              siteId: actor.siteId,
+              productId: barcode.productId,
+              expirationDate: parsed.expirationDate,
+              active: true,
+            },
+            select: { id: true },
+          }),
+        );
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const oldProductId = barcode.productId;
+        const oldProduct = barcode.product;
+
+        const newProductPrimary = await tx.productBarcode.findFirst({
+          where: { productId: newProduct.id, isPrimary: true },
+          select: { id: true },
+        });
+
+        if (barcode.isPrimary) {
+          const replacementOldPrimary = await tx.productBarcode.findFirst({
+            where: {
+              productId: oldProductId,
+              id: { not: barcode.id },
+            },
+            orderBy: { createdAt: "asc" },
+            select: { id: true },
+          });
+
+          if (replacementOldPrimary) {
+            await tx.productBarcode.update({
+              where: { id: replacementOldPrimary.id },
+              data: { isPrimary: true },
+            });
+          }
+        }
+
+        const corrected = await tx.productBarcode.update({
+          where: { id: barcode.id },
+          data: {
+            productId: newProduct.id,
+            isPrimary: !newProductPrimary,
+            note: barcode.note
+              ? `${barcode.note} | Corrected: ${reason}`
+              : `Corrected: ${reason}`,
+          },
+        });
+
+        const traceability = parsed
+          ? await recordTraceability(tx, {
+              siteId: actor.siteId,
+              productId: newProduct.id,
+              lotNumber: parsed.lotNumber,
+              expirationDate: parsed.expirationDate,
+            })
+          : { lot: null, expiration: null };
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRODUCT_BARCODE_ASSIGNMENT_CORRECTED",
+          entityType: "ProductBarcode",
+          entityId: barcode.id,
+          requestId: request.id,
+          metadata: {
+            reason,
+            oldProductId,
+            oldMedicationId: oldProduct.medicationId,
+            oldDrug: `${oldProduct.medication.genericName} ${oldProduct.medication.strength} ${oldProduct.medication.dosageForm}`,
+            oldNdc: oldProduct.ndc,
+            newProductId: newProduct.id,
+            newMedicationId: newProduct.medicationId,
+            newDrug: `${newProduct.medication.genericName} ${newProduct.medication.strength} ${newProduct.medication.dosageForm}`,
+            newNdc: newProduct.ndc,
+            barcodeType: barcode.type,
+            identifier: barcode.identifier,
+            rescannedLot: parsed?.lotNumber ?? null,
+            rescannedExpiration: parsed?.expirationDate?.toISOString() ?? null,
+            oldTraceabilityMatches,
+            historicalUseCount,
+          },
+        });
+
+        return { corrected, traceability };
+      });
+
+      return {
+        status: "CORRECTED",
+        barcode: result.corrected,
+        product: newProduct,
+        traceability: result.traceability,
+        safetyReview: {
+          oldProduct: barcode.product,
+          historicalUseCount,
+          oldTraceabilityMatches,
+          message:
+            historicalUseCount > 0
+              ? "This barcode was previously used on one or more prescription fills. Review those fills for potential product-selection error."
+              : oldTraceabilityMatches.lot || oldTraceabilityMatches.expiration
+                ? "Matching lot and/or expiration data remains under the old NDC. Review those records before deactivating anything."
+                : null,
+        },
+      };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
 }
