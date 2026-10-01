@@ -314,7 +314,33 @@
 - [x] Database-backed regression tests for immutable bytes, encryption, revisions, authorization, and eRx rendering
 - [ ] Native scanner/TWAIN/SANE device adapter
 - [ ] Multi-page PDF page-specific annotation canvas
-- [ ] Backup/restore orchestration that snapshots PostgreSQL and the local document vault as one logical backup set
+- [x] Backup/restore orchestration that snapshots PostgreSQL and the local document vault as one logical backup set
+
+## Phase 3L.1 — Document-vault durability / coordinated backup
+- [x] Exclusive document-write barrier during coordinated backup and restore
+- [x] Active document writers drain before backup snapshot work begins
+- [x] Stale backup/writer coordination markers recover only after the owning process is dead and the marker is old
+- [x] Interrupted restore locks fail closed instead of automatically reopening the vault
+- [x] Global vault integrity scan verifies every DB-referenced document's logical SHA-256 and byte size
+- [x] Missing, corrupt, unreadable, undecryptable, and orphaned vault-file reporting
+- [x] Orphan files reported separately as warnings without silently deleting them
+- [x] Plain PostgreSQL dump plus exact encrypted/raw document payloads captured as one backup set
+- [x] Frozen document metadata set reused for integrity scan and file capture
+- [x] Backup manifest contains application version, migration snapshot, database hash/size, document logical hashes, encrypted-payload hashes, sizes, and encryption-key fingerprint
+- [x] Manifest checksum and complete backup self-verification before publication
+- [x] Incomplete/staging backup directories removed on failure and never listed as valid backup sets
+- [x] Admin-only backup creation, listing, verification, and vault-integrity APIs
+- [x] Development administrator identity for exercising system-maintenance permissions
+- [x] Offline-only restore CLI with exact backup-ID confirmation
+- [x] Restore verifies the entire backup before changing live state
+- [x] Vault directory rollback when the PostgreSQL restore transaction fails
+- [x] PostgreSQL restore executed with ON_ERROR_STOP inside a single database transaction
+- [x] Post-restore vault/database integrity scan and durable restore journal
+- [x] Operator CLI commands for create/list/scan/verify/restore
+- [x] Database-backed regression tests for integrity, orphan detection, write blocking, backup publication, restore, rollback, tamper rejection, and authorization
+- [ ] Automated backup schedule / retention policy
+- [ ] Replication to a separately secured off-server/off-site backup target
+- [ ] Formal disaster-recovery restore drill and recovery-time/recovery-point validation
 
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger

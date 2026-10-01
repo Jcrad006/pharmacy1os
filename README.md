@@ -50,6 +50,7 @@ The current prototype includes:
 - Abandoned Ready-fill return-to-stock that reverses active paid synthetic claims before restoring inventory
 - Local prescription document vault with immutable source files, SHA-256 integrity hashes, optional AES-256-GCM encryption, visual annotations, and separate change provenance
 - Human-readable electronic-prescription visual rendering instead of presenting raw message data as the pharmacist-facing prescription
+- Coordinated PostgreSQL + local document-vault backups with manifest/hash verification, integrity scanning, and offline transactional restore
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
 
@@ -97,7 +98,30 @@ The prescription workstation can draw an opaque text rectangle directly over a v
 
 Electronic prescriptions may carry their raw electronic message separately while Pharmacy1OS generates an immutable human-readable SVG prescription rendering containing the patient, prescriber, medication, SIG, quantity, refills, written date, product-selection instruction, Rx number, and electronic message ID. Staff annotate that visual representation using the same overlay/provenance system used for scanned paper prescriptions.
 
-Current development limitations: browser image/SVG sources support visual box placement; PDF/TIFF files are retained and retrievable but page-specific annotation requires a later canvas/scanner integration. This remains development-only infrastructure and must not be used with real PHI until production security, encryption-key management, retention, backup/restore, privacy, and validation controls are completed.
+Current development limitations: browser image/SVG sources support visual box placement; PDF/TIFF files are retained and retrievable but page-specific annotation requires a later canvas/scanner integration. This remains development-only infrastructure and must not be used with real PHI until production security, encryption-key management, retention, off-site disaster recovery, privacy, and formal validation controls are completed.
+
+## Coordinated backup and vault integrity
+
+Stage 3L.1 treats PostgreSQL and the local document vault as one logical backup boundary. `pnpm backup:create` temporarily blocks new document-source writes, waits for active writers to finish, validates every database-referenced source file, dumps PostgreSQL, copies the exact stored document payloads, writes a cryptographic manifest, self-verifies the complete staging set, and only then publishes the backup.
+
+Useful operator commands:
+
+```bash
+pnpm backup:create
+pnpm backup:list
+pnpm backup:scan
+pnpm backup:verify -- <backup-id>
+```
+
+Restore is intentionally not available through the workstation/API. Stop the Pharmacy1OS service first, then run:
+
+```bash
+pnpm backup:restore -- <backup-id> --confirm <backup-id> --offline
+```
+
+Restore verifies the full backup before mutation, swaps the document vault with a rollback copy, restores PostgreSQL with `ON_ERROR_STOP` inside one transaction, rolls the vault back if the database restore fails, and runs a post-restore integrity scan before removing the rollback copy.
+
+Published backup sets live under `BACKUP_ROOT`. The server must have compatible `pg_dump` and `psql` utilities installed. Stage 3L.1 provides the mechanism and regression coverage; automated scheduling, off-site replication, retention policy, and formal disaster-recovery validation remain later production-hardening work. See `docs/STAGE_3L1_BACKUP_INTEGRITY.md`.
 
 ## Synthetic clinical/date-rule layer
 

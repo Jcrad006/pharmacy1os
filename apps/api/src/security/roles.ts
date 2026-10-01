@@ -32,6 +32,7 @@ export const permissions = [
   "product:compliance",
   "user:manage",
   "audit:read",
+  "system:backup",
 ] as const;
 
 export type Permission = (typeof permissions)[number];

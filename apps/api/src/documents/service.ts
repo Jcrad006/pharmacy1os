@@ -14,6 +14,7 @@ import {
   renderElectronicPrescriptionSvg,
   storeImmutableDocument,
 } from "../documentVault.js";
+import { withDocumentVaultWriteLease } from "../vaultCoordination.js";
 
 export type DocumentActorContext = {
   siteId: string;
@@ -266,58 +267,60 @@ export async function createPrescriptionSourceDocument(
   }
   assertSupportedUploadedMimeType(mimeType);
   const bytes = decodeDocumentBase64(input.base64Data ?? "");
-  const stored = await storeImmutableDocument({
-    siteId: context.siteId,
-    bytes,
-  });
-
-  try {
-    return await db.$transaction(async (tx) => {
-      const document = await tx.document.create({
-        data: {
-          id: stored.documentId,
-          siteId: context.siteId,
-          patientId: rx.patientId,
-          prescriptionId: rx.id,
-          kind: "PRESCRIPTION_SOURCE",
-          sourceType,
-          mimeType,
-          originalFilename: trimOptional(input.originalFilename),
-          storageKey: stored.storageKey,
-          sha256: stored.sha256,
-          byteSize: stored.byteSize,
-          encrypted: stored.encrypted,
-          immutable: true,
-          createdById: context.actorId,
-        },
-        include: documentInclude,
-      });
-
-      await writeAuditEvent(tx, {
-        siteId: context.siteId,
-        actorId: context.actorId,
-        action: "PRESCRIPTION_DOCUMENT_STORED",
-        entityType: "Document",
-        entityId: document.id,
-        requestId: context.requestId,
-        metadata: {
-          prescriptionId: rx.id,
-          patientId: rx.patientId,
-          sourceType,
-          mimeType,
-          byteSize: stored.byteSize,
-          sha256: stored.sha256,
-          encrypted: stored.encrypted,
-          immutable: true,
-        },
-      });
-
-      return document;
+  return withDocumentVaultWriteLease(async () => {
+    const stored = await storeImmutableDocument({
+      siteId: context.siteId,
+      bytes,
     });
-  } catch (error) {
-    await removeStoredDocument(stored.storageKey);
-    throw error;
-  }
+
+    try {
+      return await db.$transaction(async (tx) => {
+        const document = await tx.document.create({
+          data: {
+            id: stored.documentId,
+            siteId: context.siteId,
+            patientId: rx.patientId,
+            prescriptionId: rx.id,
+            kind: "PRESCRIPTION_SOURCE",
+            sourceType,
+            mimeType,
+            originalFilename: trimOptional(input.originalFilename),
+            storageKey: stored.storageKey,
+            sha256: stored.sha256,
+            byteSize: stored.byteSize,
+            encrypted: stored.encrypted,
+            immutable: true,
+            createdById: context.actorId,
+          },
+          include: documentInclude,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: context.siteId,
+          actorId: context.actorId,
+          action: "PRESCRIPTION_DOCUMENT_STORED",
+          entityType: "Document",
+          entityId: document.id,
+          requestId: context.requestId,
+          metadata: {
+            prescriptionId: rx.id,
+            patientId: rx.patientId,
+            sourceType,
+            mimeType,
+            byteSize: stored.byteSize,
+            sha256: stored.sha256,
+            encrypted: stored.encrypted,
+            immutable: true,
+          },
+        });
+
+        return document;
+      });
+    } catch (error) {
+      await removeStoredDocument(stored.storageKey);
+      throw error;
+    }
+  });
 }
 
 export async function createElectronicPrescriptionRender(
@@ -346,55 +349,69 @@ export async function createElectronicPrescriptionRender(
   if (existing) return existing;
 
   const bytes = renderElectronicPrescriptionSvg(rx);
-  const stored = await storeImmutableDocument({
-    siteId: context.siteId,
-    bytes,
-  });
-
-  try {
-    return await db.$transaction(async (tx) => {
-      const document = await tx.document.create({
-        data: {
-          id: stored.documentId,
-          siteId: context.siteId,
-          patientId: rx.patientId,
-          prescriptionId: rx.id,
-          kind: "PRESCRIPTION_SOURCE",
-          sourceType: "ELECTRONIC_RENDER",
-          mimeType: "image/svg+xml",
-          originalFilename: rx.rxNumber
-            ? `eRx-${rx.rxNumber}.svg`
-            : `eRx-${rx.id}.svg`,
-          storageKey: stored.storageKey,
-          sha256: stored.sha256,
-          byteSize: stored.byteSize,
-          encrypted: stored.encrypted,
-          immutable: true,
-          createdById: context.actorId,
-        },
-        include: documentInclude,
-      });
-
-      await writeAuditEvent(tx, {
+  return withDocumentVaultWriteLease(async () => {
+    const recheck = await db.document.findFirst({
+      where: {
         siteId: context.siteId,
-        actorId: context.actorId,
-        action: "ELECTRONIC_PRESCRIPTION_RENDERED",
-        entityType: "Document",
-        entityId: document.id,
-        requestId: context.requestId,
-        metadata: {
-          prescriptionId: rx.id,
-          electronicMessageId: rx.electronicMessageId,
-          sha256: stored.sha256,
-          immutable: true,
-        },
-      });
-      return document;
+        prescriptionId,
+        sourceType: "ELECTRONIC_RENDER",
+        kind: "PRESCRIPTION_SOURCE",
+      },
+      include: documentInclude,
+      orderBy: { createdAt: "asc" },
     });
-  } catch (error) {
-    await removeStoredDocument(stored.storageKey);
-    throw error;
-  }
+    if (recheck) return recheck;
+
+    const stored = await storeImmutableDocument({
+      siteId: context.siteId,
+      bytes,
+    });
+
+    try {
+      return await db.$transaction(async (tx) => {
+        const document = await tx.document.create({
+          data: {
+            id: stored.documentId,
+            siteId: context.siteId,
+            patientId: rx.patientId,
+            prescriptionId: rx.id,
+            kind: "PRESCRIPTION_SOURCE",
+            sourceType: "ELECTRONIC_RENDER",
+            mimeType: "image/svg+xml",
+            originalFilename: rx.rxNumber
+              ? `eRx-${rx.rxNumber}.svg`
+              : `eRx-${rx.id}.svg`,
+            storageKey: stored.storageKey,
+            sha256: stored.sha256,
+            byteSize: stored.byteSize,
+            encrypted: stored.encrypted,
+            immutable: true,
+            createdById: context.actorId,
+          },
+          include: documentInclude,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: context.siteId,
+          actorId: context.actorId,
+          action: "ELECTRONIC_PRESCRIPTION_RENDERED",
+          entityType: "Document",
+          entityId: document.id,
+          requestId: context.requestId,
+          metadata: {
+            prescriptionId: rx.id,
+            electronicMessageId: rx.electronicMessageId,
+            sha256: stored.sha256,
+            immutable: true,
+          },
+        });
+        return document;
+      });
+    } catch (error) {
+      await removeStoredDocument(stored.storageKey);
+      throw error;
+    }
+  });
 }
 
 export async function documentForRead(
