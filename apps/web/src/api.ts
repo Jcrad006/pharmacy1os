@@ -13,6 +13,10 @@ import type {
   CoverageRelationship,
   ClaimStandard,
   BillingNdcStrategy,
+  ClaimTransaction,
+  PrescriptionLabel,
+  LabelPrintJob,
+  ClaimAdjudicationResult,
   ProductSelectionDirective,
   Prescriber,
   Medication,
@@ -303,7 +307,7 @@ export async function createPrescription(
 export async function createFill(
   devUser: string,
   prescriptionId: string,
-  input: { quantity?: number; scheduledFor?: string },
+  input: { quantity?: number; scheduledFor?: string; daysSupply?: number },
 ) {
   return request<{
     fill: PrescriptionFill;
@@ -329,6 +333,7 @@ export async function createPartialFill(
     partialFill: PrescriptionFill;
     completionFill: PrescriptionFill;
     inventoryException: InventoryException | null;
+    adjudication: ClaimAdjudicationResult | null;
     prescription: PrescriptionQueueItem;
   }>(`/api/fills/${fillId}/partial`, {
     method: "POST",
@@ -383,6 +388,7 @@ export async function scanFillProduct(
 ) {
   return request<{
     fill: PrescriptionFill;
+    adjudication: ClaimAdjudicationResult | null;
     verifiedProduct: {
       drug: Medication;
       product: {
@@ -661,6 +667,7 @@ export async function scanFillBarcode(
 ) {
   return request<{
     fill: PrescriptionFill;
+    adjudication: ClaimAdjudicationResult | null;
     parsed: ParsedBarcode;
     barcode: ProductBarcode;
     verifiedProduct: {
@@ -686,7 +693,10 @@ export async function setFillBillingProduct(
   fillId: string,
   productId: string | null,
 ) {
-  return request<{ fill: PrescriptionFill }>(
+  return request<{
+    fill: PrescriptionFill;
+    adjudication: ClaimAdjudicationResult | null;
+  }>(
     `/api/fills/${fillId}/billing-product`,
     {
       method: "PUT",
@@ -694,6 +704,24 @@ export async function setFillBillingProduct(
       body: JSON.stringify({ productId }),
     },
   );
+}
+
+export async function setFillBillingDetails(
+  devUser: string,
+  fillId: string,
+  input: {
+    daysSupply?: number;
+    billingProductId?: string | null;
+  },
+) {
+  return request<{
+    fill: PrescriptionFill;
+    adjudication: ClaimAdjudicationResult | null;
+  }>(`/api/fills/${fillId}/billing-details`, {
+    method: "PUT",
+    devUser,
+    body: JSON.stringify(input),
+  });
 }
 
 export async function setFillPackaging(
@@ -813,6 +841,23 @@ export async function getThirdPartyWorkspace(
   return request<{
     patients: Array<Patient & { coverages: PatientCoverage[] }>;
     payers: Payer[];
+    claimIssues: Array<
+      ClaimTransaction & {
+        payer: Payer;
+        fill: PrescriptionFill & {
+          prescription: PrescriptionQueueItem;
+        };
+      }
+    >;
+    printQueue: Array<
+      LabelPrintJob & {
+        label: PrescriptionLabel & {
+          fill: PrescriptionFill & {
+            prescription: PrescriptionQueueItem;
+          };
+        };
+      }
+    >;
     maxCoveragePositions: number;
   }>(`/api/third-party/workspace${suffix}`, { devUser });
 }
@@ -878,6 +923,48 @@ export async function removePatientCoverage(
   return request<void>(
     `/api/patients/${patientId}/coverages/${position}`,
     { method: "DELETE", devUser },
+  );
+}
+
+export async function getFillClaims(devUser: string, fillId: string) {
+  return request<{
+    transactions: ClaimTransaction[];
+    labels: PrescriptionLabel[];
+  }>(`/api/fills/${fillId}/claims`, { devUser });
+}
+
+export async function adjudicateFill(devUser: string, fillId: string) {
+  return request<{ adjudication: ClaimAdjudicationResult }>(
+    `/api/fills/${fillId}/adjudicate`,
+    {
+      method: "POST",
+      devUser,
+    },
+  );
+}
+
+export async function reverseClaim(devUser: string, claimId: string) {
+  return request<{
+    transaction: ClaimTransaction;
+    replayed: boolean;
+  }>(`/api/third-party/claims/${claimId}/reverse`, {
+    method: "POST",
+    devUser,
+  });
+}
+
+export async function markLabelPrintJobPrinted(
+  devUser: string,
+  printJobId: string,
+  printerName?: string,
+) {
+  return request<{ printJob: LabelPrintJob }>(
+    `/api/third-party/print-jobs/${printJobId}/printed`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ printerName }),
+    },
   );
 }
 
