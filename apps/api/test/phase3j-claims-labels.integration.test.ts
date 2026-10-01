@@ -401,6 +401,101 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
     expect(labels[1]!.printJobs[0]!.status).toBe("QUEUED");
   });
 
+  it("bills the full intended quantity once when the partial is known before scanning and does not rebill the completion", async () => {
+    const patient = await makePatient([
+      { memberId: "PAID-PRESCAN-PARTIAL-3J", standard: "D0" },
+    ]);
+    const prescriptionId = await createPrescription(patient.id, 100);
+    const fillId = await createFill(prescriptionId, 100, 30);
+
+    const partial = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/partial`,
+      headers: technicianHeaders,
+      payload: {
+        dispenseQuantity: 40,
+        completionScheduledFor: new Date(Date.now() + 86_400_000).toISOString(),
+        interruptionReason: "INSUFFICIENT_PHYSICAL_STOCK",
+        reason: "Only forty tablets are physically available.",
+      },
+    });
+    expect(partial.statusCode).toBe(200);
+    const completionId = partial.json().completionFill.id as string;
+    expect(Number(partial.json().partialFill.payerIntendedQuantity)).toBe(100);
+    expect(Number(partial.json().partialFill.quantity)).toBe(40);
+    expect(Number(partial.json().completionFill.quantity)).toBe(60);
+
+    const primaryScan = await scan(fillId, 40);
+    expect(primaryScan.statusCode).toBe(200);
+    expect(primaryScan.json().adjudication.state).toBe("PAID_LABEL_READY");
+
+    const primaryClaim = await db.claimTransaction.findFirstOrThrow({
+      where: { fillId, operation: "SUBMIT", outcome: "PAID" },
+    });
+    expect(primaryClaim.payerIntendedQuantity.toNumber()).toBe(100);
+    expect(primaryClaim.physicalPartQuantity.toNumber()).toBe(40);
+
+    const review = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "PHARMACIST_REVIEW" },
+    });
+    expect(review.statusCode).toBe(200);
+    const ready = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: pharmacistHeaders,
+      payload: { status: "READY" },
+    });
+    expect(ready.statusCode).toBe(200);
+    const sold = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "SOLD" },
+    });
+    expect(sold.statusCode).toBe(200);
+
+    await db.prescriptionFill.update({
+      where: { id: completionId },
+      data: { scheduledFor: new Date(Date.now() - 1000) },
+    });
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/fills/${completionId}/start`,
+      headers: technicianHeaders,
+    });
+    expect(started.statusCode).toBe(200);
+
+    const completionScan = await scan(completionId, 60);
+    expect(completionScan.statusCode).toBe(200);
+    expect(completionScan.json().adjudication.state).toBe(
+      "COMPLETION_LABEL_READY",
+    );
+
+    expect(
+      await db.claimTransaction.count({
+        where: {
+          OR: [{ fillId }, { fillId: completionId }],
+          operation: "SUBMIT",
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await db.claimTransaction.count({
+        where: { fillId: completionId, operation: "SUBMIT" },
+      }),
+    ).toBe(0);
+
+    const completionLabel = await db.prescriptionLabel.findFirstOrThrow({
+      where: { fillId: completionId, status: "ACTIVE" },
+    });
+    expect(completionLabel.claimTransactionId).toBe(primaryClaim.id);
+    expect(completionLabel.physicalQuantity.toNumber()).toBe(60);
+    expect(completionLabel.payerIntendedQuantity?.toNumber()).toBe(100);
+  });
+
   it("records a reversal separately and voids the active dispensing label", async () => {
     const patient = await makePatient([{ memberId: "PAID-REVERSE-3J", standard: "D0" }]);
     const prescriptionId = await createPrescription(patient.id, 10);
