@@ -38,6 +38,13 @@ enum FillStatus {
   CANCELLED
 }
 
+enum FillKind {
+  STANDARD
+  PARTIAL
+  COMPLETION
+  EMERGENCY_SUPPLY
+}
+
 enum DurSeverity {
   INFO
   WARNING
@@ -188,6 +195,7 @@ model User {
   createdPurchaseOrders  PurchaseOrder[]            @relation("PurchaseOrderCreatedBy")
   cancelledPurchaseOrders PurchaseOrder[]           @relation("PurchaseOrderCancelledBy")
   purchaseOrderReceipts  PurchaseOrderReceipt[]     @relation("PurchaseOrderReceiptActor")
+  authorizedEmergencyFills PrescriptionFill[]         @relation("EmergencyFillAuthorizedBy")
 
   @@index([siteId, role])
 }
@@ -443,8 +451,22 @@ model PrescriptionFill {
   prescriptionId      String
   prescription        Prescription       @relation(fields: [prescriptionId], references: [id])
   fillNumber          Int
+  partNumber          Int                @default(1)
+  kind                FillKind           @default(STANDARD)
   scheduledFor        DateTime?
   quantity            Decimal?           @db.Decimal(10, 3)
+  authorizedQuantity  Decimal?           @db.Decimal(10, 3)
+  consumesRefill      Boolean            @default(true)
+  completionOfFillId  String?
+  completionOfFill    PrescriptionFill?  @relation("FillCompletionChain", fields: [completionOfFillId], references: [id], onDelete: Restrict)
+  completionFills     PrescriptionFill[] @relation("FillCompletionChain")
+  emergencyReason     String?
+  emergencyAuthorizedById String?
+  emergencyAuthorizedBy User?            @relation("EmergencyFillAuthorizedBy", fields: [emergencyAuthorizedById], references: [id], onDelete: Restrict)
+  emergencyAuthorizedAt DateTime?
+  followUpDueAt       DateTime?
+  followUpCompletedAt DateTime?
+  followUpNote        String?
   status              FillStatus         @default(SCHEDULED)
   productId           String?
   product             Product?           @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -468,7 +490,10 @@ model PrescriptionFill {
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
 
-  @@unique([prescriptionId, fillNumber])
+  @@unique([prescriptionId, fillNumber, partNumber])
+  @@index([completionOfFillId])
+  @@index([kind, status, scheduledFor])
+  @@index([followUpDueAt, followUpCompletedAt])
   @@index([scheduledFor, status])
   @@index([productId])
   @@index([productLotId])
