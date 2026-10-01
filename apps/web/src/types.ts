@@ -496,7 +496,9 @@ export type InventoryDemand = {
     id: string;
     quantityPlanned: string | number;
     quantityReceived: string | number;
-    purchaseOrderLine: PurchaseOrderLine;
+    purchaseOrderLine: PurchaseOrderLine & {
+      purchaseOrder: PurchaseOrder;
+    };
   }>;
 };
 
