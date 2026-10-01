@@ -80,6 +80,7 @@ describe("Phase 3H inventory ledger", () => {
     });
     expect(assigned.statusCode).toBe(201);
 
+    const idempotencyKey = `receipt-${randomUUID()}`;
     const received = await app.inject({
       method: "POST",
       url: "/api/receiving/stock",
@@ -89,6 +90,8 @@ describe("Phase 3H inventory ledger", () => {
         quantity: 40,
         source: "Test Wholesaler",
         reference: `INV-${suffix}`,
+        unitCost: 0.125,
+        idempotencyKey,
       },
     });
     expect(received.statusCode).toBe(201);
@@ -98,6 +101,86 @@ describe("Phase 3H inventory ledger", () => {
 
     const balanceId = received.json().balance.id as string;
 
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: technicianHeaders,
+      payload: {
+        rawBarcode,
+        quantity: 40,
+        source: "Test Wholesaler",
+        reference: `INV-${suffix}`,
+        unitCost: 0.125,
+        idempotencyKey,
+      },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().status).toBe("REPLAYED");
+    expect(Number(replay.json().balance.onHandQuantity)).toBe(40);
+
+    const receivingLocation = await db.inventoryLocation.findFirstOrThrow({
+      where: {
+        siteId: "site-demo-001",
+        isDefaultReceiving: true,
+      },
+    });
+    const initialPosition = await db.inventoryStockPosition.findFirstOrThrow({
+      where: {
+        inventoryBalanceId: balanceId,
+        locationId: receivingLocation.id,
+        state: "AVAILABLE",
+      },
+    });
+    expect(initialPosition.quantity.toNumber()).toBe(40);
+
+    const binCode = `BIN-${suffix}`;
+    const createdLocation = await app.inject({
+      method: "POST",
+      url: "/api/inventory/locations",
+      headers: pharmacistHeaders,
+      payload: {
+        code: binCode,
+        name: `Test Bin ${suffix}`,
+        type: "BIN",
+      },
+    });
+    expect(createdLocation.statusCode).toBe(201);
+    const binId = createdLocation.json().location.id as string;
+
+    const moved = await app.inject({
+      method: "POST",
+      url: "/api/inventory/locations/move",
+      headers: technicianHeaders,
+      payload: {
+        inventoryBalanceId: balanceId,
+        fromLocationId: receivingLocation.id,
+        toLocationId: binId,
+        state: "AVAILABLE",
+        quantity: 5,
+        reason: "Move stock to dispensing bin.",
+      },
+    });
+    expect(moved.statusCode).toBe(200);
+
+    const positionsAfterMove = await db.inventoryStockPosition.findMany({
+      where: { inventoryBalanceId: balanceId },
+    });
+    expect(
+      positionsAfterMove.reduce(
+        (sum, position) => sum + position.quantity.toNumber(),
+        0,
+      ),
+    ).toBe(40);
+
+    const projection = await app.inject({
+      method: "GET",
+      url: `/api/inventory/balances/${balanceId}/as-of`,
+      headers: pharmacistHeaders,
+    });
+    expect(projection.statusCode).toBe(200);
+    expect(Number(projection.json().onHandQuantity)).toBe(40);
+    expect(Number(projection.json().recordedAcquisitionCost)).toBe(5);
+
     const first = await createLisinoprilFill(30, suffix);
     const reserved = await app.inject({
       method: "POST",
@@ -106,6 +189,11 @@ describe("Phase 3H inventory ledger", () => {
       payload: { rawBarcode },
     });
     expect(reserved.statusCode).toBe(200);
+
+    const activeAllocation = await db.inventoryAllocation.findFirst({
+      where: { fillId: first.fillId, status: "ACTIVE" },
+    });
+    expect(activeAllocation?.quantity.toNumber()).toBe(30);
 
     let balance = await db.inventoryBalance.findUniqueOrThrow({
       where: { id: balanceId },
@@ -139,6 +227,11 @@ describe("Phase 3H inventory ledger", () => {
       payload: { status: "READY" },
     });
     expect(ready.statusCode).toBe(200);
+
+    const committedAllocation = await db.inventoryAllocation.findFirst({
+      where: { fillId: first.fillId, status: "COMMITTED" },
+    });
+    expect(committedAllocation?.quantity.toNumber()).toBe(30);
 
     balance = await db.inventoryBalance.findUniqueOrThrow({
       where: { id: balanceId },
