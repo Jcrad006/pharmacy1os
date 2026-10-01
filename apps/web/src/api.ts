@@ -14,6 +14,8 @@ import type {
   Product,
   ProductLot,
   ProductExpiration,
+  ProductBarcode,
+  ParsedBarcode,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -488,4 +490,101 @@ export async function createProductExpiration(
       body: JSON.stringify({ expirationDate }),
     },
   );
+}
+
+
+export async function assignProductBarcode(
+  devUser: string,
+  productId: string,
+  rawBarcode: string,
+  options?: { isPrimary?: boolean; note?: string },
+) {
+  return request<{
+    barcode: ProductBarcode;
+    parsed: ParsedBarcode;
+    product: Product;
+    lot: ProductLot | null;
+    expiration: ProductExpiration | null;
+  }>(`/api/products/${productId}/barcodes`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({
+      rawBarcode,
+      isPrimary: options?.isPrimary,
+      note: options?.note,
+    }),
+  });
+}
+
+export async function scanReceivingBarcode(
+  devUser: string,
+  rawBarcode: string,
+) {
+  return request<{
+    status: "KNOWN" | "UNKNOWN";
+    parsed: ParsedBarcode;
+    barcode: ProductBarcode | null;
+    product: (Product & { medication: Medication }) | null;
+    traceability:
+      | { lot: ProductLot | null; expiration: ProductExpiration | null }
+      | null;
+  }>("/api/receiving/scan", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({ rawBarcode }),
+  });
+}
+
+export async function assignReceivingBarcode(
+  devUser: string,
+  rawBarcode: string,
+  productId: string,
+  options?: { isPrimary?: boolean; note?: string },
+) {
+  return request<{
+    status: "ASSIGNED";
+    parsed: ParsedBarcode;
+    barcode: ProductBarcode;
+    product: Product & { medication: Medication };
+    traceability: {
+      lot: ProductLot | null;
+      expiration: ProductExpiration | null;
+    };
+  }>("/api/receiving/assign", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({
+      rawBarcode,
+      productId,
+      isPrimary: options?.isPrimary,
+      note: options?.note,
+    }),
+  });
+}
+
+export async function scanFillBarcode(
+  devUser: string,
+  fillId: string,
+  rawBarcode: string,
+) {
+  return request<{
+    fill: PrescriptionFill;
+    parsed: ParsedBarcode;
+    barcode: ProductBarcode;
+    verifiedProduct: {
+      drug: Medication;
+      product: {
+        id: string;
+        ndc: string;
+        descriptor: string;
+        manufacturer: Manufacturer;
+      };
+      lot: ProductLot;
+      expiration: ProductExpiration;
+    };
+  }>(`/api/fills/${fillId}/scan-barcode`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({ rawBarcode }),
+  });
 }
