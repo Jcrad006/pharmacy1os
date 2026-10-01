@@ -22,7 +22,7 @@ export class DocumentVaultError extends Error {
   }
 }
 
-function storageRoot() {
+export function getDocumentStorageRoot() {
   return resolve(
     process.env.DOCUMENT_STORAGE_ROOT ??
       resolve(process.cwd(), "data", "documents"),
@@ -42,8 +42,8 @@ function encryptionKey() {
   return Buffer.from(configured, "hex");
 }
 
-function safeStoragePath(storageKey: string) {
-  const root = storageRoot();
+export function getDocumentStoragePath(storageKey: string) {
+  const root = getDocumentStorageRoot();
   const candidate = resolve(root, storageKey);
   if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
     throw new DocumentVaultError(
@@ -53,6 +53,13 @@ function safeStoragePath(storageKey: string) {
     );
   }
   return candidate;
+}
+
+export function getDocumentEncryptionKeyFingerprint() {
+  const key = encryptionKey();
+  return key
+    ? createHash("sha256").update(key).digest("hex").slice(0, 24)
+    : null;
 }
 
 function encryptBytes(bytes: Buffer, key: Buffer) {
@@ -154,7 +161,7 @@ export async function storeImmutableDocument(input: {
 
   const documentId = input.documentId ?? randomUUID();
   const storageKey = `originals/${input.siteId}/${documentId}.p1doc`;
-  const path = safeStoragePath(storageKey);
+  const path = getDocumentStoragePath(storageKey);
   await mkdir(dirname(path), { recursive: true });
 
   const key = encryptionKey();
@@ -174,7 +181,7 @@ export async function readImmutableDocument(input: {
   storageKey: string;
   encrypted: boolean;
 }) {
-  const path = safeStoragePath(input.storageKey);
+  const path = getDocumentStoragePath(input.storageKey);
   const payload = await readFile(path);
   if (!input.encrypted) return payload;
 
@@ -189,9 +196,29 @@ export async function readImmutableDocument(input: {
   return decryptBytes(payload, key);
 }
 
+export function decodeStoredDocumentPayload(
+  payload: Buffer,
+  encrypted: boolean,
+) {
+  if (!encrypted) return payload;
+  const key = encryptionKey();
+  if (!key) {
+    throw new DocumentVaultError(
+      503,
+      "DOCUMENT_ENCRYPTION_KEY_REQUIRED",
+      "This document is encrypted, but DOCUMENT_ENCRYPTION_KEY is not configured.",
+    );
+  }
+  return decryptBytes(payload, key);
+}
+
+export async function readStoredDocumentPayload(storageKey: string) {
+  return readFile(getDocumentStoragePath(storageKey));
+}
+
 export async function removeStoredDocument(storageKey: string) {
   try {
-    await unlink(safeStoragePath(storageKey));
+    await unlink(getDocumentStoragePath(storageKey));
   } catch (error) {
     const code =
       typeof error === "object" && error && "code" in error
