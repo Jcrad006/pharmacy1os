@@ -251,6 +251,7 @@ model PharmacySite {
   recallCases           RecallCase[]
   purchaseOrders        PurchaseOrder[]
   inventoryLocations    InventoryLocation[]
+  inventoryAllocations  InventoryAllocation[]
   inventoryPolicies     InventoryPolicy[]
   inventoryDemands      InventoryDemand[]
   receivingDiscrepancies ReceivingDiscrepancy[]
