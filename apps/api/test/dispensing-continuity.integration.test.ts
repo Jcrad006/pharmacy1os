@@ -144,6 +144,30 @@ describe("Phase 3I dispensing continuity", () => {
     expect(completion.consumesRefill).toBe(false);
     expect(completion.completionOfFillId).toBe(fillId);
 
+    const demand = await db.inventoryDemand.findUnique({
+      where: { fillId: completion.id },
+    });
+    expect(demand).toBeTruthy();
+    expect(demand?.source).toBe("COMPLETION");
+    expect(demand?.requiredQuantity.toNumber()).toBe(87);
+    expect(demand?.neededBy?.toISOString()).toBe(
+      completionDate.toISOString(),
+    );
+
+    const demandQueue = await app.inject({
+      method: "GET",
+      url: "/api/inventory/demands",
+      headers: technicianHeaders,
+    });
+    expect(demandQueue.statusCode).toBe(200);
+    expect(
+      demandQueue
+        .json()
+        .demands.some(
+          (item: { fillId: string | null }) => item.fillId === completion.id,
+        ),
+    ).toBe(true);
+
     const soldPartial = await moveToSoldWithoutCatalog(prescriptionId);
     expect(soldPartial.refillsUsed).toBe(0);
 
