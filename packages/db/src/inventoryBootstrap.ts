@@ -51,7 +51,7 @@ export async function ensureSiteInventoryInfrastructure(
       isDefaultReceiving: false,
       isDefaultDispensing: false,
       isQuarantine: false,
-      barcode: `WC-DEFAULT-${siteId}`,
+      barcode: `WC-DEFAULT-${siteId}`.toUpperCase(),
     },
     create: {
       id: `location-will-call-${siteId}`,
@@ -63,7 +63,7 @@ export async function ensureSiteInventoryInfrastructure(
       isDefaultReceiving: false,
       isDefaultDispensing: false,
       isQuarantine: false,
-      barcode: `WC-DEFAULT-${siteId}`,
+      barcode: `WC-DEFAULT-${siteId}`.toUpperCase(),
     },
   });
 
