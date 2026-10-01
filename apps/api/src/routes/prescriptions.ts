@@ -1042,6 +1042,17 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (
         current.status === "PRODUCT_FILL" &&
         body.status === "PHARMACIST_REVIEW" &&
+        currentActiveFill
+      ) {
+        await assertFillBillingReadyForReview(
+          currentActiveFill.id,
+          actor.siteId,
+        );
+      }
+
+      if (
+        current.status === "PRODUCT_FILL" &&
+        body.status === "PHARMACIST_REVIEW" &&
         current.medicationId &&
         (!currentActiveFill?.productId ||
           !currentActiveFill.productLotId ||
@@ -1301,6 +1312,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (scheduledFor === "invalid") {
         return reply.code(400).send({ error: "Invalid scheduledFor date." });
       }
+      if (
+        body.daysSupply !== undefined &&
+        (!Number.isInteger(body.daysSupply) || body.daysSupply <= 0)
+      ) {
+        return reply.code(400).send({
+          error: "daysSupply must be a positive whole number when provided.",
+        });
+      }
 
       const now = new Date();
       const isFuture = Boolean(
@@ -1349,6 +1368,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             where: { id: latestFill.id },
             data: {
               scheduledFor: scheduledFor instanceof Date ? scheduledFor : null,
+              daysSupply: body.daysSupply ?? latestFill.daysSupply ?? null,
               quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
               authorizedQuantity:
                 body.quantity ?? prescription.quantityWritten ?? undefined,
@@ -1429,6 +1449,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             kind: "STANDARD",
             consumesRefill: true,
             scheduledFor: scheduledFor instanceof Date ? scheduledFor : undefined,
+            daysSupply: body.daysSupply,
             quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
             authorizedQuantity:
               body.quantity ?? prescription.quantityWritten ?? undefined,
@@ -1663,6 +1684,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             consumesRefill: false,
             completionOfFillId: fill.id,
             scheduledFor: completionScheduledFor,
+            daysSupply: fill.daysSupply,
             quantity: remainder,
             authorizedQuantity: intendedQuantity,
             intendedQuantity,
