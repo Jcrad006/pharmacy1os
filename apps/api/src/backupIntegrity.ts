@@ -11,13 +11,12 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { db } from "./db.js";
 import {
   decodeStoredDocumentPayload,
   DocumentVaultError,
   getDocumentEncryptionKeyFingerprint,
-  getDocumentStoragePath,
   getDocumentStorageRoot,
   readImmutableDocument,
   readStoredDocumentPayload,
@@ -308,6 +307,13 @@ export async function scanDocumentVaultIntegrity(options?: {
           documentId: document.id,
           storageKey: document.storageKey,
           detail: error.message,
+        });
+      } else if (document.encrypted) {
+        findings.push({
+          type: "DECRYPTION_FAILED",
+          documentId: document.id,
+          storageKey: document.storageKey,
+          detail: errorMessage(error),
         });
       } else {
         findings.push({
@@ -879,6 +885,7 @@ export async function restoreBackupSet(
       { findings: verification.findings },
     );
   }
+  const manifest = verification.manifest;
 
   return withExclusiveDocumentVaultLock("RESTORE", async () => {
     const restoreId = `restore-${new Date()
@@ -916,7 +923,7 @@ export async function restoreBackupSet(
       await db.$disconnect();
       try {
         await (options?.tooling?.restoreDatabase ?? defaultRestoreDatabase)(
-          join(backupDirectory, verification.manifest.database.file),
+          join(backupDirectory, manifest.database.file),
         );
       } catch (error) {
         await rm(currentOriginals, { recursive: true, force: true });
