@@ -14,6 +14,7 @@ const ids = {
   site: "site-demo-001",
   site2: "site-demo-002",
   pharmacist: "user-demo-pharmacist",
+  pharmacistBackup: "user-demo-pharmacist-backup",
   technician: "user-demo-technician",
   intern: "user-demo-intern",
   pharmacist2: "user-demo-pharmacist-002",
@@ -120,6 +121,12 @@ async function main() {
 
   const staff = [
     [ids.pharmacist, "dev-pharmacist", "Morgan Pharmacist", UserRole.PHARMACIST],
+    [
+      ids.pharmacistBackup,
+      "dev-pharmacist-backup",
+      "Jamie Pharmacist",
+      UserRole.PHARMACIST,
+    ],
     [ids.technician, "dev-technician", "Taylor Technician", UserRole.TECHNICIAN],
     [ids.intern, "dev-intern", "Jordan Intern", UserRole.INTERN],
   ] as const;
