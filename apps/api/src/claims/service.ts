@@ -1191,6 +1191,7 @@ export async function assertFillBillingReadyForReview(
   const fill = await db.prescriptionFill.findFirst({
     where: { id: fillId, prescription: { siteId } },
     include: {
+      productSources: { select: { productId: true } },
       prescription: {
         include: {
           patient: { include: { coverages: true } },
@@ -1208,18 +1209,48 @@ export async function assertFillBillingReadyForReview(
   );
   if (!hasActiveThirdParty) return;
 
-  const activeLabel = await db.prescriptionLabel.findFirst({
+  const activeLabels = await db.prescriptionLabel.findMany({
     where: {
       fillId,
       status: "ACTIVE",
       claimTransactionId: { not: null },
     },
+    orderBy: [{ version: "desc" }, { bottleNumber: "asc" }],
   });
-  if (!activeLabel) {
+  if (activeLabels.length === 0) {
     throw new ClaimError(
       409,
       "CLAIM_PAYMENT_REQUIRED",
-      "A paid third-party claim and active dispensing label are required before pharmacist review.",
+      "A paid third-party claim and active dispensing label set are required before pharmacist review.",
+    );
+  }
+
+  const expectedBottleCount = new Set(
+    fill.productSources.map((source) => source.productId),
+  ).size;
+  const activeVersion = activeLabels[0]!.version;
+  const completeLabelSet =
+    expectedBottleCount > 0 &&
+    activeLabels.length === expectedBottleCount &&
+    activeLabels.every(
+      (label, index) =>
+        label.version === activeVersion &&
+        label.bottleCount === expectedBottleCount &&
+        label.bottleNumber === index + 1 &&
+        Boolean(label.physicalNdcSnapshot) &&
+        label.containerQuantity.gt(0),
+    );
+
+  if (!completeLabelSet) {
+    throw new ClaimError(
+      409,
+      "LABEL_SET_INCOMPLETE",
+      "Every distinct physical NDC must have an active bottle label before pharmacist review.",
+      {
+        expectedBottleCount,
+        activeLabelCount: activeLabels.length,
+        activeVersion,
+      },
     );
   }
 }
