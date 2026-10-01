@@ -34,7 +34,7 @@ SELECT
   false,
   false,
   false,
-  'WC-DEFAULT-' || site."id",
+  upper('WC-DEFAULT-' || site."id"),
   CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP
 FROM "PharmacySite" site
