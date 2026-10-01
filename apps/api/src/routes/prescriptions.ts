@@ -4,6 +4,7 @@ import {
   type FillInterruptionReason,
   type FillStatus,
   type PrescriptionStatus,
+  type ProductSelectionDirective,
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
@@ -22,10 +23,17 @@ import {
 import {
   commitInventoryForFill,
   InventoryError,
+  getFillSourceReservationSummary,
   releaseInventoryReservation,
+  removeInventorySourceForFill,
   reserveInventoryForFill,
+  reserveInventorySourceForFill,
+  resizeInventoryReservationForFill,
   returnInventoryForFill,
 } from "../inventory.js";
+import {
+  validateFillProductSourceCompliance,
+} from "../productFillCompliance.js";
 import {
   cancelDemandForFill,
   createOrUpdateFillDemand,
@@ -35,6 +43,8 @@ type CreatePrescriptionBody = {
   patientId?: string;
   prescriberId?: string;
   medicationId?: string;
+  prescribedProductId?: string;
+  productSelectionDirective?: ProductSelectionDirective;
   rxNumber?: string;
   medicationName?: string;
   strength?: string;
@@ -51,6 +61,8 @@ type CreatePrescriptionBody = {
 type UpdatePrescriptionBody = {
   prescriberId?: string;
   medicationId?: string;
+  prescribedProductId?: string | null;
+  productSelectionDirective?: ProductSelectionDirective;
   medicationName?: string;
   strength?: string | null;
   dosageForm?: string | null;
@@ -93,11 +105,19 @@ type ScanProductBody = {
   ndc?: string;
   lotNumber?: string;
   expirationDate?: string;
+  sourceQuantity?: number;
 };
 
 type ScanBarcodeBody = {
   rawBarcode?: string;
+  sourceQuantity?: number;
 };
+
+const productSelectionDirectives = new Set<ProductSelectionDirective>([
+  "UNSPECIFIED",
+  "SELECTION_PERMITTED",
+  "DISPENSE_AS_WRITTEN",
+]);
 
 const fillInterruptionReasons = new Set<FillInterruptionReason>([
   "INSUFFICIENT_PHYSICAL_STOCK",
@@ -130,6 +150,7 @@ const editableStatuses = new Set<PrescriptionStatus>([
 const prescriptionInclude = {
   patient: true,
   medication: true,
+  prescribedProduct: { include: { manufacturer: true } },
   prescriber: {
     include: {
       identifiers: {
@@ -149,6 +170,17 @@ const prescriptionInclude = {
       productLot: true,
       productExpiration: true,
       inventoryBalance: true,
+      productSources: {
+        include: {
+          product: { include: { manufacturer: true, medication: true } },
+          manufacturer: true,
+          productLot: true,
+          productExpiration: true,
+          inventoryBalance: true,
+        },
+        orderBy: { sequence: "asc" as const },
+      },
+      biologicCommunicationTask: true,
     },
     orderBy: [
       { fillNumber: "desc" as const },
@@ -497,6 +529,44 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (
+        body.productSelectionDirective &&
+        !productSelectionDirectives.has(body.productSelectionDirective)
+      ) {
+        return reply.code(400).send({
+          error: "Invalid product-selection directive.",
+        });
+      }
+
+      let prescribedProduct = null;
+      if (body.prescribedProductId) {
+        prescribedProduct = await db.product.findUnique({
+          where: { id: body.prescribedProductId },
+          include: { manufacturer: true },
+        });
+        if (
+          !prescribedProduct ||
+          !prescribedProduct.active ||
+          !selectedMedication ||
+          prescribedProduct.medicationId !== selectedMedication.id
+        ) {
+          return reply.code(400).send({
+            error:
+              "The prescribed product must be an active NDC under the selected Drug.",
+          });
+        }
+      }
+
+      if (
+        body.productSelectionDirective === "DISPENSE_AS_WRITTEN" &&
+        !prescribedProduct
+      ) {
+        return reply.code(400).send({
+          error:
+            "A prescribed product/NDC is required when product selection is prohibited.",
+        });
+      }
+
       const prescription = await db.$transaction(async (tx) => {
         const created = await tx.prescription.create({
           data: {
@@ -504,6 +574,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             patientId: body.patientId!,
             prescriberId: body.prescriberId!,
             medicationId: selectedMedication?.id,
+            prescribedProductId: prescribedProduct?.id,
+            productSelectionDirective:
+              body.productSelectionDirective ?? "UNSPECIFIED",
             rxNumber: body.rxNumber?.trim() || undefined,
             medicationName:
               selectedMedication?.genericName ?? body.medicationName!.trim(),
@@ -589,6 +662,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         [
           "prescriberId",
           "medicationId",
+          "prescribedProductId",
+          "productSelectionDirective",
           "medicationName",
           "strength",
           "dosageForm",
@@ -669,6 +744,61 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         }
       }
 
+      if (
+        body.productSelectionDirective !== undefined &&
+        !productSelectionDirectives.has(body.productSelectionDirective)
+      ) {
+        return reply.code(400).send({
+          error: "Invalid product-selection directive.",
+        });
+      }
+
+      const effectiveMedicationId =
+        selectedMedicationForEdit?.id ?? current.medicationId;
+      let prescribedProductForEdit:
+        | { id: string; medicationId: string; active: boolean }
+        | null
+        | undefined = undefined;
+
+      if (body.prescribedProductId !== undefined) {
+        if (body.prescribedProductId === null) {
+          prescribedProductForEdit = null;
+        } else {
+          prescribedProductForEdit = await db.product.findUnique({
+            where: { id: body.prescribedProductId },
+            select: { id: true, medicationId: true, active: true },
+          });
+          if (
+            !prescribedProductForEdit ||
+            !prescribedProductForEdit.active ||
+            !effectiveMedicationId ||
+            prescribedProductForEdit.medicationId !== effectiveMedicationId
+          ) {
+            return reply.code(400).send({
+              error:
+                "The prescribed product must be an active NDC under the selected Drug.",
+            });
+          }
+        }
+      }
+
+      const effectiveDirective =
+        body.productSelectionDirective ?? current.productSelectionDirective;
+      const effectivePrescribedProductId =
+        prescribedProductForEdit === undefined
+          ? current.prescribedProductId
+          : prescribedProductForEdit?.id ?? null;
+
+      if (
+        effectiveDirective === "DISPENSE_AS_WRITTEN" &&
+        !effectivePrescribedProductId
+      ) {
+        return reply.code(400).send({
+          error:
+            "A prescribed product/NDC is required when product selection is prohibited.",
+        });
+      }
+
       if (body.prescriberId !== undefined) {
         const prescriber = await db.prescriber.findFirst({
           where: { id: body.prescriberId, siteId: actor.siteId },
@@ -705,6 +835,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         data.strength = selectedMedicationForEdit.strength;
         data.dosageForm = selectedMedicationForEdit.dosageForm;
       } else if (body.medicationName !== undefined) data.medicationName = body.medicationName.trim();
+      if (body.prescribedProductId !== undefined) {
+        data.prescribedProduct =
+          prescribedProductForEdit === null
+            ? { disconnect: true }
+            : { connect: { id: prescribedProductForEdit!.id } };
+      }
+      if (body.productSelectionDirective !== undefined) {
+        data.productSelectionDirective = body.productSelectionDirective;
+      }
       if (body.strength !== undefined) data.strength = body.strength?.trim() || null;
       if (body.dosageForm !== undefined) data.dosageForm = body.dosageForm?.trim() || null;
       if (body.sig !== undefined) data.sig = body.sig.trim();
@@ -1448,16 +1587,6 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             })
           : null;
 
-        if (wasReserved) {
-          await releaseInventoryReservation(tx, {
-            fillId: fill.id,
-            siteId: actor.siteId,
-            actorId: actor.id,
-            reason:
-              "Fill interrupted and reservation resized for physical partial dispense",
-          });
-        }
-
         const interruptionReason =
           body.interruptionReason ??
           (interruptedAfterScan
@@ -1511,25 +1640,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
 
         if (wasReserved) {
-          if (
-            !fill.productId ||
-            !fill.productLotId ||
-            !fill.productExpirationId
-          ) {
-            throw new InventoryError(
-              409,
-              "PARTIAL_RESERVATION_TRACEABILITY_MISSING",
-              "The existing reservation cannot be resized because its product traceability is incomplete.",
-            );
-          }
-
-          await reserveInventoryForFill(tx, {
+          await resizeInventoryReservationForFill(tx, {
             fillId: fill.id,
             siteId: actor.siteId,
             actorId: actor.id,
-            productId: fill.productId,
-            productLotId: fill.productLotId,
-            productExpirationId: fill.productExpirationId,
+            targetQuantity: partial,
+            reason:
+              "Fill interrupted and multi-source reservation resized for physical partial dispense",
           });
         }
 
@@ -2061,43 +2178,77 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const verified = await db.$transaction(async (tx) => {
-        const reservation = await reserveInventoryForFill(tx, {
+        await validateFillProductSourceCompliance(tx, {
+          fillId: id,
+          productId: product.id,
+        });
+
+        const before = await getFillSourceReservationSummary(tx, id);
+        const requestedSourceQuantity =
+          body.sourceQuantity === undefined
+            ? before.remainingQuantity
+            : new Prisma.Decimal(body.sourceQuantity);
+
+        if (
+          requestedSourceQuantity.lte(0) ||
+          requestedSourceQuantity.gt(before.remainingQuantity)
+        ) {
+          throw new InventoryError(
+            400,
+            "INVALID_FILL_SOURCE_QUANTITY",
+            "Source quantity must be positive and cannot exceed the remaining physical dispense quantity.",
+            {
+              remainingQuantity: before.remainingQuantity.toString(),
+              requestedQuantity: requestedSourceQuantity.toString(),
+            },
+          );
+        }
+
+        const reservation = await reserveInventorySourceForFill(tx, {
           fillId: id,
           siteId: actor.siteId,
           actorId: actor.id,
           productId: product.id,
           productLotId: lot.id,
           productExpirationId: expiration.id,
+          quantity: requestedSourceQuantity,
         });
-        const verifiedAt = new Date();
-        const updated = await tx.prescriptionFill.update({
+
+        const updated = await tx.prescriptionFill.findUniqueOrThrow({
           where: { id },
-          data: {
-            productId: product.id,
-            productLotId: lot.id,
-            productExpirationId: expiration.id,
-            scannedNdc: product.ndc,
-            scannedLotNumber: lot.lotNumber,
-            scannedExpiration: expiration.expirationDate,
-            productVerifiedAt: verifiedAt,
-          },
           include: {
             product: { include: { manufacturer: true } },
             productLot: true,
             productExpiration: true,
+            inventoryBalance: true,
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+            biologicCommunicationTask: true,
           },
         });
 
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
-          action: "FILL_BARCODE_SCAN_VERIFIED",
+          action: reservation.complete
+            ? "FILL_PRODUCT_SOURCES_COMPLETE"
+            : "FILL_PRODUCT_SOURCE_ADDED",
           entityType: "PrescriptionFill",
           entityId: id,
           requestId: request.id,
           metadata: {
             prescriptionId: fill.prescriptionId,
             medicationId: fill.prescription.medicationId,
+            sourceId: reservation.source.id,
+            sourceSequence: reservation.source.sequence,
             productId: product.id,
             productBarcodeId: registered.id,
             barcodeType: registered.type,
@@ -2107,7 +2258,11 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             expirationDate: expiration.expirationDate.toISOString(),
             manufacturerName: product.manufacturer.name,
             inventoryBalanceId: reservation.balance.id,
-            reservedQuantity: reservation.quantity.toString(),
+            sourceQuantity: reservation.sourceQuantity.toString(),
+            totalReservedQuantity: reservation.totalReserved.toString(),
+            remainingQuantity: reservation.remainingQuantity.toString(),
+            sourceCount: updated.productSources.length,
+            complete: reservation.complete,
           },
         });
 
@@ -2269,50 +2424,88 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const result = await db.$transaction(async (tx) => {
-        const reservation = await reserveInventoryForFill(tx, {
+        await validateFillProductSourceCompliance(tx, {
+          fillId: id,
+          productId: product.id,
+        });
+
+        const before = await getFillSourceReservationSummary(tx, id);
+        const requestedSourceQuantity =
+          body.sourceQuantity === undefined
+            ? before.remainingQuantity
+            : new Prisma.Decimal(body.sourceQuantity);
+
+        if (
+          requestedSourceQuantity.lte(0) ||
+          requestedSourceQuantity.gt(before.remainingQuantity)
+        ) {
+          throw new InventoryError(
+            400,
+            "INVALID_FILL_SOURCE_QUANTITY",
+            "Source quantity must be positive and cannot exceed the remaining physical dispense quantity.",
+            {
+              remainingQuantity: before.remainingQuantity.toString(),
+              requestedQuantity: requestedSourceQuantity.toString(),
+            },
+          );
+        }
+
+        const reservation = await reserveInventorySourceForFill(tx, {
           fillId: id,
           siteId: actor.siteId,
           actorId: actor.id,
           productId: product.id,
           productLotId: lot.id,
           productExpirationId: expiration.id,
+          quantity: requestedSourceQuantity,
         });
-        const verifiedAt = new Date();
-        const verified = await tx.prescriptionFill.update({
+
+        const verified = await tx.prescriptionFill.findUniqueOrThrow({
           where: { id },
-          data: {
-            productId: product.id,
-            productLotId: lot.id,
-            productExpirationId: expiration.id,
-            scannedNdc: product.ndc,
-            scannedLotNumber: lot.lotNumber,
-            scannedExpiration: expiration.expirationDate,
-            productVerifiedAt: verifiedAt,
-          },
           include: {
             product: { include: { manufacturer: true } },
             productLot: true,
             productExpiration: true,
+            inventoryBalance: true,
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+            biologicCommunicationTask: true,
           },
         });
 
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
-          action: "FILL_PRODUCT_SCAN_VERIFIED",
+          action: reservation.complete
+            ? "FILL_PRODUCT_SOURCES_COMPLETE"
+            : "FILL_PRODUCT_SOURCE_ADDED",
           entityType: "PrescriptionFill",
           entityId: id,
           requestId: request.id,
           metadata: {
             prescriptionId: fill.prescriptionId,
             medicationId: fill.prescription.medicationId,
+            sourceId: reservation.source.id,
+            sourceSequence: reservation.source.sequence,
             productId: product.id,
             ndc: product.ndc,
             lotNumber: lot.lotNumber,
             expirationDate: expiration.expirationDate.toISOString(),
             manufacturerName: product.manufacturer.name,
             inventoryBalanceId: reservation.balance.id,
-            reservedQuantity: reservation.quantity.toString(),
+            sourceQuantity: reservation.sourceQuantity.toString(),
+            totalReservedQuantity: reservation.totalReserved.toString(),
+            remainingQuantity: reservation.remainingQuantity.toString(),
+            sourceCount: verified.productSources.length,
+            complete: reservation.complete,
           },
         });
 
@@ -2341,6 +2534,405 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             ? { code: error.code, details: error.details }
             : {}),
         });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/fills/:id/billing-product", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:write");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as { productId?: string | null };
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: { id, prescription: { siteId: actor.siteId } },
+        include: {
+          productSources: true,
+          prescription: true,
+        },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (fill.inventoryCommittedAt) {
+        return reply.code(409).send({
+          error: "Billing product cannot be changed after pharmacist inventory commitment.",
+        });
+      }
+
+      if (body.productId) {
+        const source = fill.productSources.find(
+          (item) => item.productId === body.productId,
+        );
+        if (!source) {
+          return reply.code(409).send({
+            error:
+              "The billing product must be one of the physical NDC products used for this dispense part.",
+          });
+        }
+      }
+
+      const updated = await db.$transaction(async (tx) => {
+        const result = await tx.prescriptionFill.update({
+          where: { id },
+          data: { billingProductId: body.productId ?? null },
+          include: {
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_BILLING_PRODUCT_SELECTED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            billingProductId: body.productId ?? null,
+            physicalProductIds: fill.productSources.map(
+              (source) => source.productId,
+            ),
+          },
+        });
+        return result;
+      });
+
+      return { fill: updated };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/fills/:id/packaging", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(
+        request,
+        "prescription:process",
+      );
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as {
+        dispensedInOriginalContainer?: boolean;
+      };
+      if (typeof body.dispensedInOriginalContainer !== "boolean") {
+        return reply.code(400).send({
+          error: "dispensedInOriginalContainer must be true or false.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: { id, prescription: { siteId: actor.siteId } },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (fill.inventoryCommittedAt) {
+        return reply.code(409).send({
+          error: "Packaging status cannot be changed after pharmacist verification.",
+        });
+      }
+
+      const updated = await db.$transaction(async (tx) => {
+        const result = await tx.prescriptionFill.update({
+          where: { id },
+          data: {
+            dispensedInOriginalContainer: body.dispensedInOriginalContainer,
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_PACKAGING_STATUS_UPDATED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            dispensedInOriginalContainer:
+              body.dispensedInOriginalContainer,
+          },
+        });
+        return result;
+      });
+
+      return { fill: updated };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/fills/:id/product-sources/:sourceId", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(
+        request,
+        "prescription:process",
+      );
+      const params = request.params as { id: string; sourceId: string };
+      const fill = await db.prescriptionFill.findFirst({
+        where: {
+          id: params.id,
+          prescription: { siteId: actor.siteId },
+        },
+        include: { prescription: true },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (
+        fill.status !== "IN_PROGRESS" ||
+        fill.prescription.status !== "PRODUCT_FILL"
+      ) {
+        return reply.code(409).send({
+          error:
+            "Product sources may only be removed during an in-progress Product Fill.",
+        });
+      }
+
+      const summary = await db.$transaction(async (tx) => {
+        const updated = await removeInventorySourceForFill(tx, {
+          fillId: params.id,
+          sourceId: params.sourceId,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          reason: "Product Fill source removed before pharmacist verification",
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_PRODUCT_SOURCE_REMOVED",
+          entityType: "PrescriptionFill",
+          entityId: params.id,
+          requestId: request.id,
+          metadata: {
+            sourceId: params.sourceId,
+            reservedQuantity: updated.reservedQuantity.toString(),
+            remainingQuantity: updated.remainingQuantity.toString(),
+            sourceCount: updated.sources.length,
+          },
+        });
+        return updated;
+      });
+
+      const updatedFill = await db.prescriptionFill.findUniqueOrThrow({
+        where: { id: params.id },
+        include: {
+          product: { include: { manufacturer: true } },
+          productLot: true,
+          productExpiration: true,
+          inventoryBalance: true,
+          productSources: {
+            include: {
+              product: { include: { manufacturer: true, medication: true } },
+              manufacturer: true,
+              productLot: true,
+              productExpiration: true,
+              inventoryBalance: true,
+            },
+            orderBy: { sequence: "asc" },
+          },
+          biologicCommunicationTask: true,
+        },
+      });
+
+      return {
+        fill: updatedFill,
+        sourceSummary: {
+          requiredQuantity: summary.requiredQuantity.toString(),
+          reservedQuantity: summary.reservedQuantity.toString(),
+          remainingQuantity: summary.remainingQuantity.toString(),
+          complete: summary.complete,
+        },
+      };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/nti-manufacturer-consent", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "product:compliance");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as {
+        priorManufacturerId?: string;
+        newManufacturerId?: string;
+        prescriberConsentAt?: string;
+        patientConsentAt?: string;
+        note?: string;
+      };
+      const prescriberConsentAt = parseDate(body.prescriberConsentAt);
+      const patientConsentAt = parseDate(body.patientConsentAt);
+      const note = body.note?.trim();
+
+      if (
+        !body.priorManufacturerId ||
+        !body.newManufacturerId ||
+        body.priorManufacturerId === body.newManufacturerId ||
+        !(prescriberConsentAt instanceof Date) ||
+        !(patientConsentAt instanceof Date) ||
+        !note
+      ) {
+        return reply.code(400).send({
+          error:
+            "Prior/new manufacturers, prescriber consent time, patient consent time, and a documentation note are required.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: {
+          id,
+          prescription: { siteId: actor.siteId },
+        },
+        include: {
+          prescription: { include: { medication: true } },
+        },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (!fill.prescription.medication?.ncNarrowTherapeuticIndex) {
+        return reply.code(409).send({
+          error: "This medication is not configured as a North Carolina NTI drug.",
+        });
+      }
+
+      const consent = await db.$transaction(async (tx) => {
+        const record = await tx.ntiManufacturerConsent.upsert({
+          where: {
+            fillId_priorManufacturerId_newManufacturerId: {
+              fillId: id,
+              priorManufacturerId: body.priorManufacturerId!,
+              newManufacturerId: body.newManufacturerId!,
+            },
+          },
+          update: {
+            prescriberConsentAt,
+            patientConsentAt,
+            documentedById: actor.id,
+            note,
+          },
+          create: {
+            fillId: id,
+            priorManufacturerId: body.priorManufacturerId!,
+            newManufacturerId: body.newManufacturerId!,
+            prescriberConsentAt,
+            patientConsentAt,
+            documentedById: actor.id,
+            note,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "NC_NTI_MANUFACTURER_CHANGE_CONSENT_DOCUMENTED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            priorManufacturerId: body.priorManufacturerId,
+            newManufacturerId: body.newManufacturerId,
+            prescriberConsentAt: prescriberConsentAt.toISOString(),
+            patientConsentAt: patientConsentAt.toISOString(),
+            note,
+          },
+        });
+        return record;
+      });
+
+      return reply.code(201).send({ consent });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/biologic-communication/complete", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "product:compliance");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as { note?: string };
+      const note = body.note?.trim();
+      if (!note) {
+        return reply.code(400).send({
+          error: "A prescriber-communication note is required.",
+        });
+      }
+
+      const task = await db.biologicCommunicationTask.findFirst({
+        where: {
+          fillId: id,
+          siteId: actor.siteId,
+        },
+      });
+      if (!task) {
+        return reply.code(404).send({
+          error: "No biologic prescriber-communication task exists for this fill.",
+        });
+      }
+      if (task.status === "COMPLETED") {
+        return reply.code(409).send({
+          error: "Biologic communication is already documented complete.",
+        });
+      }
+
+      const completedAt = new Date();
+      const completed = await db.$transaction(async (tx) => {
+        const updated = await tx.biologicCommunicationTask.update({
+          where: { id: task.id },
+          data: {
+            status: "COMPLETED",
+            completedById: actor.id,
+            completedAt,
+            note,
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "NC_BIOLOGIC_PRESCRIBER_COMMUNICATION_COMPLETED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            productName: task.productName,
+            manufacturerName: task.manufacturerName,
+            dueAt: task.dueAt.toISOString(),
+            completedAt: completedAt.toISOString(),
+            note,
+          },
+        });
+        return updated;
+      });
+
+      return { task: completed };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
       }
       throw error;
     }

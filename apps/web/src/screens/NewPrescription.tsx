@@ -1,6 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { createPrescription, getMedications } from "../api";
-import type { Medication, Patient, Prescriber } from "../types";
+import type {
+  Medication,
+  Patient,
+  Prescriber,
+  ProductSelectionDirective,
+} from "../types";
 import { formatPatientName, formatPrescriberName } from "../workflow";
 
 function medicationLabel(medication: Medication) {
@@ -35,6 +40,9 @@ export function NewPrescription({
   const [prescriberId, setPrescriberId] = useState("");
   const [medications, setMedications] = useState<Medication[]>([]);
   const [medicationId, setMedicationId] = useState("");
+  const [productSelectionDirective, setProductSelectionDirective] =
+    useState<ProductSelectionDirective>("UNSPECIFIED");
+  const [prescribedProductId, setPrescribedProductId] = useState("");
   const [rxNumber, setRxNumber] = useState("");
   const [sig, setSig] = useState("");
   const [quantity, setQuantity] = useState("30");
@@ -75,6 +83,8 @@ export function NewPrescription({
         patientId,
         prescriberId,
         medicationId,
+        productSelectionDirective,
+        prescribedProductId: prescribedProductId || undefined,
         rxNumber: rxNumber || undefined,
         sig,
         quantityWritten: quantity ? Number(quantity) : undefined,
@@ -140,13 +150,60 @@ export function NewPrescription({
           Drug
           <select
             value={medicationId}
-            onChange={(event) => setMedicationId(event.target.value)}
+            onChange={(event) => {
+              setMedicationId(event.target.value);
+              setPrescribedProductId("");
+            }}
             required
           >
             <option value="">Select drug</option>
             {medications.map((medication) => (
               <option key={medication.id} value={medication.id}>
                 {medicationLabel(medication)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Product selection
+          <select
+            value={productSelectionDirective}
+            onChange={(event) =>
+              setProductSelectionDirective(
+                event.target.value as ProductSelectionDirective,
+              )
+            }
+          >
+            <option value="UNSPECIFIED">Unspecified</option>
+            <option value="SELECTION_PERMITTED">
+              Product selection permitted
+            </option>
+            <option value="DISPENSE_AS_WRITTEN">
+              Dispense as written / no product selection
+            </option>
+          </select>
+        </label>
+
+        <label>
+          Prescribed NDC / manufacturer
+          <select
+            value={prescribedProductId}
+            onChange={(event) =>
+              setPrescribedProductId(event.target.value)
+            }
+            required={productSelectionDirective === "DISPENSE_AS_WRITTEN"}
+          >
+            <option value="">
+              {productSelectionDirective === "DISPENSE_AS_WRITTEN"
+                ? "Select prescribed product"
+                : "Not specified"}
+            </option>
+            {(medications.find((item) => item.id === medicationId)?.products ??
+              []).map((product) => (
+              <option key={product.id} value={product.id}>
+                {product.manufacturer.name} · NDC {product.ndc} ·{" "}
+                {product.descriptor}
               </option>
             ))}
           </select>
@@ -211,8 +268,9 @@ export function NewPrescription({
         </label>
 
         <p className="permission-note wide">
-          Data Entry selects the drug only. Manufacturer/NDC, lot, and expiration
-          are verified from the physical stock package during Product Fill.
+          Data Entry selects the Drug and records the prescriber's product-selection
+          directive. Product Fill may use up to four eligible physical NDC/lot/expiration
+          sources unless the order prohibits product selection.
         </p>
 
         <div className="form-actions wide">
@@ -220,7 +278,12 @@ export function NewPrescription({
             className="primary-button"
             type="submit"
             disabled={
-              loading || !patientId || !prescriberId || !medicationId
+              loading ||
+              !patientId ||
+              !prescriberId ||
+              !medicationId ||
+              (productSelectionDirective === "DISPENSE_AS_WRITTEN" &&
+                !prescribedProductId)
             }
           >
             {loading ? "Saving…" : "Create synthetic prescription"}

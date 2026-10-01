@@ -179,6 +179,37 @@ enum InventoryAllocationStatus {
   ACTIVE
   COMMITTED
   RELEASED
+  RETURNED
+}
+
+enum CoverageRelationship {
+  SELF
+  SPOUSE
+  CHILD
+  OTHER
+}
+
+enum ClaimStandard {
+  D0
+  F6
+}
+
+enum BillingNdcStrategy {
+  REQUIRE_MANUAL_SELECTION
+  SINGLE_SOURCE_ONLY
+  PAYER_CONFIGURED
+}
+
+enum ProductSelectionDirective {
+  UNSPECIFIED
+  SELECTION_PERMITTED
+  DISPENSE_AS_WRITTEN
+}
+
+enum BiologicCommunicationStatus {
+  OPEN
+  COMPLETED
+  EXEMPT
 }
 
 enum InventoryDemandStatus {
@@ -272,6 +303,9 @@ model PharmacySite {
   receivingDiscrepancies ReceivingDiscrepancy[]
   inventoryExceptions   InventoryException[]
   custodyEvents         InventoryTransferCustodyEvent[]
+  payers                Payer[]
+  patientCoverages      PatientCoverage[]
+  biologicCommunicationTasks BiologicCommunicationTask[]
   auditEvents           AuditEvent[]
 }
 
@@ -311,6 +345,8 @@ model User {
   acknowledgedInventoryExceptions InventoryException[] @relation("InventoryExceptionAcknowledgedBy")
   resolvedInventoryExceptions InventoryException[] @relation("InventoryExceptionResolvedBy")
   transferCustodyEvents InventoryTransferCustodyEvent[]
+  documentedNtiConsents NtiManufacturerConsent[]
+  completedBiologicCommunicationTasks BiologicCommunicationTask[] @relation("BiologicCommunicationCompletedBy")
 
   @@index([siteId, role])
 }
@@ -328,6 +364,7 @@ model Patient {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   prescriptions Prescription[]
+  coverages     PatientCoverage[]
 
   @@index([siteId, lastName, firstName])
   @@index([siteId, dateOfBirth])
@@ -414,6 +451,9 @@ model Medication {
   strength      String
   dosageForm    String
   route         String?
+  ncNarrowTherapeuticIndex Boolean @default(false)
+  isBiological Boolean @default(false)
+  hasFdaInterchangeableBiologicAlternative Boolean @default(false)
   active        Boolean   @default(true)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -433,6 +473,9 @@ model Manufacturer {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   products    Product[]
+  fillSources FillProductSource[]
+  ntiConsentsAsPrior NtiManufacturerConsent[] @relation("NtiPriorManufacturer")
+  ntiConsentsAsNew   NtiManufacturerConsent[] @relation("NtiNewManufacturer")
 
   @@index([name])
 }
@@ -452,12 +495,17 @@ model Product {
   dispensingUnit      ProductUnit?
   unitPrice           Decimal?     @db.Decimal(12, 6)
   packagePrice        Decimal?     @db.Decimal(12, 4)
+  therapeuticEquivalenceCode String?
+  isInterchangeableBiological Boolean @default(false)
   active              Boolean      @default(true)
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
   lots                ProductLot[]
   expirations         ProductExpiration[]
   prescriptionFills   PrescriptionFill[]
+  prescribedOnPrescriptions Prescription[] @relation("PrescribedProduct")
+  billedOnFills       PrescriptionFill[] @relation("BillingProduct")
+  fillSources         FillProductSource[]
   barcodes             ProductBarcode[]
   inventoryBalances    InventoryBalance[]
   recallCases           RecallCase[]
@@ -507,6 +555,7 @@ model ProductLot {
   @@index([productId, lotNumberSearch])
   prescriptionFills  PrescriptionFill[]
   inventoryBalances   InventoryBalance[]
+  fillSources          FillProductSource[]
 
   @@index([siteId, active])
 }
@@ -526,6 +575,7 @@ model ProductExpiration {
   @@index([siteId, expirationDate])
   prescriptionFills PrescriptionFill[]
   inventoryBalances  InventoryBalance[]
+  fillSources        FillProductSource[]
 
   @@index([productId, expirationDate])
 }
@@ -540,6 +590,9 @@ model Prescription {
   prescriber               Prescriber          @relation(fields: [prescriberId], references: [id])
   medicationId             String?
   medication               Medication?         @relation(fields: [medicationId], references: [id], onDelete: Restrict)
+  prescribedProductId       String?
+  prescribedProduct         Product?            @relation("PrescribedProduct", fields: [prescribedProductId], references: [id], onDelete: Restrict)
+  productSelectionDirective ProductSelectionDirective @default(UNSPECIFIED)
   rxNumber                 String?
   medicationName           String
   strength                 String?
@@ -564,6 +617,7 @@ model Prescription {
   @@index([siteId, status])
   @@index([patientId])
   @@index([medicationId])
+  @@index([prescribedProductId])
 }
 
 model PrescriptionFill {
@@ -601,6 +655,10 @@ model PrescriptionFill {
   followUpCompletedAt DateTime?
   followUpNote        String?
   status              FillStatus         @default(SCHEDULED)
+  billingProductId    String?
+  billingProduct      Product?            @relation("BillingProduct", fields: [billingProductId], references: [id], onDelete: Restrict)
+  patientDiscardDate  DateTime?
+  dispensedInOriginalContainer Boolean    @default(false)
   productId           String?
   product             Product?           @relation(fields: [productId], references: [id], onDelete: Restrict)
   productLotId        String?
@@ -619,6 +677,9 @@ model PrescriptionFill {
   inventoryTransactions InventoryTransaction[]
   recallAffectedFills RecallAffectedFill[]
   inventoryAllocations InventoryAllocation[]
+  productSources      FillProductSource[]
+  ntiManufacturerConsents NtiManufacturerConsent[]
+  biologicCommunicationTask BiologicCommunicationTask?
   inventoryDemand     InventoryDemand?
   filledAt            DateTime?
   soldAt              DateTime?
@@ -633,10 +694,130 @@ model PrescriptionFill {
   @@index([kind, status, scheduledFor])
   @@index([followUpDueAt, followUpCompletedAt])
   @@index([scheduledFor, status])
+  @@index([billingProductId])
   @@index([productId])
   @@index([productLotId])
   @@index([productExpirationId])
   @@index([inventoryBalanceId])
+}
+
+model Payer {
+  id                 String             @id @default(uuid())
+  siteId             String
+  site               PharmacySite       @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  name               String
+  bin                String?
+  pcn                String?
+  defaultGroupId     String?
+  claimStandard      ClaimStandard      @default(D0)
+  billingNdcStrategy BillingNdcStrategy @default(REQUIRE_MANUAL_SELECTION)
+  active             Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  coverages          PatientCoverage[]
+
+  @@unique([siteId, name])
+  @@index([siteId, active, name])
+  @@index([bin, pcn])
+}
+
+model PatientCoverage {
+  id               String               @id @default(uuid())
+  siteId           String
+  site             PharmacySite         @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  patientId        String
+  patient          Patient              @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  payerId          String
+  payer            Payer                @relation(fields: [payerId], references: [id], onDelete: Restrict)
+  position         Int
+  memberId         String
+  personCode       String?
+  groupId          String?
+  relationship     CoverageRelationship @default(SELF)
+  cardholderName   String?
+  cardholderDateOfBirth DateTime?
+  effectiveDate    DateTime?
+  terminationDate  DateTime?
+  active           Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@unique([patientId, position])
+  @@index([siteId, active, patientId])
+  @@index([payerId, active])
+}
+
+model FillProductSource {
+  id                   String              @id @default(uuid())
+  fillId               String
+  fill                 PrescriptionFill    @relation(fields: [fillId], references: [id], onDelete: Cascade)
+  sequence             Int
+  productId            String
+  product              Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  manufacturerId       String
+  manufacturer         Manufacturer        @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  productLotId         String
+  productLot           ProductLot          @relation(fields: [productLotId], references: [id], onDelete: Restrict)
+  productExpirationId  String
+  productExpiration    ProductExpiration   @relation(fields: [productExpirationId], references: [id], onDelete: Restrict)
+  inventoryBalanceId   String
+  inventoryBalance     InventoryBalance    @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  quantity             Decimal             @db.Decimal(10, 3)
+  ndcSnapshot          String
+  manufacturerSnapshot String
+  lotNumberSnapshot    String
+  expirationSnapshot   DateTime
+  verifiedAt           DateTime            @default(now())
+  committedAt          DateTime?
+  returnedAt           DateTime?
+  createdAt            DateTime            @default(now())
+  inventoryAllocations InventoryAllocation[]
+
+  @@unique([fillId, sequence])
+  @@unique([fillId, inventoryBalanceId])
+  @@index([fillId, committedAt, returnedAt])
+  @@index([productId])
+  @@index([manufacturerId])
+}
+
+model NtiManufacturerConsent {
+  id                  String           @id @default(uuid())
+  fillId              String
+  fill                PrescriptionFill @relation(fields: [fillId], references: [id], onDelete: Cascade)
+  priorManufacturerId String
+  priorManufacturer   Manufacturer     @relation("NtiPriorManufacturer", fields: [priorManufacturerId], references: [id], onDelete: Restrict)
+  newManufacturerId   String
+  newManufacturer     Manufacturer     @relation("NtiNewManufacturer", fields: [newManufacturerId], references: [id], onDelete: Restrict)
+  prescriberConsentAt DateTime
+  patientConsentAt    DateTime
+  documentedById      String
+  documentedBy        User             @relation(fields: [documentedById], references: [id], onDelete: Restrict)
+  note                String
+  createdAt           DateTime         @default(now())
+
+  @@unique([fillId, priorManufacturerId, newManufacturerId])
+  @@index([fillId, createdAt])
+}
+
+model BiologicCommunicationTask {
+  id            String                      @id @default(uuid())
+  siteId        String
+  site          PharmacySite                @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  fillId        String                      @unique
+  fill          PrescriptionFill            @relation(fields: [fillId], references: [id], onDelete: Cascade)
+  status        BiologicCommunicationStatus @default(OPEN)
+  productName   String
+  manufacturerName String
+  dueAt         DateTime
+  completedById String?
+  completedBy   User?                       @relation("BiologicCommunicationCompletedBy", fields: [completedById], references: [id], onDelete: Restrict)
+  completedAt   DateTime?
+  note          String?
+  exemptReason  String?
+  createdAt     DateTime                    @default(now())
+  updatedAt     DateTime                    @updatedAt
+
+  @@index([siteId, status, dueAt])
 }
 
 model InventoryBalance {
@@ -663,6 +844,7 @@ model InventoryBalance {
   purchaseOrderReceipts PurchaseOrderReceipt[]
   stockPositions        InventoryStockPosition[]
   allocations           InventoryAllocation[]
+  fillProductSources    FillProductSource[]
 
   @@unique([siteId, productId, productLotId, productExpirationId])
   @@index([siteId, productId])
@@ -970,6 +1152,8 @@ model InventoryAllocation {
   fill               PrescriptionFill          @relation(fields: [fillId], references: [id], onDelete: Restrict)
   inventoryBalanceId String
   inventoryBalance   InventoryBalance          @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  fillProductSourceId String?
+  fillProductSource   FillProductSource?         @relation(fields: [fillProductSourceId], references: [id], onDelete: SetNull)
   actorId            String?
   actor              User?                     @relation(fields: [actorId], references: [id], onDelete: Restrict)
   quantity           Decimal                   @db.Decimal(14, 3)
@@ -980,6 +1164,7 @@ model InventoryAllocation {
   @@index([siteId, status, createdAt])
   @@index([fillId, status])
   @@index([inventoryBalanceId, status])
+  @@index([fillProductSourceId, status])
 }
 
 model InventoryDemand {

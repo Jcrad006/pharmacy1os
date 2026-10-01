@@ -3,6 +3,7 @@ import {
   InventoryError,
   quarantineInventory,
   receiveInventory,
+  releaseInventoryReservation,
 } from "./inventory.js";
 import {
   adjustStockPosition,
@@ -542,6 +543,73 @@ export async function createRecallCase(
     },
   });
 
+  // A recall invalidates any in-progress dispense part that contains the
+  // recalled physical source. Release the entire fill reservation so staff
+  // cannot accidentally continue with a now-incomplete mixture of sources.
+  const reservedSources = await tx.fillProductSource.findMany({
+    where: {
+      productId: input.productId,
+      committedAt: null,
+      returnedAt: null,
+      fill: {
+        prescription: { siteId: input.siteId },
+      },
+      ...(lotNumberSearch
+        ? { productLot: { lotNumberSearch } }
+        : {}),
+    },
+    select: {
+      fillId: true,
+      quantity: true,
+      fill: {
+        select: {
+          prescriptionId: true,
+          prescription: {
+            select: {
+              status: true,
+              heldFromStatus: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const reservedAffected = reservedSources.reduce(
+    (sum, source) => sum.plus(source.quantity),
+    new Prisma.Decimal(0),
+  );
+  const affectedReservedFillIds = [
+    ...new Set(reservedSources.map((source) => source.fillId)),
+  ];
+
+  for (const fillId of affectedReservedFillIds) {
+    const source = reservedSources.find((item) => item.fillId === fillId)!;
+    await releaseInventoryReservation(tx, {
+      fillId,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      reason: `Recall ${input.reference.trim()} invalidated a reserved product source`,
+    });
+
+    if (source.fill.prescription.status === "PHARMACIST_REVIEW") {
+      await tx.prescription.update({
+        where: { id: source.fill.prescriptionId },
+        data: { status: "PRODUCT_FILL" },
+      });
+    } else if (
+      source.fill.prescription.status === "ON_HOLD" &&
+      source.fill.prescription.heldFromStatus === "PHARMACIST_REVIEW"
+    ) {
+      await tx.prescription.update({
+        where: { id: source.fill.prescriptionId },
+        data: { heldFromStatus: "PRODUCT_FILL" },
+      });
+    }
+  }
+
+  // Re-read balances after releasing affected reservations. This ensures the
+  // just-released recalled quantity is immediately quarantined too.
   const balances = await tx.inventoryBalance.findMany({
     where: {
       siteId: input.siteId,
@@ -557,10 +625,7 @@ export async function createRecallCase(
   });
 
   const holds = [];
-  let reservedAffected = new Prisma.Decimal(0);
-
   for (const balance of balances) {
-    reservedAffected = reservedAffected.plus(balance.reservedQuantity);
     const available = balance.onHandQuantity
       .minus(balance.reservedQuantity)
       .minus(balance.quarantinedQuantity);
@@ -579,7 +644,26 @@ export async function createRecallCase(
     }
   }
 
-  const affectedFills = await tx.prescriptionFill.findMany({
+  // Sold split-source fills must be matched through immutable source history,
+  // not only the legacy first-source compatibility fields on PrescriptionFill.
+  const soldSourceRows = await tx.fillProductSource.findMany({
+    where: {
+      productId: input.productId,
+      returnedAt: null,
+      fill: {
+        status: "SOLD",
+        prescription: { siteId: input.siteId },
+      },
+      ...(lotNumberSearch
+        ? { productLot: { lotNumberSearch } }
+        : {}),
+    },
+    select: { fillId: true },
+  });
+
+  // Keep the legacy match as a compatibility fallback for any historical row
+  // that predates FillProductSource backfill.
+  const legacyAffectedFills = await tx.prescriptionFill.findMany({
     where: {
       prescription: { siteId: input.siteId },
       productId: input.productId,
@@ -591,11 +675,18 @@ export async function createRecallCase(
     select: { id: true },
   });
 
-  if (affectedFills.length > 0) {
+  const affectedSoldFillIds = [
+    ...new Set([
+      ...soldSourceRows.map((source) => source.fillId),
+      ...legacyAffectedFills.map((fill) => fill.id),
+    ]),
+  ];
+
+  if (affectedSoldFillIds.length > 0) {
     await tx.recallAffectedFill.createMany({
-      data: affectedFills.map((fill) => ({
+      data: affectedSoldFillIds.map((fillId) => ({
         recallCaseId: recall.id,
-        fillId: fill.id,
+        fillId,
       })),
       skipDuplicates: true,
     });
@@ -608,7 +699,8 @@ export async function createRecallCase(
     matchedBalanceCount: balances.length,
     quarantinedHoldCount: holds.length,
     reservedAffectedQuantity: reservedAffected,
-    affectedSoldFillCount: affectedFills.length,
+    invalidatedReservedFillCount: affectedReservedFillIds.length,
+    affectedSoldFillCount: affectedSoldFillIds.length,
   };
 }
 

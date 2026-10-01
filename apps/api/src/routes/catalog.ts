@@ -17,6 +17,17 @@ type CreateMedicationBody = {
   route?: string;
 };
 
+type UpdateMedicationComplianceBody = {
+  ncNarrowTherapeuticIndex?: boolean;
+  isBiological?: boolean;
+  hasFdaInterchangeableBiologicAlternative?: boolean;
+};
+
+type UpdateProductComplianceBody = {
+  therapeuticEquivalenceCode?: string | null;
+  isInterchangeableBiological?: boolean;
+};
+
 type CreateProductBody = {
   ndc?: string;
   manufacturerName?: string;
@@ -219,6 +230,121 @@ export async function catalogRoutes(app: FastifyInstance) {
       });
 
       return reply.code(201).send({ medication });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch("/medications/:id/compliance", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "product:compliance");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as UpdateMedicationComplianceBody;
+      const existing = await db.medication.findUnique({ where: { id } });
+      if (!existing) {
+        return reply.code(404).send({ error: "Medication not found." });
+      }
+
+      const medication = await db.$transaction(async (tx) => {
+        const updated = await tx.medication.update({
+          where: { id },
+          data: {
+            ncNarrowTherapeuticIndex: body.ncNarrowTherapeuticIndex,
+            isBiological: body.isBiological,
+            hasFdaInterchangeableBiologicAlternative:
+              body.hasFdaInterchangeableBiologicAlternative,
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "MEDICATION_COMPLIANCE_UPDATED",
+          entityType: "Medication",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            before: {
+              ncNarrowTherapeuticIndex: existing.ncNarrowTherapeuticIndex,
+              isBiological: existing.isBiological,
+              hasFdaInterchangeableBiologicAlternative:
+                existing.hasFdaInterchangeableBiologicAlternative,
+            },
+            after: {
+              ncNarrowTherapeuticIndex: updated.ncNarrowTherapeuticIndex,
+              isBiological: updated.isBiological,
+              hasFdaInterchangeableBiologicAlternative:
+                updated.hasFdaInterchangeableBiologicAlternative,
+            },
+          },
+        });
+        return updated;
+      });
+      return { medication };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.patch("/products/:id/compliance", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "product:compliance");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as UpdateProductComplianceBody;
+      const existing = await db.product.findUnique({
+        where: { id },
+        include: { medication: true, manufacturer: true },
+      });
+      if (!existing) {
+        return reply.code(404).send({ error: "Product not found." });
+      }
+
+      const product = await db.$transaction(async (tx) => {
+        const updated = await tx.product.update({
+          where: { id },
+          data: {
+            therapeuticEquivalenceCode:
+              body.therapeuticEquivalenceCode === undefined
+                ? undefined
+                : body.therapeuticEquivalenceCode?.trim().toUpperCase() || null,
+            isInterchangeableBiological:
+              body.isInterchangeableBiological,
+          },
+          include: productInclude(actor.siteId),
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRODUCT_COMPLIANCE_UPDATED",
+          entityType: "Product",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            medicationId: existing.medicationId,
+            ndc: existing.ndc,
+            manufacturerName: existing.manufacturer.name,
+            before: {
+              therapeuticEquivalenceCode:
+                existing.therapeuticEquivalenceCode,
+              isInterchangeableBiological:
+                existing.isInterchangeableBiological,
+            },
+            after: {
+              therapeuticEquivalenceCode:
+                updated.therapeuticEquivalenceCode,
+              isInterchangeableBiological:
+                updated.isInterchangeableBiological,
+            },
+          },
+        });
+        return updated;
+      });
+      return { product };
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });

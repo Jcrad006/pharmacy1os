@@ -12,6 +12,10 @@ import {
   reconcileDemandAvailability,
   moveStockState,
 } from "./inventoryArchitecture.js";
+import {
+  calculateNcPatientDiscardDate,
+  ensureBiologicCommunicationTask,
+} from "./productFillCompliance.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -255,6 +259,421 @@ export async function receiveInventory(
   return { balance: updated, transaction, quarantineHold: null };
 }
 
+export async function getFillSourceReservationSummary(
+  tx: Prisma.TransactionClient,
+  fillId: string,
+) {
+  const fill = await tx.prescriptionFill.findUnique({
+    where: { id: fillId },
+    select: { id: true, quantity: true, inventoryReservedAt: true },
+  });
+  if (!fill) {
+    throw new InventoryError(404, "FILL_NOT_FOUND", "Fill not found.");
+  }
+
+  const required = positiveQuantity(fill.quantity);
+  const sources = await tx.fillProductSource.findMany({
+    where: { fillId },
+    include: {
+      product: { include: { manufacturer: true, medication: true } },
+      manufacturer: true,
+      productLot: true,
+      productExpiration: true,
+      inventoryBalance: true,
+    },
+    orderBy: { sequence: "asc" },
+  });
+  const reservedTotal = sources.reduce(
+    (sum, source) => sum.plus(source.quantity),
+    new Prisma.Decimal(0),
+  );
+
+  return {
+    fill,
+    sources,
+    requiredQuantity: required,
+    reservedQuantity: reservedTotal,
+    remainingQuantity: Prisma.Decimal.max(
+      required.minus(reservedTotal),
+      new Prisma.Decimal(0),
+    ),
+    complete: reservedTotal.eq(required),
+  };
+}
+
+export async function reserveInventorySourceForFill(
+  tx: Prisma.TransactionClient,
+  input: {
+    fillId: string;
+    siteId: string;
+    actorId: string;
+    productId: string;
+    productLotId: string;
+    productExpirationId: string;
+    quantity: Prisma.Decimal | number | string;
+  },
+) {
+  const quantity = positiveQuantity(input.quantity);
+  const fill = await tx.prescriptionFill.findUnique({
+    where: { id: input.fillId },
+    select: {
+      id: true,
+      quantity: true,
+      inventoryReservedAt: true,
+      inventoryCommittedAt: true,
+      inventoryReturnedAt: true,
+      billingProductId: true,
+    },
+  });
+
+  if (!fill) {
+    throw new InventoryError(404, "FILL_NOT_FOUND", "Fill not found.");
+  }
+  if (fill.inventoryCommittedAt) {
+    throw new InventoryError(
+      409,
+      "INVENTORY_ALREADY_COMMITTED",
+      "Inventory has already been committed for this fill.",
+    );
+  }
+
+  const required = positiveQuantity(fill.quantity);
+  const existingSources = await tx.fillProductSource.findMany({
+    where: { fillId: fill.id },
+    orderBy: { sequence: "asc" },
+  });
+
+  if (existingSources.length >= 4) {
+    throw new InventoryError(
+      409,
+      "FILL_SOURCE_LIMIT_REACHED",
+      "A dispense part may use no more than four physical product sources.",
+    );
+  }
+
+  const alreadyReserved = existingSources.reduce(
+    (sum, source) => sum.plus(source.quantity),
+    new Prisma.Decimal(0),
+  );
+  const remaining = required.minus(alreadyReserved);
+  if (remaining.lte(0)) {
+    throw new InventoryError(
+      409,
+      "FILL_ALREADY_FULLY_SOURCED",
+      "The full physical dispense quantity has already been allocated.",
+    );
+  }
+  if (quantity.gt(remaining)) {
+    throw new InventoryError(
+      409,
+      "FILL_SOURCE_QUANTITY_EXCEEDS_REMAINDER",
+      "This source quantity exceeds the remaining physical dispense quantity.",
+      {
+        requestedQuantity: quantity.toString(),
+        remainingQuantity: remaining.toString(),
+      },
+    );
+  }
+
+  const balance = await tx.inventoryBalance.findUnique({
+    where: {
+      siteId_productId_productLotId_productExpirationId: {
+        siteId: input.siteId,
+        productId: input.productId,
+        productLotId: input.productLotId,
+        productExpirationId: input.productExpirationId,
+      },
+    },
+    include: {
+      product: {
+        include: { manufacturer: true, medication: true },
+      },
+      productLot: true,
+      productExpiration: true,
+    },
+  });
+
+  if (!balance) {
+    throw new InventoryError(
+      409,
+      "INVENTORY_NOT_RECEIVED",
+      "No on-hand inventory has been received for this NDC, lot, and expiration.",
+    );
+  }
+
+  if (
+    existingSources.some(
+      (source) => source.inventoryBalanceId === balance.id,
+    )
+  ) {
+    throw new InventoryError(
+      409,
+      "FILL_SOURCE_ALREADY_SELECTED",
+      "This exact NDC/lot/expiration source is already part of the fill.",
+    );
+  }
+
+  const locked = await lockBalance(tx, balance.id);
+  await ensureBalanceNotRecalled(tx, {
+    siteId: input.siteId,
+    balanceId: locked.id,
+  });
+
+  const available = locked.onHandQuantity
+    .minus(locked.reservedQuantity)
+    .minus(locked.quarantinedQuantity);
+  if (available.lt(quantity)) {
+    throw new InventoryError(
+      409,
+      "INSUFFICIENT_INVENTORY",
+      "There is not enough available inventory in this product source.",
+      {
+        balanceId: locked.id,
+        availableQuantity: available.toString(),
+        requestedQuantity: quantity.toString(),
+      },
+    );
+  }
+
+  const usedSequences = new Set(existingSources.map((source) => source.sequence));
+  const sequence = [1, 2, 3, 4].find((value) => !usedSequences.has(value));
+  if (!sequence) {
+    throw new InventoryError(
+      409,
+      "FILL_SOURCE_LIMIT_REACHED",
+      "A dispense part may use no more than four physical product sources.",
+    );
+  }
+
+  const source = await tx.fillProductSource.create({
+    data: {
+      fillId: fill.id,
+      sequence,
+      productId: balance.productId,
+      manufacturerId: balance.product.manufacturerId,
+      productLotId: balance.productLotId,
+      productExpirationId: balance.productExpirationId,
+      inventoryBalanceId: balance.id,
+      quantity,
+      ndcSnapshot: balance.product.ndc,
+      manufacturerSnapshot: balance.product.manufacturer.name,
+      lotNumberSnapshot: balance.productLot.lotNumber,
+      expirationSnapshot: balance.productExpiration.expirationDate,
+    },
+  });
+
+  const updatedBalance = await tx.inventoryBalance.update({
+    where: { id: locked.id },
+    data: {
+      reservedQuantity: locked.reservedQuantity.plus(quantity),
+    },
+  });
+
+  const reservedAt = fill.inventoryReservedAt ?? new Date();
+  await tx.inventoryTransaction.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: locked.id,
+      fillId: fill.id,
+      actorId: input.actorId,
+      type: "RESERVE",
+      onHandDelta: 0,
+      reservedDelta: quantity,
+      reason: `Product Fill source #${sequence} reserved`,
+      reference: source.id,
+    },
+  });
+
+  await tx.inventoryAllocation.create({
+    data: {
+      siteId: input.siteId,
+      fillId: fill.id,
+      inventoryBalanceId: locked.id,
+      fillProductSourceId: source.id,
+      actorId: input.actorId,
+      quantity,
+      status: "ACTIVE",
+    },
+  });
+
+  const productIds = new Set([
+    ...existingSources.map((item) => item.productId),
+    balance.productId,
+  ]);
+  const firstSource = existingSources[0] ?? source;
+  const totalReserved = alreadyReserved.plus(quantity);
+  const complete = totalReserved.eq(required);
+  const verifiedAt = complete ? new Date() : null;
+
+  await tx.prescriptionFill.update({
+    where: { id: fill.id },
+    data: {
+      productId: firstSource.productId,
+      productLotId: firstSource.productLotId,
+      productExpirationId: firstSource.productExpirationId,
+      scannedNdc:
+        existingSources[0]?.ndcSnapshot ?? balance.product.ndc,
+      scannedLotNumber:
+        existingSources[0]?.lotNumberSnapshot ?? balance.productLot.lotNumber,
+      scannedExpiration:
+        existingSources[0]?.expirationSnapshot ??
+        balance.productExpiration.expirationDate,
+      inventoryBalanceId: firstSource.inventoryBalanceId,
+      inventoryReservedAt: reservedAt,
+      inventoryCommittedAt: null,
+      inventoryReturnedAt: null,
+      productVerifiedAt: verifiedAt,
+      billingProductId:
+        productIds.size === 1 ? balance.productId : null,
+    },
+  });
+
+  if (complete) {
+    await fulfillDemandForFill(tx, fill.id, balance.productId);
+  }
+
+  return {
+    source,
+    balance: updatedBalance,
+    sourceQuantity: quantity,
+    totalReserved,
+    requiredQuantity: required,
+    remainingQuantity: Prisma.Decimal.max(
+      required.minus(totalReserved),
+      new Prisma.Decimal(0),
+    ),
+    complete,
+    reservedAt,
+  };
+}
+
+export async function removeInventorySourceForFill(
+  tx: Prisma.TransactionClient,
+  input: {
+    fillId: string;
+    sourceId: string;
+    siteId: string;
+    actorId: string;
+    reason: string;
+  },
+) {
+  const source = await tx.fillProductSource.findFirst({
+    where: {
+      id: input.sourceId,
+      fillId: input.fillId,
+      fill: { prescription: { siteId: input.siteId } },
+    },
+    include: { product: true },
+  });
+
+  if (!source) {
+    throw new InventoryError(
+      404,
+      "FILL_SOURCE_NOT_FOUND",
+      "Fill product source not found.",
+    );
+  }
+  if (source.committedAt) {
+    throw new InventoryError(
+      409,
+      "FILL_SOURCE_ALREADY_COMMITTED",
+      "A committed product source cannot be removed from the fill.",
+    );
+  }
+
+  const balance = await lockBalance(tx, source.inventoryBalanceId);
+  if (balance.reservedQuantity.lt(source.quantity)) {
+    throw new InventoryError(
+      409,
+      "INVENTORY_RESERVATION_INCONSISTENT",
+      "The inventory balance no longer contains the source reservation.",
+    );
+  }
+
+  await tx.inventoryBalance.update({
+    where: { id: balance.id },
+    data: {
+      reservedQuantity: balance.reservedQuantity.minus(source.quantity),
+    },
+  });
+  await tx.inventoryTransaction.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: balance.id,
+      fillId: input.fillId,
+      actorId: input.actorId,
+      type: "RELEASE",
+      onHandDelta: 0,
+      reservedDelta: source.quantity.negated(),
+      reason: input.reason,
+      reference: source.id,
+    },
+  });
+  await tx.inventoryAllocation.updateMany({
+    where: {
+      fillId: input.fillId,
+      fillProductSourceId: source.id,
+      status: "ACTIVE",
+    },
+    data: { status: "RELEASED", resolvedAt: new Date() },
+  });
+  await tx.fillProductSource.delete({ where: { id: source.id } });
+
+  const remainingSources = await tx.fillProductSource.findMany({
+    where: { fillId: input.fillId },
+    orderBy: { sequence: "asc" },
+  });
+  const fill = await tx.prescriptionFill.findUniqueOrThrow({
+    where: { id: input.fillId },
+    select: { quantity: true },
+  });
+  const required = positiveQuantity(fill.quantity);
+  const totalReserved = remainingSources.reduce(
+    (sum, item) => sum.plus(item.quantity),
+    new Prisma.Decimal(0),
+  );
+  const first = remainingSources[0] ?? null;
+  const productIds = new Set(remainingSources.map((item) => item.productId));
+
+  await tx.prescriptionFill.update({
+    where: { id: input.fillId },
+    data: {
+      productId: first?.productId ?? null,
+      productLotId: first?.productLotId ?? null,
+      productExpirationId: first?.productExpirationId ?? null,
+      scannedNdc: first?.ndcSnapshot ?? null,
+      scannedLotNumber: first?.lotNumberSnapshot ?? null,
+      scannedExpiration: first?.expirationSnapshot ?? null,
+      inventoryBalanceId: first?.inventoryBalanceId ?? null,
+      inventoryReservedAt:
+        remainingSources.length > 0 ? new Date() : null,
+      productVerifiedAt: totalReserved.eq(required) ? new Date() : null,
+      billingProductId:
+        remainingSources.length > 0 && productIds.size === 1
+          ? first!.productId
+          : null,
+    },
+  });
+
+  const demand = await tx.inventoryDemand.findUnique({
+    where: { fillId: input.fillId },
+  });
+  if (demand?.status === "FULFILLED") {
+    await tx.inventoryDemand.update({
+      where: { id: demand.id },
+      data: { status: "OPEN", fulfilledAt: null },
+    });
+  }
+
+  await reconcileDemandAvailability(
+    tx,
+    input.siteId,
+    source.product.medicationId,
+  );
+
+  return getFillSourceReservationSummary(tx, input.fillId);
+}
+
 export async function releaseInventoryReservation(
   tx: Prisma.TransactionClient,
   input: {
@@ -268,82 +687,82 @@ export async function releaseInventoryReservation(
     where: { id: input.fillId },
     select: {
       id: true,
-      quantity: true,
-      inventoryBalanceId: true,
-      inventoryReservedAt: true,
       inventoryCommittedAt: true,
     },
   });
+  if (!fill || fill.inventoryCommittedAt) return null;
 
-  if (
-    !fill?.inventoryBalanceId ||
-    !fill.inventoryReservedAt ||
-    fill.inventoryCommittedAt
-  ) {
-    return null;
-  }
-
-  const quantity = positiveQuantity(fill.quantity);
-  const balance = await lockBalance(tx, fill.inventoryBalanceId);
-
-  if (balance.reservedQuantity.lt(quantity)) {
-    throw new InventoryError(
-      409,
-      "INVENTORY_RESERVATION_INCONSISTENT",
-      "The inventory reservation is smaller than the fill quantity.",
-      {
-        balanceId: balance.id,
-        reservedQuantity: balance.reservedQuantity.toString(),
-        fillQuantity: quantity.toString(),
-      },
-    );
-  }
-
-  const updated = await tx.inventoryBalance.update({
-    where: { id: balance.id },
-    data: {
-      reservedQuantity: balance.reservedQuantity.minus(quantity),
-    },
-  });
-
-  await tx.inventoryTransaction.create({
-    data: {
-      siteId: input.siteId,
-      inventoryBalanceId: balance.id,
-      fillId: fill.id,
-      actorId: input.actorId,
-      type: "RELEASE",
-      onHandDelta: 0,
-      reservedDelta: quantity.negated(),
-      reason: input.reason,
-    },
-  });
-
-  await tx.inventoryAllocation.updateMany({
+  const allocations = await tx.inventoryAllocation.findMany({
     where: { fillId: fill.id, status: "ACTIVE" },
-    data: { status: "RELEASED", resolvedAt: new Date() },
+    include: {
+      inventoryBalance: {
+        include: { product: true },
+      },
+    },
+    orderBy: { createdAt: "asc" },
   });
+  if (allocations.length === 0) return null;
 
-  const releasedProduct = await tx.product.findUnique({
-    where: { id: balance.productId },
-    select: { medicationId: true },
-  });
-  if (releasedProduct) {
-    await reconcileDemandAvailability(
-      tx,
-      input.siteId,
-      releasedProduct.medicationId,
-    );
+  const medicationIds = new Set<string>();
+  for (const allocation of allocations) {
+    const balance = await lockBalance(tx, allocation.inventoryBalanceId);
+    if (balance.reservedQuantity.lt(allocation.quantity)) {
+      throw new InventoryError(
+        409,
+        "INVENTORY_RESERVATION_INCONSISTENT",
+        "An inventory source reservation is smaller than its allocated quantity.",
+        {
+          balanceId: balance.id,
+          reservedQuantity: balance.reservedQuantity.toString(),
+          allocationQuantity: allocation.quantity.toString(),
+        },
+      );
+    }
+
+    await tx.inventoryBalance.update({
+      where: { id: balance.id },
+      data: {
+        reservedQuantity: balance.reservedQuantity.minus(allocation.quantity),
+      },
+    });
+    await tx.inventoryTransaction.create({
+      data: {
+        siteId: input.siteId,
+        inventoryBalanceId: balance.id,
+        fillId: fill.id,
+        actorId: input.actorId,
+        type: "RELEASE",
+        onHandDelta: 0,
+        reservedDelta: allocation.quantity.negated(),
+        reason: input.reason,
+        reference: allocation.fillProductSourceId,
+      },
+    });
+    await tx.inventoryAllocation.update({
+      where: { id: allocation.id },
+      data: { status: "RELEASED", resolvedAt: new Date() },
+    });
+    medicationIds.add(allocation.inventoryBalance.product.medicationId);
   }
+
+  await tx.fillProductSource.deleteMany({
+    where: { fillId: fill.id, committedAt: null },
+  });
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
       inventoryReservedAt: null,
+      productVerifiedAt: null,
+      billingProductId: null,
     },
   });
 
-  return updated;
+  for (const medicationId of medicationIds) {
+    await reconcileDemandAvailability(tx, input.siteId, medicationId);
+  }
+
+  return { releasedAllocationCount: allocations.length };
 }
 
 export async function reserveInventoryForFill(
@@ -359,19 +778,11 @@ export async function reserveInventoryForFill(
 ) {
   const fill = await tx.prescriptionFill.findUnique({
     where: { id: input.fillId },
-    select: {
-      id: true,
-      quantity: true,
-      inventoryBalanceId: true,
-      inventoryReservedAt: true,
-      inventoryCommittedAt: true,
-    },
+    select: { quantity: true, inventoryCommittedAt: true },
   });
-
   if (!fill) {
     throw new InventoryError(404, "FILL_NOT_FOUND", "Fill not found.");
   }
-
   if (fill.inventoryCommittedAt) {
     throw new InventoryError(
       409,
@@ -380,120 +791,95 @@ export async function reserveInventoryForFill(
     );
   }
 
-  const quantity = positiveQuantity(fill.quantity);
-
-  const balance = await tx.inventoryBalance.findUnique({
-    where: {
-      siteId_productId_productLotId_productExpirationId: {
-        siteId: input.siteId,
-        productId: input.productId,
-        productLotId: input.productLotId,
-        productExpirationId: input.productExpirationId,
-      },
-    },
+  const activeAllocations = await tx.inventoryAllocation.count({
+    where: { fillId: input.fillId, status: "ACTIVE" },
   });
-
-  if (!balance) {
-    throw new InventoryError(
-      409,
-      "INVENTORY_NOT_RECEIVED",
-      "No on-hand inventory has been received for this NDC, lot, and expiration.",
-    );
-  }
-
-  const locked = await lockBalance(tx, balance.id);
-  await ensureBalanceNotRecalled(tx, {
-    siteId: input.siteId,
-    balanceId: locked.id,
-  });
-
-  if (
-    fill.inventoryBalanceId &&
-    fill.inventoryReservedAt &&
-    fill.inventoryBalanceId !== locked.id
-  ) {
+  if (activeAllocations > 0) {
     await releaseInventoryReservation(tx, {
-      fillId: fill.id,
+      fillId: input.fillId,
       siteId: input.siteId,
       actorId: input.actorId,
       reason: "Product rescanned during Product Fill",
     });
-  } else if (
-    fill.inventoryBalanceId === locked.id &&
-    fill.inventoryReservedAt
-  ) {
-    return {
-      balance: locked,
-      quantity,
-      reservedAt: fill.inventoryReservedAt,
-    };
-  }
-  const available = locked.onHandQuantity
-    .minus(locked.reservedQuantity)
-    .minus(locked.quarantinedQuantity);
-
-  if (available.lt(quantity)) {
-    throw new InventoryError(
-      409,
-      "INSUFFICIENT_INVENTORY",
-      "There is not enough available inventory for this fill.",
-      {
-        balanceId: locked.id,
-        availableQuantity: available.toString(),
-        requestedQuantity: quantity.toString(),
-      },
-    );
   }
 
-  const updated = await tx.inventoryBalance.update({
-    where: { id: locked.id },
-    data: {
-      reservedQuantity: locked.reservedQuantity.plus(quantity),
-    },
-  });
-
-  const reservedAt = new Date();
-  await tx.inventoryTransaction.create({
-    data: {
-      siteId: input.siteId,
-      inventoryBalanceId: locked.id,
-      fillId: fill.id,
-      actorId: input.actorId,
-      type: "RESERVE",
-      onHandDelta: 0,
-      reservedDelta: quantity,
-      reason: "Product selected for prescription fill",
-    },
-  });
-
-  await tx.inventoryAllocation.create({
-    data: {
-      siteId: input.siteId,
-      fillId: fill.id,
-      inventoryBalanceId: locked.id,
-      actorId: input.actorId,
-      quantity,
-      status: "ACTIVE",
-    },
-  });
-
-  await fulfillDemandForFill(tx, fill.id, input.productId);
-
-  await tx.prescriptionFill.update({
-    where: { id: fill.id },
-    data: {
-      inventoryBalanceId: locked.id,
-      inventoryReservedAt: reservedAt,
-      inventoryCommittedAt: null,
-      inventoryReturnedAt: null,
-    },
+  const quantity = positiveQuantity(fill.quantity);
+  const result = await reserveInventorySourceForFill(tx, {
+    ...input,
+    quantity,
   });
 
   return {
-    balance: updated,
+    balance: result.balance,
     quantity,
-    reservedAt,
+    reservedAt: result.reservedAt,
   };
+}
+
+export async function resizeInventoryReservationForFill(
+  tx: Prisma.TransactionClient,
+  input: {
+    fillId: string;
+    siteId: string;
+    actorId: string;
+    targetQuantity: Prisma.Decimal | number | string;
+    reason: string;
+  },
+) {
+  const targetQuantity = positiveQuantity(input.targetQuantity);
+  const sources = await tx.fillProductSource.findMany({
+    where: { fillId: input.fillId },
+    orderBy: { sequence: "asc" },
+  });
+
+  if (sources.length === 0) {
+    throw new InventoryError(
+      409,
+      "PARTIAL_RESERVATION_TRACEABILITY_MISSING",
+      "The existing reservation has no physical product-source traceability.",
+    );
+  }
+
+  const sourcePlan = sources.map((source) => ({
+    productId: source.productId,
+    productLotId: source.productLotId,
+    productExpirationId: source.productExpirationId,
+    quantity: source.quantity,
+  }));
+
+  await releaseInventoryReservation(tx, {
+    fillId: input.fillId,
+    siteId: input.siteId,
+    actorId: input.actorId,
+    reason: input.reason,
+  });
+
+  let remaining = targetQuantity;
+  for (const planned of sourcePlan) {
+    if (remaining.lte(0)) break;
+    const quantity = Prisma.Decimal.min(planned.quantity, remaining);
+    await reserveInventorySourceForFill(tx, {
+      fillId: input.fillId,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      productId: planned.productId,
+      productLotId: planned.productLotId,
+      productExpirationId: planned.productExpirationId,
+      quantity,
+    });
+    remaining = remaining.minus(quantity);
+  }
+
+  if (remaining.gt(0)) {
+    throw new InventoryError(
+      409,
+      "PARTIAL_RESERVATION_RESIZE_FAILED",
+      "The prior product sources could not satisfy the requested partial quantity.",
+      { remainingQuantity: remaining.toString() },
+    );
+  }
+
+  return getFillSourceReservationSummary(tx, input.fillId);
 }
 
 export async function commitInventoryForFill(
@@ -509,95 +895,131 @@ export async function commitInventoryForFill(
     select: {
       id: true,
       quantity: true,
-      inventoryBalanceId: true,
-      inventoryReservedAt: true,
       inventoryCommittedAt: true,
+      dispensedInOriginalContainer: true,
     },
   });
 
   if (!fill) {
     throw new InventoryError(404, "FILL_NOT_FOUND", "Fill not found.");
   }
-
   if (fill.inventoryCommittedAt) {
     return { committedAt: fill.inventoryCommittedAt };
   }
 
-  if (!fill.inventoryBalanceId || !fill.inventoryReservedAt) {
+  const required = positiveQuantity(fill.quantity);
+  const allocations = await tx.inventoryAllocation.findMany({
+    where: { fillId: fill.id, status: "ACTIVE" },
+    include: {
+      inventoryBalance: true,
+      fillProductSource: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  const allocated = allocations.reduce(
+    (sum, allocation) => sum.plus(allocation.quantity),
+    new Prisma.Decimal(0),
+  );
+
+  if (allocations.length === 0 || !allocated.eq(required)) {
     throw new InventoryError(
       409,
       "INVENTORY_RESERVATION_REQUIRED",
-      "A valid inventory reservation is required before pharmacist verification.",
-    );
-  }
-
-  const quantity = positiveQuantity(fill.quantity);
-  const balance = await lockBalance(tx, fill.inventoryBalanceId);
-  await ensureBalanceNotRecalled(tx, {
-    siteId: input.siteId,
-    balanceId: balance.id,
-  });
-
-  if (
-    balance.reservedQuantity.lt(quantity) ||
-    balance.onHandQuantity.lt(quantity)
-  ) {
-    throw new InventoryError(
-      409,
-      "INVENTORY_RESERVATION_INCONSISTENT",
-      "The inventory balance cannot satisfy the reserved fill quantity.",
+      "Physical product sources must reserve the entire dispense-part quantity before pharmacist verification.",
       {
-        balanceId: balance.id,
-        onHandQuantity: balance.onHandQuantity.toString(),
-        reservedQuantity: balance.reservedQuantity.toString(),
-        fillQuantity: quantity.toString(),
+        requiredQuantity: required.toString(),
+        allocatedQuantity: allocated.toString(),
       },
     );
   }
 
-  await tx.inventoryBalance.update({
-    where: { id: balance.id },
-    data: {
-      onHandQuantity: balance.onHandQuantity.minus(quantity),
-      reservedQuantity: balance.reservedQuantity.minus(quantity),
-    },
-  });
-
-  await adjustStockPosition(tx, {
-    siteId: input.siteId,
-    inventoryBalanceId: balance.id,
-    state: "AVAILABLE",
-    delta: quantity.negated(),
-  });
-
-  await tx.inventoryAllocation.updateMany({
-    where: { fillId: fill.id, status: "ACTIVE" },
-    data: { status: "COMMITTED", resolvedAt: new Date() },
-  });
-
   const committedAt = new Date();
-  await tx.inventoryTransaction.create({
-    data: {
+  const sourceExpirations: Date[] = [];
+
+  for (const allocation of allocations) {
+    const balance = await lockBalance(tx, allocation.inventoryBalanceId);
+    await ensureBalanceNotRecalled(tx, {
+      siteId: input.siteId,
+      balanceId: balance.id,
+    });
+
+    if (
+      balance.reservedQuantity.lt(allocation.quantity) ||
+      balance.onHandQuantity.lt(allocation.quantity)
+    ) {
+      throw new InventoryError(
+        409,
+        "INVENTORY_RESERVATION_INCONSISTENT",
+        "An inventory balance cannot satisfy its allocated source quantity.",
+        {
+          balanceId: balance.id,
+          onHandQuantity: balance.onHandQuantity.toString(),
+          reservedQuantity: balance.reservedQuantity.toString(),
+          sourceQuantity: allocation.quantity.toString(),
+        },
+      );
+    }
+
+    await tx.inventoryBalance.update({
+      where: { id: balance.id },
+      data: {
+        onHandQuantity: balance.onHandQuantity.minus(allocation.quantity),
+        reservedQuantity: balance.reservedQuantity.minus(allocation.quantity),
+      },
+    });
+    await adjustStockPosition(tx, {
       siteId: input.siteId,
       inventoryBalanceId: balance.id,
-      fillId: fill.id,
-      actorId: input.actorId,
-      type: "DISPENSE",
-      onHandDelta: quantity.negated(),
-      reservedDelta: quantity.negated(),
-      reason: "Pharmacist verification committed dispensed inventory",
-    },
-  });
+      state: "AVAILABLE",
+      delta: allocation.quantity.negated(),
+    });
+    await tx.inventoryTransaction.create({
+      data: {
+        siteId: input.siteId,
+        inventoryBalanceId: balance.id,
+        fillId: fill.id,
+        actorId: input.actorId,
+        type: "DISPENSE",
+        onHandDelta: allocation.quantity.negated(),
+        reservedDelta: allocation.quantity.negated(),
+        reason: "Pharmacist verification committed dispensed inventory source",
+        reference: allocation.fillProductSourceId,
+      },
+    });
+    await tx.inventoryAllocation.update({
+      where: { id: allocation.id },
+      data: { status: "COMMITTED", resolvedAt: committedAt },
+    });
+
+    if (allocation.fillProductSource) {
+      sourceExpirations.push(allocation.fillProductSource.expirationSnapshot);
+      await tx.fillProductSource.update({
+        where: { id: allocation.fillProductSource.id },
+        data: { committedAt },
+      });
+    }
+  }
+
+  const patientDiscardDate = fill.dispensedInOriginalContainer
+    ? null
+    : calculateNcPatientDiscardDate(committedAt, sourceExpirations);
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
     data: {
       inventoryCommittedAt: committedAt,
       inventoryReturnedAt: null,
+      patientDiscardDate,
     },
   });
 
-  return { committedAt };
+  await ensureBiologicCommunicationTask(tx, {
+    fillId: fill.id,
+    siteId: input.siteId,
+    dispensedAt: committedAt,
+  });
+
+  return { committedAt, patientDiscardDate };
 }
 
 export async function returnInventoryForFill(
@@ -613,72 +1035,79 @@ export async function returnInventoryForFill(
     where: { id: input.fillId },
     select: {
       id: true,
-      quantity: true,
-      inventoryBalanceId: true,
       inventoryCommittedAt: true,
       inventoryReturnedAt: true,
     },
   });
 
-  if (
-    !fill?.inventoryBalanceId ||
-    !fill.inventoryCommittedAt ||
-    fill.inventoryReturnedAt
-  ) {
+  if (!fill?.inventoryCommittedAt || fill.inventoryReturnedAt) {
     return null;
   }
 
-  const quantity = positiveQuantity(fill.quantity);
-  const balance = await lockBalance(tx, fill.inventoryBalanceId);
-
-  const updated = await tx.inventoryBalance.update({
-    where: { id: balance.id },
-    data: {
-      onHandQuantity: balance.onHandQuantity.plus(quantity),
+  const allocations = await tx.inventoryAllocation.findMany({
+    where: { fillId: fill.id, status: "COMMITTED" },
+    include: {
+      inventoryBalance: {
+        include: { product: true },
+      },
+      fillProductSource: true,
     },
+    orderBy: { createdAt: "asc" },
   });
-
-  await adjustStockPosition(tx, {
-    siteId: input.siteId,
-    inventoryBalanceId: balance.id,
-    state: "AVAILABLE",
-    delta: quantity,
-  });
-
-  const returnedProduct = await tx.product.findUnique({
-    where: { id: balance.productId },
-    select: { medicationId: true },
-  });
-  if (returnedProduct) {
-    await reconcileDemandAvailability(
-      tx,
-      input.siteId,
-      returnedProduct.medicationId,
-    );
-  }
+  if (allocations.length === 0) return null;
 
   const returnedAt = new Date();
-  await tx.inventoryTransaction.create({
-    data: {
+  const medicationIds = new Set<string>();
+  for (const allocation of allocations) {
+    const balance = await lockBalance(tx, allocation.inventoryBalanceId);
+    await tx.inventoryBalance.update({
+      where: { id: balance.id },
+      data: {
+        onHandQuantity: balance.onHandQuantity.plus(allocation.quantity),
+      },
+    });
+    await adjustStockPosition(tx, {
       siteId: input.siteId,
       inventoryBalanceId: balance.id,
-      fillId: fill.id,
-      actorId: input.actorId,
-      type: "RETURN_TO_STOCK",
-      onHandDelta: quantity,
-      reservedDelta: 0,
-      reason: input.reason,
-    },
-  });
+      state: "AVAILABLE",
+      delta: allocation.quantity,
+    });
+    await tx.inventoryTransaction.create({
+      data: {
+        siteId: input.siteId,
+        inventoryBalanceId: balance.id,
+        fillId: fill.id,
+        actorId: input.actorId,
+        type: "RETURN_TO_STOCK",
+        onHandDelta: allocation.quantity,
+        reservedDelta: 0,
+        reason: input.reason,
+        reference: allocation.fillProductSourceId,
+      },
+    });
+    await tx.inventoryAllocation.update({
+      where: { id: allocation.id },
+      data: { status: "RETURNED", resolvedAt: returnedAt },
+    });
+    if (allocation.fillProductSource) {
+      await tx.fillProductSource.update({
+        where: { id: allocation.fillProductSource.id },
+        data: { returnedAt },
+      });
+    }
+    medicationIds.add(allocation.inventoryBalance.product.medicationId);
+  }
 
   await tx.prescriptionFill.update({
     where: { id: fill.id },
-    data: {
-      inventoryReturnedAt: returnedAt,
-    },
+    data: { inventoryReturnedAt: returnedAt },
   });
 
-  return { balance: updated, returnedAt };
+  for (const medicationId of medicationIds) {
+    await reconcileDemandAvailability(tx, input.siteId, medicationId);
+  }
+
+  return { returnedAt, returnedAllocationCount: allocations.length };
 }
 
 export async function adjustInventoryBalance(

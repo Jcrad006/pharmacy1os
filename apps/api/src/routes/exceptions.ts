@@ -9,7 +9,8 @@ type ExceptionKind =
   | "PHARMACIST_REVIEW"
   | "SCHEDULED_FILL"
   | "COMPLETION_FILL"
-  | "EMERGENCY_FOLLOW_UP";
+  | "EMERGENCY_FOLLOW_UP"
+  | "BIOLOGIC_COMMUNICATION";
 
 type ExceptionItem = {
   id: string;
@@ -50,6 +51,7 @@ export async function exceptionRoutes(app: FastifyInstance) {
         "SCHEDULED_FILL",
         "COMPLETION_FILL",
         "EMERGENCY_FOLLOW_UP",
+        "BIOLOGIC_COMMUNICATION",
       ]);
 
       if (query.kind && !kinds.has(query.kind)) {
@@ -67,6 +69,7 @@ export async function exceptionRoutes(app: FastifyInstance) {
         pharmacistReview,
         scheduledFills,
         emergencyFollowUps,
+        biologicCommunications,
       ] = await Promise.all([
           db.durIssue.findMany({
             where: {
@@ -119,6 +122,23 @@ export async function exceptionRoutes(app: FastifyInstance) {
               },
             },
             orderBy: { followUpDueAt: "asc" },
+            take: limit,
+          }),
+          db.biologicCommunicationTask.findMany({
+            where: {
+              siteId: actor.siteId,
+              status: "OPEN",
+            },
+            include: {
+              fill: {
+                include: {
+                  prescription: {
+                    include: { patient: true },
+                  },
+                },
+              },
+            },
+            orderBy: { dueAt: "asc" },
             take: limit,
           }),
         ]);
@@ -211,6 +231,22 @@ export async function exceptionRoutes(app: FastifyInstance) {
           dueAt: fill.followUpDueAt?.toISOString() ?? null,
           createdAt: fill.createdAt.toISOString(),
         })),
+        ...biologicCommunications.map((task) => ({
+          id: `biologic-communication:${task.id}`,
+          kind: "BIOLOGIC_COMMUNICATION" as const,
+          prescriptionId: task.fill.prescriptionId,
+          rxNumber: task.fill.prescription.rxNumber,
+          patientName: `${task.fill.prescription.patient.lastName}, ${task.fill.prescription.patient.firstName}`,
+          medicationName: task.fill.prescription.medicationName,
+          title: "Biologic prescriber communication required",
+          detail: `${task.productName} · ${task.manufacturerName}`,
+          severity:
+            task.dueAt.getTime() <= Date.now()
+              ? ("HIGH" as const)
+              : ("WARNING" as const),
+          dueAt: task.dueAt.toISOString(),
+          createdAt: task.createdAt.toISOString(),
+        })),
       ];
 
       const filtered = items
@@ -256,6 +292,9 @@ export async function exceptionRoutes(app: FastifyInstance) {
           ).length,
           emergencyFollowUp: filtered.filter(
             (item) => item.kind === "EMERGENCY_FOLLOW_UP",
+          ).length,
+          biologicCommunication: filtered.filter(
+            (item) => item.kind === "BIOLOGIC_COMMUNICATION",
           ).length,
         },
       };
