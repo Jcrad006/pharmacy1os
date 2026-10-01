@@ -54,6 +54,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-request-id",
+    bodyLimit: 36 * 1024 * 1024,
   });
 
   app.register(cors, {
