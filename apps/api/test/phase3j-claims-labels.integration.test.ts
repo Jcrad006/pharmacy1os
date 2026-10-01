@@ -757,7 +757,7 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
     expect(labels).toHaveLength(2);
     expect(labels[0]!.status).toBe("VOID");
     expect(labels[1]!.status).toBe("ACTIVE");
-    expect(labels[1]!.billedNdc).toBe(ndc);
+    expect(labels[1]!.billedNdcSnapshot).toBe(ndc);
   });
 
 });
