@@ -14,12 +14,26 @@ export async function developmentRoutes(app: FastifyInstance) {
         externalAuthId: true,
         displayName: true,
         role: true,
+        siteId: true,
+        site: {
+          select: {
+            name: true,
+          },
+        },
       },
     });
 
     return {
       warning: "Development-only synthetic identities. Not production authentication.",
-      users: users.filter((user) => user.externalAuthId !== null),
+      users: users
+        .filter((user) => user.externalAuthId !== null)
+        .map((user) => ({
+          externalAuthId: user.externalAuthId,
+          displayName: user.displayName,
+          role: user.role,
+          siteId: user.siteId,
+          siteName: user.site.name,
+        })),
     };
   });
 }
