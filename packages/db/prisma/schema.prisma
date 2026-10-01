@@ -794,6 +794,8 @@ model ClaimTransaction {
   outcome               ClaimOutcome
   idempotencyKey        String          @unique
   originalTransactionId String?
+  originalTransaction   ClaimTransaction? @relation("ClaimTransactionReversal", fields: [originalTransactionId], references: [id], onDelete: Restrict)
+  reversals             ClaimTransaction[] @relation("ClaimTransactionReversal")
   claimStandard         ClaimStandard
   adapterName           String
   adapterVersion        String
@@ -817,6 +819,7 @@ model ClaimTransaction {
   createdBy             User            @relation("ClaimTransactionActor", fields: [createdById], references: [id], onDelete: Restrict)
   adjudicatedAt         DateTime
   createdAt             DateTime        @default(now())
+  labels                PrescriptionLabel[]
 
   @@index([siteId, createdAt])
   @@index([fillId, coveragePosition, createdAt])
@@ -833,6 +836,7 @@ model PrescriptionLabel {
   version               Int
   status                PrescriptionLabelStatus @default(ACTIVE)
   claimTransactionId    String?
+  claimTransaction      ClaimTransaction? @relation(fields: [claimTransactionId], references: [id], onDelete: Restrict)
   rxNumberSnapshot      String?
   patientNameSnapshot   String
   prescriberNameSnapshot String
