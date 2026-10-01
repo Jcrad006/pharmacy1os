@@ -460,11 +460,14 @@ export type InventoryPolicy = {
   productId: string | null;
   reorderPoint: string | number | null;
   parLevel: string | number | null;
+  maxStockLevel: string | number | null;
   minShelfLifeDays: number | null;
   expirationWarningDays: number;
   fefoEnabled: boolean;
   preferredSupplierName: string | null;
   adjustmentApprovalThreshold: string | number | null;
+  allowTechnicianAdjustments: boolean;
+  requiredLocationType: InventoryLocationType | null;
   requireTransferSecondCheck: boolean;
   staleReservationHours: number;
   medication?: Medication | null;
