@@ -329,6 +329,7 @@ model PharmacySite {
   inventoryExceptions   InventoryException[]
   custodyEvents         InventoryTransferCustodyEvent[]
   payers                Payer[]
+  payerBillingProfiles  PayerBillingProfile[]
   patientCoverages      PatientCoverage[]
   biologicCommunicationTasks BiologicCommunicationTask[]
   claimTransactions     ClaimTransaction[]
@@ -749,10 +750,28 @@ model Payer {
   updatedAt          DateTime           @updatedAt
   coverages          PatientCoverage[]
   claimTransactions ClaimTransaction[]
+  billingProfile    PayerBillingProfile?
 
   @@unique([siteId, name])
   @@index([siteId, active, name])
   @@index([bin, pcn])
+}
+
+model PayerBillingProfile {
+  id                                      String             @id @default(uuid())
+  siteId                                  String
+  site                                    PharmacySite       @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  payerId                                 String             @unique
+  payer                                   Payer              @relation(fields: [payerId], references: [id], onDelete: Cascade)
+  billingNdcStrategy                      BillingNdcStrategy @default(MAJORITY_SOURCE)
+  autoReversePaidClaimOnSourceCorrection Boolean            @default(true)
+  customRules                             Json               @default("{}")
+  notes                                   String?
+  version                                 Int                @default(1)
+  createdAt                               DateTime           @default(now())
+  updatedAt                               DateTime           @updatedAt
+
+  @@index([siteId, updatedAt])
 }
 
 model PatientCoverage {
@@ -808,6 +827,8 @@ model ClaimTransaction {
   payerIntendedQuantity Decimal         @db.Decimal(10, 3)
   physicalPartQuantity  Decimal         @db.Decimal(10, 3)
   daysSupply            Int
+  billingProfileVersion Int?
+  billingProfileSnapshot Json?
   requestSnapshot       Json
   responseSnapshot      Json
   transactionReference  String?
