@@ -1129,3 +1129,84 @@ export type ClaimAdjudicationResult = {
   labels: PrescriptionLabel[];
   printJobs: LabelPrintJob[];
 };
+
+
+export type PosTransactionStatus = "COMPLETED" | "VOIDED";
+export type PosPriceBasis =
+  | "THIRD_PARTY"
+  | "CASH"
+  | "COMPLETION_ALREADY_BILLED";
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "OTHER";
+
+export type PosQuoteLine = {
+  fillId: string;
+  prescriptionId: string;
+  patientId: string;
+  rxNumber: string | null;
+  medicationName: string;
+  fillNumber: number;
+  partNumber: number;
+  quantity: string | number;
+  priceBasis: PosPriceBasis;
+  claimTransactionId: string | null;
+  patientResponsibilitySnapshot: string | number | null;
+  cashUnitPriceSnapshot: string | number | null;
+  cashPricingSnapshot: unknown;
+  amountDue: string | number;
+};
+
+export type PosQuote = {
+  patientId: string;
+  lines: PosQuoteLine[];
+  totalDue: string | number;
+};
+
+export type PaymentTender = {
+  id: string;
+  transactionId: string;
+  method: PaymentMethod;
+  amount: string | number;
+  reference: string | null;
+  actorId: string;
+  createdAt: string;
+};
+
+export type PointOfSaleLine = {
+  id: string;
+  transactionId: string;
+  fillId: string;
+  claimTransactionId: string | null;
+  quantity: string | number;
+  priceBasis: PosPriceBasis;
+  cashUnitPriceSnapshot: string | number | null;
+  cashPricingSnapshot: unknown;
+  patientResponsibilitySnapshot: string | number | null;
+  amountDue: string | number;
+  createdAt: string;
+};
+
+export type PointOfSaleTransaction = {
+  id: string;
+  siteId: string;
+  patientId: string;
+  receiptNumber: string;
+  status: PosTransactionStatus;
+  totalDue: string | number;
+  totalTendered: string | number;
+  changeDue: string | number;
+  idempotencyKey: string;
+  createdById: string;
+  voidedById: string | null;
+  completedAt: string;
+  voidedAt: string | null;
+  voidReason: string | null;
+  createdAt: string;
+  lines: PointOfSaleLine[];
+  tenders: PaymentTender[];
+  patient?: Patient;
+  createdBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+};
