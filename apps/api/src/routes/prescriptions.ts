@@ -998,6 +998,16 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             },
             data: { status: "CANCELLED" },
           });
+
+          await tx.inventoryDemand.updateMany({
+            where: {
+              fill: {
+                completionOfFillId: currentActiveFill.id,
+              },
+              status: { in: ["OPEN", "PARTIALLY_SATISFIED"] },
+            },
+            data: { status: "CANCELLED" },
+          });
         }
 
         const rx = await tx.prescription.update({
@@ -1350,6 +1360,22 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           },
         });
 
+        const demand = fill.prescription.medicationId
+          ? await tx.inventoryDemand.create({
+              data: {
+                siteId: actor.siteId,
+                medicationId: fill.prescription.medicationId,
+                fillId: completion.id,
+                reason: "PARTIAL_COMPLETION",
+                quantityRequired: remainder,
+                dueAt: completionScheduledFor,
+                note:
+                  body.reason?.trim() ||
+                  "Remaining quantity required to complete partial fill",
+              },
+            })
+          : null;
+
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
@@ -1368,6 +1394,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             completionScheduledFor:
               completionScheduledFor.toISOString(),
             reason: body.reason?.trim() || null,
+            inventoryDemandId: demand?.id ?? null,
           },
         });
 
