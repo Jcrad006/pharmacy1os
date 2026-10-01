@@ -442,6 +442,7 @@ export type InventoryStockPosition = {
   quantity: string | number;
   createdAt: string;
   updatedAt: string;
+  inventoryBalance?: InventoryBalance;
 };
 
 export type InventoryAllocationStatus =
