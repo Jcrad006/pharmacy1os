@@ -60,7 +60,9 @@ async function createFill(quantity: number, suffix: string) {
 
 describe("Phase 3H recall workflow", () => {
   it("quarantines matching stock, links sold fills/patients, and blocks recalled dispensing", async () => {
-    const suffix = randomUUID().replace(/-/g, "").slice(0, 6);
+    const suffix = Math.floor(Math.random() * 1_000_000)
+      .toString()
+      .padStart(6, "0");
     const gtin = `0022222${suffix}0`;
     const lotNumber = `RCL-${suffix}`;
     const rawBarcode = `(01)${gtin}(17)291231(10)${lotNumber}`;
