@@ -10,6 +10,8 @@ import {
   removeInventoryPosition,
   reverseInventoryCostConsumption,
   resolveEffectiveInventoryPolicy,
+  repositionInventoryQuantity,
+  resolveInventoryLocation,
   InventoryArchitectureError,
 } from "./inventoryArchitecture.js";
 
@@ -905,6 +907,15 @@ export async function quarantineInventory(
     },
   });
 
+  await repositionInventoryQuantity(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity,
+    actorId: input.actorId,
+    destinationType: "QUARANTINE",
+    reason: input.note?.trim() || `Quarantine: ${input.reasonCode}`,
+  });
+
   return { balance: updated, hold, transaction };
 }
 
@@ -976,6 +987,26 @@ export async function releaseInventoryHold(
       source: "INVENTORY_HOLD",
       reference: hold.id,
     },
+  });
+
+  const releaseProduct = await tx.product.findUnique({
+    where: { id: balance.productId },
+    select: { medicationId: true },
+  });
+  const releasePolicy = await resolveEffectiveInventoryPolicy(tx, {
+    siteId: input.siteId,
+    medicationId: releaseProduct?.medicationId ?? null,
+    productId: balance.productId,
+  });
+
+  await repositionInventoryQuantity(tx, {
+    siteId: input.siteId,
+    balanceId: balance.id,
+    quantity: hold.quantity,
+    actorId: input.actorId,
+    sourceType: "QUARANTINE",
+    destinationType: releasePolicy?.requiredLocationType ?? "DISPENSING",
+    reason: input.resolutionNote.trim(),
   });
 
   const resolved = await tx.inventoryHold.update({
@@ -1068,11 +1099,17 @@ export async function disposeInventoryHold(
     },
   });
 
+  const quarantineLocation = await resolveInventoryLocation(tx, {
+    siteId: input.siteId,
+    preferredTypes: ["QUARANTINE"],
+  });
+
   await removeInventoryPosition(tx, {
     siteId: input.siteId,
     balanceId: balance.id,
     quantity: hold.quantity,
     actorId: input.actorId,
+    locationId: quarantineLocation.id,
     reason: `Disposition: ${input.dispositionType}`,
   });
 
