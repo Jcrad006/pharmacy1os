@@ -160,6 +160,7 @@ function auditValue(value: unknown): string | number | boolean | null {
 
 function prescriptionSnapshot(rx: {
   prescriberId: string;
+  medicationId: string | null;
   medicationName: string;
   strength: string | null;
   dosageForm: string | null;
@@ -173,6 +174,7 @@ function prescriptionSnapshot(rx: {
 }) {
   return {
     prescriberId: auditValue(rx.prescriberId),
+    medicationId: auditValue(rx.medicationId),
     medicationName: auditValue(rx.medicationName),
     strength: auditValue(rx.strength),
     dosageForm: auditValue(rx.dosageForm),
@@ -554,11 +556,24 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
-      let selectedMedicationForEdit = null as Awaited<ReturnType<typeof db.medication.findUnique>>;
+      let selectedMedicationForEdit: {
+        id: string;
+        genericName: string;
+        strength: string;
+        dosageForm: string;
+        active: boolean;
+      } | null = null;
 
       if (body.medicationId !== undefined) {
         selectedMedicationForEdit = await db.medication.findUnique({
           where: { id: body.medicationId },
+          select: {
+            id: true,
+            genericName: true,
+            strength: true,
+            dosageForm: true,
+            active: true,
+          },
         });
         if (!selectedMedicationForEdit || !selectedMedicationForEdit.active) {
           return reply.code(400).send({
