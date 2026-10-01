@@ -10,6 +10,7 @@ import type {
   Patient,
   Prescriber,
   Medication,
+  Manufacturer,
   Product,
   ProductLot,
   ProductExpiration,
