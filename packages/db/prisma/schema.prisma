@@ -239,7 +239,6 @@ model PharmacySite {
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
-  inventoryDemands InventoryDemand[]
   productLots           ProductLot[]
   productExpirations    ProductExpiration[]
   inventoryBalances     InventoryBalance[]
@@ -403,6 +402,7 @@ model Medication {
   updatedAt     DateTime  @updatedAt
   products      Product[]
   prescriptions Prescription[]
+  inventoryDemands InventoryDemand[]
 
   @@index([genericName, strength, dosageForm])
   @@index([brandName])
