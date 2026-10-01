@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ClinicalPanel } from "./ClinicalPanel";
 import {
   createFill,
+  getMedications,
   getPrescription,
   getPrescriptionAudit,
   returnFillToStock,
+  scanFillProduct,
   startFill,
   transitionPrescription,
   updatePrescription,
@@ -12,6 +14,7 @@ import {
 import type {
   AuditEvent,
   DevUser,
+  Medication,
   Prescriber,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -35,9 +38,7 @@ import {
 
 type EditState = {
   prescriberId: string;
-  medicationName: string;
-  strength: string;
-  dosageForm: string;
+  medicationId: string;
   sig: string;
   quantityWritten: string;
   refillsAllowed: string;
@@ -53,9 +54,7 @@ function dateInputValue(value: string | null) {
 function editStateFromRx(rx: PrescriptionQueueItem): EditState {
   return {
     prescriberId: rx.prescriber.id,
-    medicationName: rx.medicationName,
-    strength: rx.strength ?? "",
-    dosageForm: rx.dosageForm ?? "",
+    medicationId: rx.medicationId ?? "",
     sig: rx.sig,
     quantityWritten: String(rx.quantityWritten ?? ""),
     refillsAllowed: String(rx.refillsAllowed),
@@ -113,6 +112,10 @@ export function PrescriptionDetail({
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [openHighClinicalIssues, setOpenHighClinicalIssues] = useState<number | null>(null);
+  const [medications, setMedications] = useState<Medication[]>([]);
+  const [scanNdc, setScanNdc] = useState("");
+  const [scanLot, setScanLot] = useState("");
+  const [scanExpiration, setScanExpiration] = useState("");
   const [quantity, setQuantity] = useState("");
   const [scheduledFor, setScheduledFor] = useState("");
   const [editing, setEditing] = useState(false);
@@ -142,6 +145,19 @@ export function PrescriptionDetail({
   useEffect(() => {
     void load();
   }, [prescriptionId, devUser, user?.role]);
+
+  useEffect(() => {
+    if (!devUser) return;
+    void getMedications(devUser)
+      .then((items) => setMedications(items.filter((item) => item.active)))
+      .catch((error) =>
+        onError(
+          error instanceof Error
+            ? error.message
+            : "Unable to load the drug catalog.",
+        ),
+      );
+  }, [devUser]);
 
   const currentFill = useMemo(() => (rx ? activeFill(rx.fills) : undefined), [rx]);
 
@@ -214,6 +230,35 @@ export function PrescriptionDetail({
     }
   }
 
+  async function verifyProductScan(event: FormEvent) {
+    event.preventDefault();
+    if (!rx || !currentFill) return;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await scanFillProduct(devUser, currentFill.id, {
+        ndc: scanNdc,
+        lotNumber: scanLot,
+        expirationDate: new Date(
+          `${scanExpiration}T00:00:00Z`,
+        ).toISOString(),
+      });
+      setScanNdc("");
+      setScanLot("");
+      setScanExpiration("");
+      await onMutated("Scanned NDC, lot, and expiration verified against the selected drug.");
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Scanned product did not match the prescription.",
+      );
+      setLoading(false);
+    }
+  }
+
   async function submitEdit(event: FormEvent) {
     event.preventDefault();
     if (!rx || !editState) return;
@@ -223,9 +268,7 @@ export function PrescriptionDetail({
     try {
       await updatePrescription(devUser, rx.id, {
         prescriberId: editState.prescriberId,
-        medicationName: editState.medicationName,
-        strength: editState.strength || null,
-        dosageForm: editState.dosageForm || null,
+        medicationId: editState.medicationId || undefined,
         sig: editState.sig,
         quantityWritten: editState.quantityWritten
           ? Number(editState.quantityWritten)
@@ -328,9 +371,23 @@ export function PrescriptionDetail({
                 ))}
               </select>
             </label>
-            <label>Medication<input value={editState.medicationName} onChange={(event) => setEditState({ ...editState, medicationName: event.target.value })} required /></label>
-            <label>Strength<input value={editState.strength} onChange={(event) => setEditState({ ...editState, strength: event.target.value })} /></label>
-            <label>Dosage form<input value={editState.dosageForm} onChange={(event) => setEditState({ ...editState, dosageForm: event.target.value })} /></label>
+            <label>
+              Drug
+              <select
+                value={editState.medicationId}
+                onChange={(event) =>
+                  setEditState({ ...editState, medicationId: event.target.value })
+                }
+                required
+              >
+                <option value="">Select drug</option>
+                {medications.map((medication) => (
+                  <option key={medication.id} value={medication.id}>
+                    {medication.genericName} · {medication.strength} · {medication.dosageForm}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="wide">Directions / Sig<input value={editState.sig} onChange={(event) => setEditState({ ...editState, sig: event.target.value })} required /></label>
             <label>Quantity<input type="number" min="0.001" step="0.001" value={editState.quantityWritten} onChange={(event) => setEditState({ ...editState, quantityWritten: event.target.value })} /></label>
             <label>Refills authorized<input type="number" min={rx.refillsUsed} step="1" value={editState.refillsAllowed} onChange={(event) => setEditState({ ...editState, refillsAllowed: event.target.value })} /></label>
@@ -412,8 +469,98 @@ export function PrescriptionDetail({
             </div>
           )}
 
-          {rx.status === "PRODUCT_FILL" && (
-            <button className="primary-button" disabled={!processAllowed || loading} onClick={() => void transition("PHARMACIST_REVIEW", "Product fill completed; sent to pharmacist review.")}>Product prepared → Pharmacist Review</button>
+          {rx.status === "PRODUCT_FILL" && currentFill && (
+            <div className="product-scan-workflow">
+              <div className="scan-expected-drug">
+                <span>Drug selected during Data Entry</span>
+                <strong>
+                  {rx.medication
+                    ? `${rx.medication.genericName} ${rx.medication.strength} ${rx.medication.dosageForm}`
+                    : `${rx.medicationName} ${rx.strength ?? ""} ${rx.dosageForm ?? ""}`}
+                </strong>
+                <small>
+                  Any active NDC cataloged under this exact drug is acceptable.
+                </small>
+              </div>
+
+              {currentFill.productVerifiedAt ? (
+                <div className="scan-verified-card">
+                  <strong>✓ Product scan verified</strong>
+                  <span>
+                    NDC {currentFill.scannedNdc} · Lot {currentFill.scannedLotNumber} · Exp{" "}
+                    {currentFill.scannedExpiration
+                      ? new Date(currentFill.scannedExpiration).toLocaleDateString()
+                      : "—"}
+                  </span>
+                  <span>
+                    {currentFill.product?.manufacturer.name ?? ""}{" "}
+                    {currentFill.product?.descriptor ?? ""}
+                  </span>
+                </div>
+              ) : (
+                <form className="product-scan-form" onSubmit={verifyProductScan}>
+                  <label>
+                    Scanned NDC
+                    <input
+                      value={scanNdc}
+                      onChange={(event) => setScanNdc(event.target.value)}
+                      placeholder="NDC from stock package"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Scanned lot
+                    <input
+                      value={scanLot}
+                      onChange={(event) => setScanLot(event.target.value)}
+                      placeholder="Lot number"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Scanned expiration
+                    <input
+                      type="date"
+                      value={scanExpiration}
+                      onChange={(event) => setScanExpiration(event.target.value)}
+                      required
+                    />
+                  </label>
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={
+                      !processAllowed ||
+                      loading ||
+                      !scanNdc ||
+                      !scanLot ||
+                      !scanExpiration
+                    }
+                  >
+                    Verify scanned product
+                  </button>
+                </form>
+              )}
+
+              <button
+                className="primary-button"
+                disabled={
+                  !processAllowed ||
+                  loading ||
+                  (Boolean(rx.medicationId) && !currentFill.productVerifiedAt)
+                }
+                onClick={() =>
+                  void transition(
+                    "PHARMACIST_REVIEW",
+                    "Product fill completed; sent to pharmacist review.",
+                  )
+                }
+              >
+                {rx.medicationId && !currentFill.productVerifiedAt
+                  ? "Scan and verify product first"
+                  : "Product prepared → Pharmacist Review"}
+              </button>
+            </div>
           )}
 
           {rx.status === "PHARMACIST_REVIEW" && (
@@ -489,13 +636,23 @@ export function PrescriptionDetail({
         </div>
         <div className="table-wrap">
           <table className="compact-table">
-            <thead><tr><th>Fill</th><th>Status</th><th>Quantity</th><th>Scheduled</th><th>Filled</th><th>Sold</th></tr></thead>
+            <thead><tr><th>Fill</th><th>Status</th><th>Quantity</th><th>NDC / Lot / Exp</th><th>Scheduled</th><th>Filled</th><th>Sold</th></tr></thead>
             <tbody>
               {rx.fills.map((fill) => (
                 <tr key={fill.id}>
                   <td>#{fill.fillNumber}</td>
                   <td>{fill.status.replaceAll("_", " ")}</td>
                   <td>{String(fill.quantity ?? "—")}</td>
+                  <td>
+                    {fill.productVerifiedAt ? (
+                      <span className="fill-product-trace">
+                        {fill.scannedNdc} · {fill.scannedLotNumber} ·{" "}
+                        {fill.scannedExpiration
+                          ? new Date(fill.scannedExpiration).toLocaleDateString()
+                          : "—"}
+                      </span>
+                    ) : "—"}
+                  </td>
                   <td>{fill.scheduledFor ? new Date(fill.scheduledFor).toLocaleString() : "—"}</td>
                   <td>{fill.filledAt ? new Date(fill.filledAt).toLocaleString() : "—"}</td>
                   <td>{fill.soldAt ? new Date(fill.soldAt).toLocaleString() : "—"}</td>
