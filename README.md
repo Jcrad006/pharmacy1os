@@ -35,6 +35,7 @@ The current prototype includes:
 - Keyboard-first shortcuts for queue search and primary work areas
 - Database-backed dispensing, clinical, and queue-search integration tests
 - Drug/Product master with NDC-specific descriptors, package sizes, dispensing units, current unit/package pricing, lots, and expirations
+- Catalog Drug selection during Data Entry with fill-time NDC/lot/expiration verification against the selected Drug
 - Automated migration, seed, typecheck, test, and production-build validation in CI
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
@@ -53,6 +54,8 @@ Date-rule evaluation
 Create / start fill
    ↓
 Product Fill
+   ↓
+Scan/verify NDC + Lot + Expiration against Data Entry Drug
    ↓
 Pharmacist Review
    ↓

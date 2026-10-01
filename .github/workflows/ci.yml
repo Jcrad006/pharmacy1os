@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase3b-ndc-package-pricing]
+    branches: [main, phase3c-drug-selection-scan-verification]
   pull_request:
   workflow_dispatch:
 

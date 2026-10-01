@@ -117,7 +117,14 @@
 - [x] Dispensing unit support for each, gram, and milliliter
 - [x] Current price per dispensing unit and per stock package
 - [x] Package/unit price derivation when only one price is entered
-- [ ] Associate scanned lot/expiration information with a specific prescription fill
+- [x] Select catalog Drug during prescription Data Entry
+- [x] Allow any catalog NDC associated with the selected Drug during Product Fill
+- [x] Verify scanned NDC belongs to the Data Entry Drug
+- [x] Verify scanned lot belongs to the scanned NDC at the pharmacy site
+- [x] Verify scanned expiration belongs to the scanned NDC at the pharmacy site
+- [x] Block Product Fill → Pharmacist Review until NDC/lot/expiration verification succeeds
+- [x] Store verified NDC/lot/expiration on the specific prescription fill
+- [ ] Parse raw GS1/2D barcode payloads directly into NDC/lot/expiration fields
 
 ## Phase 3 — Pharmacy utilities
 - Inventory
