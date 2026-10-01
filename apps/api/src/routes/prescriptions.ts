@@ -1304,6 +1304,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (
+        body.interruptionReason &&
+        !fillInterruptionReasons.has(body.interruptionReason)
+      ) {
+        return reply.code(400).send({
+          error: "A valid fill interruption reason is required.",
+        });
+      }
+
       const fill = await db.prescriptionFill.findUnique({
         where: { id },
         include: {
@@ -1327,15 +1336,23 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
-      if (
-        fill.productVerifiedAt ||
-        fill.inventoryReservedAt ||
-        fill.inventoryCommittedAt
-      ) {
+      if (fill.inventoryCommittedAt) {
         return reply.code(409).send({
           error:
-            "Enter the partial quantity before scanning/reserving product inventory.",
-          code: "PARTIAL_BEFORE_PRODUCT_SCAN_REQUIRED",
+            "A fill cannot be converted to a partial after pharmacist verification has committed inventory.",
+          code: "PARTIAL_AFTER_INVENTORY_COMMIT_NOT_ALLOWED",
+        });
+      }
+
+      const interruptedAfterScan = Boolean(
+        fill.productVerifiedAt || fill.inventoryReservedAt,
+      );
+
+      if (interruptedAfterScan && !body.interruptionReason) {
+        return reply.code(400).send({
+          error:
+            "A structured interruption reason is required when converting a fill after product scanning/reservation.",
+          code: "FILL_INTERRUPTION_REASON_REQUIRED",
         });
       }
 
@@ -1345,22 +1362,41 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (fill.kind === "PARTIAL") {
+        return reply.code(409).send({
+          error:
+            "This dispense part is already a partial. Resolve its scheduled completion before changing it again.",
+          code: "FILL_ALREADY_PARTIAL",
+        });
+      }
+
       if (fill.quantity === null) {
         return reply.code(409).send({
-          error: "The current fill has no intended quantity.",
+          error: "The current dispense part has no planned physical quantity.",
         });
       }
 
-      const intended = fill.quantity;
+      const plannedPartQuantity = fill.quantity;
+      const intendedQuantity =
+        fill.intendedQuantity ??
+        fill.authorizedQuantity ??
+        plannedPartQuantity;
+      const payerIntendedQuantity =
+        fill.payerIntendedQuantity ?? intendedQuantity;
       const partial = new Prisma.Decimal(dispenseQuantity);
-      if (partial.gte(intended)) {
+
+      if (partial.gte(plannedPartQuantity)) {
         return reply.code(400).send({
           error:
-            "Partial quantity must be less than the current intended fill quantity.",
+            "Partial quantity must be less than the current planned physical dispense quantity.",
         });
       }
 
-      const remainder = intended.minus(partial);
+      const remainder = plannedPartQuantity.minus(partial);
+      const billingAnchorFillId = fill.billingAnchorFillId ?? fill.id;
+      const wasReserved = Boolean(
+        fill.inventoryBalanceId && fill.inventoryReservedAt,
+      );
 
       const result = await db.$transaction(async (tx) => {
         const existingParts = await tx.prescriptionFill.findMany({
