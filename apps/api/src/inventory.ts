@@ -149,34 +149,6 @@ export async function releaseInventoryReservation(
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
 
-  const openRecall = await tx.inventoryRecall.findFirst({
-    where: {
-      siteId: input.siteId,
-      productId: balance.productId,
-      productLotId: balance.productLotId,
-      status: "OPEN",
-    },
-    select: {
-      id: true,
-      referenceNumber: true,
-      reason: true,
-    },
-  });
-
-  if (openRecall) {
-    throw new InventoryError(
-      409,
-      "PRODUCT_RECALLED",
-      "This product lot entered recall after Product Fill and cannot be pharmacist-verified.",
-      {
-        recallId: openRecall.id,
-        referenceNumber: openRecall.referenceNumber,
-        reason: openRecall.reason,
-        productLotId: balance.productLotId,
-      },
-    );
-  }
-
   if (balance.reservedQuantity.lt(quantity)) {
     throw new InventoryError(
       409,
@@ -405,6 +377,34 @@ export async function commitInventoryForFill(
 
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
+
+  const openRecall = await tx.inventoryRecall.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: balance.productId,
+      productLotId: balance.productLotId,
+      status: "OPEN",
+    },
+    select: {
+      id: true,
+      referenceNumber: true,
+      reason: true,
+    },
+  });
+
+  if (openRecall) {
+    throw new InventoryError(
+      409,
+      "PRODUCT_RECALLED",
+      "This product lot entered recall after Product Fill and cannot be pharmacist-verified.",
+      {
+        recallId: openRecall.id,
+        referenceNumber: openRecall.referenceNumber,
+        reason: openRecall.reason,
+        productLotId: balance.productLotId,
+      },
+    );
+  }
 
   if (
     balance.reservedQuantity.lt(quantity) ||
