@@ -286,7 +286,6 @@ model PharmacySite {
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
-  coverages     PatientCoverage[]
   productLots           ProductLot[]
   productExpirations    ProductExpiration[]
   inventoryBalances     InventoryBalance[]
@@ -365,6 +364,7 @@ model Patient {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   prescriptions Prescription[]
+  coverages     PatientCoverage[]
 
   @@index([siteId, lastName, firstName])
   @@index([siteId, dateOfBirth])
