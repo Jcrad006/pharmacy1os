@@ -20,7 +20,7 @@ afterAll(async () => {
 
 describe("Phase 3H cycle counts", () => {
   it("requires pharmacist review, reconciles discrepancies, and blocks stale counts", async () => {
-    const suffix = randomUUID().replace(/-/g, "").slice(0, 7);
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 6);
     const gtin = `0055555${suffix}0`;
     const lotNumber = `COUNT-${suffix}`;
     const rawBarcode = `(01)${gtin}(17)291231(10)${lotNumber}`;
