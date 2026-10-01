@@ -52,15 +52,20 @@ class SandboxClaimAdapter implements ClaimAdapter {
       };
     }
 
+    const copayMatch = member.match(/COPAY(\d{1,6})/);
+    const patientResponsibility = copayMatch
+      ? (Number.parseInt(copayMatch[1]!, 10) / 100).toFixed(2)
+      : "0.00";
+
     return {
       status: "PAID",
       transactionReference: reference("SBX-PD", request.claimIdempotencyKey),
       authorizationNumber: reference("AUTH", request.claimIdempotencyKey).slice(0, 20),
       amountPaid: "0.00",
-      patientResponsibility: "0.00",
+      patientResponsibility,
       rejectCodes: [],
       messages: [
-        `Synthetic ${context.standard} paid response. Payer-intended quantity ${request.payerIntendedQuantity}; physical dispense quantity ${request.physicalPartQuantity}.`,
+        `Synthetic ${context.standard} paid response. Payer-intended quantity ${request.payerIntendedQuantity}; physical dispense quantity ${request.physicalPartQuantity}; patient responsibility ${patientResponsibility}.`,
       ],
       rawStandard: context.standard,
     };
