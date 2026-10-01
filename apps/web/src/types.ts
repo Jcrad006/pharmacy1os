@@ -628,7 +628,6 @@ export type InventoryBalance = {
   transactions?: InventoryTransaction[];
   stockPositions?: InventoryStockPosition[];
   allocations?: InventoryAllocation[];
-  demands?: InventoryDemand[];
 };
 
 export type InventoryTransfer = {
