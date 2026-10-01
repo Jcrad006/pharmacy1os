@@ -246,6 +246,31 @@
 - [x] Database-backed partial/completion and emergency-supply workflow tests
 - [ ] Jurisdiction-specific policy configuration for emergency quantity/duration, exclusions, notification deadlines, and controlled-substance rules
 
+## Phase 3J — Billing, adjudication & prescription labels
+- [x] Separate logical fill quantity from physical dispense-part quantity
+- [x] Separate payer-intended quantity from actual physical quantity dispensed
+- [x] Explicit primary-claim, completion, and emergency-supply billing roles
+- [x] Billing-anchor lineage for completion parts of the same authorized fill
+- [x] Same fill number / separate part number for partial and completion dispensing
+- [x] Remaining-owed quantity tracked independently from payer-intended quantity
+- [x] Product Fill technician can interrupt a scanned/reserved fill and convert it to a partial
+- [x] Mid-fill partial conversion atomically releases the original reservation and re-reserves only the physical partial quantity
+- [x] Physical shortage/discrepancy creates a high-severity inventory exception without silently changing on-hand inventory
+- [x] Pharmacist/admin resolution of physical-stock exceptions requires an audited note
+- [x] Quantity architecture documented for claims and label implementation
+- [ ] Patient coverage / payer profile model
+- [ ] Immutable claim and claim-attempt transaction model
+- [ ] Scan-triggered claim construction and adjudication
+- [ ] Default synthetic partial strategy submits the full payer-intended logical fill quantity
+- [ ] Payer-adapter strategy layer for payer-specific partial/completion transaction rules
+- [ ] PAID adjudication automatically generates and queues the physical dispense-part label
+- [ ] REJECTED adjudication suppresses dispensing-label generation and routes the fill to a dedicated Third-Party Rejections workspace
+- [ ] Third-party rejection correction/resubmission history
+- [ ] Claim reversal/rebill lifecycle
+- [ ] Cash and coordination-of-benefits pathways
+- [ ] Structured prescription label renderer
+- [ ] Audited print-job / reprint / failure queue
+
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
 - [x] Barcode scanning
