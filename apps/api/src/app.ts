@@ -16,6 +16,7 @@ import { inventoryRoutes } from "./routes/inventory.js";
 import { inventoryOperationsRoutes } from "./routes/inventoryOperations.js";
 import { inventoryArchitectureRoutes } from "./routes/inventoryArchitecture.js";
 import { thirdPartyRoutes } from "./routes/thirdParty.js";
+import { posRoutes } from "./routes/pos.js";
 
 type BuildAppOptions = {
   serveWeb?: boolean;
@@ -71,6 +72,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(inventoryOperationsRoutes, { prefix: "/api" });
   app.register(inventoryArchitectureRoutes, { prefix: "/api" });
   app.register(thirdPartyRoutes, { prefix: "/api" });
+  app.register(posRoutes, { prefix: "/api" });
 
   if (options.serveWeb) {
     const webRoot = resolve(
