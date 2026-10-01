@@ -23,6 +23,10 @@ let secondaryProductId = "";
 let secondaryNdc = "";
 let secondaryLotNumber = "";
 let secondaryExpirationDate!: Date;
+let tertiaryProductId = "";
+let tertiaryNdc = "";
+let tertiaryLotNumber = "";
+let tertiaryExpirationDate!: Date;
 
 async function makePatient(
   memberIds: Array<{
@@ -141,6 +145,20 @@ async function scanSecondary(fillId: string, quantity: number) {
       ndc: secondaryNdc,
       lotNumber: secondaryLotNumber,
       expirationDate: secondaryExpirationDate.toISOString(),
+      sourceQuantity: quantity,
+    },
+  });
+}
+
+async function scanTertiary(fillId: string, quantity: number) {
+  return app.inject({
+    method: "POST",
+    url: `/api/fills/${fillId}/scan-product`,
+    headers: technicianHeaders,
+    payload: {
+      ndc: tertiaryNdc,
+      lotNumber: tertiaryLotNumber,
+      expirationDate: tertiaryExpirationDate.toISOString(),
       sourceQuantity: quantity,
     },
   });
@@ -282,6 +300,64 @@ beforeAll(async () => {
       productExpirationId: secondaryExpiration.id,
       quantity: 1000,
       source: "PHASE3J_TEST_SECONDARY",
+      reference: randomUUID(),
+    }),
+  );
+
+  const tertiaryManufacturer = await db.manufacturer.create({
+    data: {
+      id: `mfr-3j-tertiary-${randomUUID()}`,
+      name: `Phase3J Tertiary Manufacturer ${randomUUID().slice(0, 8)}`,
+      labelerCode: "88125",
+    },
+  });
+
+  tertiaryProductId = `product-3j-tertiary-${randomUUID()}`;
+  tertiaryNdc = `88125-${token}-03`;
+  await db.product.create({
+    data: {
+      id: tertiaryProductId,
+      medicationId,
+      manufacturerId: tertiaryManufacturer.id,
+      ndc: tertiaryNdc,
+      ndcSearch: tertiaryNdc.replace(/\D/g, ""),
+      descriptor: "Phase3J tertiary claim regression product",
+      packageDescription: "100 count bottle",
+      packageType: "bottle",
+      unitsPerPackage: 100,
+      dispensingUnit: "EACH",
+      therapeuticEquivalenceCode: "AB",
+    },
+  });
+
+  tertiaryLotNumber = `3JLOTC${token}`;
+  const tertiaryLot = await db.productLot.create({
+    data: {
+      siteId,
+      productId: tertiaryProductId,
+      lotNumber: tertiaryLotNumber,
+      lotNumberSearch: tertiaryLotNumber.toUpperCase(),
+    },
+  });
+  tertiaryExpirationDate = new Date(Date.now() + 720 * 86_400_000);
+  tertiaryExpirationDate.setUTCHours(0, 0, 0, 0);
+  const tertiaryExpiration = await db.productExpiration.create({
+    data: {
+      siteId,
+      productId: tertiaryProductId,
+      expirationDate: tertiaryExpirationDate,
+    },
+  });
+
+  await db.$transaction((tx) =>
+    receiveInventory(tx, {
+      siteId,
+      actorId: technicianId,
+      productId: tertiaryProductId,
+      productLotId: tertiaryLot.id,
+      productExpirationId: tertiaryExpiration.id,
+      quantity: 1000,
+      source: "PHASE3J_TEST_TERTIARY",
       reference: randomUUID(),
     }),
   );
@@ -680,6 +756,29 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
     const completed = await scanSecondary(fillId, 60);
     expect(completed.statusCode).toBe(200);
     expect(completed.json().adjudication.state).toBe("PAID_LABEL_READY");
+    expect(completed.json().adjudication.labels).toHaveLength(2);
+
+    const initialLabelSet = await db.prescriptionLabel.findMany({
+      where: { fillId, status: "ACTIVE" },
+      include: { printJobs: true },
+      orderBy: { bottleNumber: "asc" },
+    });
+    expect(initialLabelSet).toHaveLength(2);
+    expect(initialLabelSet[0]!.bottleNumber).toBe(1);
+    expect(initialLabelSet[0]!.bottleCount).toBe(2);
+    expect(initialLabelSet[0]!.physicalNdcSnapshot).toBe(secondaryNdc);
+    expect(initialLabelSet[0]!.containerQuantity.toNumber()).toBe(60);
+    expect(initialLabelSet[0]!.physicalQuantity.toNumber()).toBe(90);
+    expect(initialLabelSet[0]!.productDescriptionSnapshot).toContain(
+      "secondary",
+    );
+    expect(initialLabelSet[0]!.printJobs).toHaveLength(1);
+    expect(initialLabelSet[1]!.bottleNumber).toBe(2);
+    expect(initialLabelSet[1]!.bottleCount).toBe(2);
+    expect(initialLabelSet[1]!.physicalNdcSnapshot).toBe(ndc);
+    expect(initialLabelSet[1]!.containerQuantity.toNumber()).toBe(30);
+    expect(initialLabelSet[1]!.physicalQuantity.toNumber()).toBe(90);
+    expect(initialLabelSet[1]!.printJobs).toHaveLength(1);
 
     const firstPaid = await db.claimTransaction.findFirstOrThrow({
       where: {
@@ -752,12 +851,102 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
 
     const labels = await db.prescriptionLabel.findMany({
       where: { fillId },
-      orderBy: { version: "asc" },
+      include: { printJobs: true },
+      orderBy: [{ version: "asc" }, { bottleNumber: "asc" }],
     });
-    expect(labels).toHaveLength(2);
-    expect(labels[0]!.status).toBe("VOID");
-    expect(labels[1]!.status).toBe("ACTIVE");
-    expect(labels[1]!.billedNdcSnapshot).toBe(ndc);
+    expect(labels).toHaveLength(4);
+    expect(labels.slice(0, 2).every((label) => label.status === "VOID")).toBe(
+      true,
+    );
+    expect(
+      labels
+        .slice(0, 2)
+        .every((label) => label.printJobs[0]!.status === "CANCELLED"),
+    ).toBe(true);
+
+    const replacementLabels = labels.slice(2);
+    expect(replacementLabels.every((label) => label.status === "ACTIVE")).toBe(
+      true,
+    );
+    expect(replacementLabels[0]!.version).toBe(replacementLabels[1]!.version);
+    expect(replacementLabels[0]!.bottleNumber).toBe(1);
+    expect(replacementLabels[0]!.bottleCount).toBe(2);
+    expect(replacementLabels[0]!.physicalNdcSnapshot).toBe(ndc);
+    expect(replacementLabels[0]!.containerQuantity.toNumber()).toBe(60);
+    expect(replacementLabels[0]!.physicalQuantity.toNumber()).toBe(90);
+    expect(replacementLabels[0]!.billedNdcSnapshot).toBe(ndc);
+    expect(replacementLabels[1]!.bottleNumber).toBe(2);
+    expect(replacementLabels[1]!.bottleCount).toBe(2);
+    expect(replacementLabels[1]!.physicalNdcSnapshot).toBe(secondaryNdc);
+    expect(replacementLabels[1]!.containerQuantity.toNumber()).toBe(30);
+    expect(replacementLabels[1]!.physicalQuantity.toNumber()).toBe(90);
+    expect(replacementLabels[1]!.billedNdcSnapshot).toBe(ndc);
+  });
+
+  it("creates one separately queued bottle label for each of three physical NDCs", async () => {
+    const patient = await makePatient([
+      {
+        memberId: "PAID-THREE-BOTTLES-3J",
+        standard: "D0",
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      },
+    ]);
+    const prescriptionId = await createPrescription(patient.id, 90);
+    const fillId = await createFill(prescriptionId, 90, 30);
+
+    expect((await scan(fillId, 45)).statusCode).toBe(200);
+    expect((await scanSecondary(fillId, 30)).statusCode).toBe(200);
+    const completed = await scanTertiary(fillId, 15);
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().adjudication.state).toBe("PAID_LABEL_READY");
+    expect(completed.json().adjudication.labels).toHaveLength(3);
+    expect(completed.json().adjudication.printJobs).toHaveLength(3);
+
+    const claim = await db.claimTransaction.findFirstOrThrow({
+      where: { fillId, operation: "SUBMIT", outcome: "PAID" },
+    });
+    expect(claim.billedNdc).toBe(ndc);
+
+    const labelSet = await db.prescriptionLabel.findMany({
+      where: { fillId, status: "ACTIVE" },
+      include: { printJobs: true },
+      orderBy: { bottleNumber: "asc" },
+    });
+    expect(labelSet).toHaveLength(3);
+    expect(labelSet.map((label) => label.bottleNumber)).toEqual([1, 2, 3]);
+    expect(labelSet.map((label) => label.bottleCount)).toEqual([3, 3, 3]);
+    expect(labelSet.map((label) => label.physicalNdcSnapshot)).toEqual([
+      ndc,
+      secondaryNdc,
+      tertiaryNdc,
+    ]);
+    expect(labelSet.map((label) => label.containerQuantity.toNumber())).toEqual([
+      45,
+      30,
+      15,
+    ]);
+    expect(labelSet.map((label) => label.physicalQuantity.toNumber())).toEqual([
+      90,
+      90,
+      90,
+    ]);
+    expect(
+      labelSet.every(
+        (label) =>
+          label.productDescriptionSnapshot &&
+          label.manufacturerSnapshot &&
+          label.printJobs.length === 1 &&
+          label.printJobs[0]!.status === "QUEUED",
+      ),
+    ).toBe(true);
+
+    const review = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "PHARMACIST_REVIEW" },
+    });
+    expect(review.statusCode).toBe(200);
   });
 
 });
