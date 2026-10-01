@@ -124,6 +124,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
           error: "code, name, and a valid location type are required.",
         });
       }
+      const locationType = body.type;
       if (
         body.temperatureMinC !== undefined &&
         body.temperatureMaxC !== undefined &&
@@ -159,7 +160,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
             siteId: actor.siteId,
             code,
             name,
-            type: body.type,
+            type: locationType,
             isDefaultReceiving: body.isDefaultReceiving ?? false,
             isDefaultDispensing: body.isDefaultDispensing ?? false,
             isQuarantine: body.isQuarantine ?? false,
@@ -178,7 +179,7 @@ export async function inventoryArchitectureRoutes(app: FastifyInstance) {
           metadata: {
             code,
             name,
-            type: body.type,
+            type: locationType,
             isDefaultReceiving: created.isDefaultReceiving,
             isDefaultDispensing: created.isDefaultDispensing,
             isQuarantine: created.isQuarantine,
