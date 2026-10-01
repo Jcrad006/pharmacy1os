@@ -389,12 +389,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -419,12 +425,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescriptions: prescriptions.map(presentPrescription),
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -447,12 +459,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { prescription: presentPrescription(prescription) };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -503,12 +521,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { events };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -653,12 +677,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(prescription),
       });
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -936,12 +966,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { prescription: presentPrescription(updated) };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -1269,12 +1305,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { prescription: presentPrescription(updated) };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -1493,12 +1535,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       });
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -1841,12 +1889,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(prescription),
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -1992,12 +2046,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       });
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -2342,12 +2402,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -2583,12 +2649,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -2815,12 +2887,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -3102,12 +3180,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
@@ -3215,12 +3299,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       };
     } catch (error) {
-      if (error instanceof AccessError || error instanceof InventoryError) {
+      if (
+        error instanceof AccessError ||
+        error instanceof InventoryError ||
+        error instanceof ClaimError
+      ) {
         return reply.code(error.statusCode).send({
           error: error.message,
-          ...(error instanceof InventoryError
-            ? { code: error.code, details: error.details }
-            : {}),
+          ...(
+            error instanceof InventoryError || error instanceof ClaimError
+              ? { code: error.code, details: error.details }
+              : {}
+          ),
         });
       }
       throw error;
