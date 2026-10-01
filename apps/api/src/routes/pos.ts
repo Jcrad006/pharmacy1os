@@ -4,6 +4,8 @@ import {
   checkoutFills,
   PosError,
   quoteFillsForCheckout,
+  rebagWillCallPackage,
+  relocateWillCallPackage,
   stageWillCallPackage,
   type PickupPackageInput,
   type PickupVerificationInput,
@@ -26,6 +28,15 @@ type CheckoutBody = {
 
 type StageBody = {
   bagBarcode?: string | null;
+  locationId?: string | null;
+  locationBarcode?: string | null;
+};
+
+type RebagBody = {
+  bagBarcode?: string | null;
+};
+
+type RelocateBody = {
   locationId?: string | null;
   locationBarcode?: string | null;
 };
@@ -63,6 +74,77 @@ export async function posRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/fills/:id/will-call/rebag", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const fillId = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as RebagBody;
+      const packageRecord = await rebagWillCallPackage(fillId, body, {
+        siteId: actor.siteId,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+      return { package: packageRecord };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.post("/fills/:id/will-call/relocate", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const fillId = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as RelocateBody;
+      const packageRecord = await relocateWillCallPackage(fillId, body, {
+        siteId: actor.siteId,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+      return { package: packageRecord };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
+  app.get("/fills/:id/will-call/history", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:read");
+      const fillId = (request.params as { id: string }).id;
+      const { db } = await import("../db.js");
+      const packageRecord = await db.willCallPackage.findFirst({
+        where: {
+          fillId,
+          siteId: actor.siteId,
+        },
+        select: { id: true },
+      });
+      if (!packageRecord) {
+        return reply.code(404).send({ error: "Will Call package not found." });
+      }
+      const events = await db.willCallEvent.findMany({
+        where: {
+          packageId: packageRecord.id,
+          siteId: actor.siteId,
+        },
+        include: {
+          actor: {
+            select: { id: true, displayName: true, role: true },
+          },
+          fromLocation: {
+            select: { id: true, code: true, name: true, barcode: true },
+          },
+          toLocation: {
+            select: { id: true, code: true, name: true, barcode: true },
+          },
+        },
+        orderBy: { occurredAt: "desc" },
+      });
+      return { events };
+    } catch (error) {
+      return handleError(error, reply);
+    }
+  });
+
   app.get("/will-call/packages/scan/:barcode", async (request, reply) => {
     try {
       const actor = await resolveDevelopmentActor(request, "prescription:read");
@@ -93,6 +175,40 @@ export async function posRoutes(app: FastifyInstance) {
       });
       if (bag) {
         return { scanType: "BAG", packages: [bag] };
+      }
+
+      const barcodeHistory = await db.willCallBagBarcode.findUnique({
+        where: { barcode },
+        include: {
+          package: {
+            include: {
+              location: true,
+              fill: {
+                include: {
+                  prescription: { include: { patient: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (
+        barcodeHistory &&
+        barcodeHistory.siteId === actor.siteId &&
+        barcodeHistory.status === "VOIDED"
+      ) {
+        return reply.code(409).send({
+          error:
+            "That bag barcode is retired. Use the current bag barcode shown for this prescription.",
+          code: "VOID_BAG_BARCODE",
+          details: {
+            priorBagBarcode: barcode,
+            currentBagBarcode: barcodeHistory.package.bagBarcode,
+            fillId: barcodeHistory.package.fillId,
+            packageStatus: barcodeHistory.package.status,
+            locationCode: barcodeHistory.package.location.code,
+          },
+        });
       }
 
       const packages = await db.willCallPackage.findMany({
