@@ -392,6 +392,20 @@ export function PrescriptionDocumentPanel({
         alter source pixels or the original electronic prescription rendering.
       </p>
 
+      {prescription.status === "PHARMACIST_REVIEW" &&
+        activeChangeCount > 0 && (
+          <div className="document-review-alert">
+            <strong>
+              {activeChangeCount} documented prescription change
+              {activeChangeCount === 1 ? "" : "s"} — pharmacist review
+            </strong>
+            <span>
+              Review the opaque visual note(s) and the separate provenance
+              record before final verification.
+            </span>
+          </div>
+        )}
+
       {documents.length > 0 && (
         <div className="document-tabs">
           {documents.map((document, index) => (
