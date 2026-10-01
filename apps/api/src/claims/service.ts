@@ -313,9 +313,9 @@ async function createOrReuseLabel(
     });
 
   if (reusable) {
-    const printJobs = activeLabels
-      .map((label) => label.printJobs[0] ?? null)
-      .filter((job): job is NonNullable<typeof job> => Boolean(job));
+    const printJobs = activeLabels.flatMap((label) =>
+      label.printJobs[0] ? [label.printJobs[0]] : [],
+    );
     return {
       label: activeLabels[0] ?? null,
       printJob: printJobs[0] ?? null,
@@ -816,6 +816,8 @@ export async function adjudicateFillClaims(
       transactions: chain,
       label: null,
       printJob: null,
+      labels: [],
+      printJobs: [],
     };
   }
 
@@ -825,6 +827,8 @@ export async function adjudicateFillClaims(
       transactions: chain,
       label: null,
       printJob: null,
+      labels: [],
+      printJobs: [],
     };
   }
 
