@@ -14,6 +14,7 @@ import {
   returnFillToStock,
   scanFillBarcode,
   scanFillProduct,
+  setFillBillingDetails,
   setFillBillingProduct,
   setFillPackaging,
   startFill,
@@ -136,6 +137,7 @@ export function PrescriptionDetail({
   const [ntiConsentNote, setNtiConsentNote] = useState("");
   const [biologicCommunicationNote, setBiologicCommunicationNote] = useState("");
   const [quantity, setQuantity] = useState("");
+  const [daysSupply, setDaysSupply] = useState("");
   const [scheduledFor, setScheduledFor] = useState("");
   const [partialQuantity, setPartialQuantity] = useState("");
   const [completionScheduledFor, setCompletionScheduledFor] = useState("");
@@ -211,6 +213,7 @@ export function PrescriptionDetail({
     try {
       const result = await createFill(devUser, rx.id, {
         quantity: quantity ? Number(quantity) : undefined,
+        daysSupply: daysSupply ? Number(daysSupply) : undefined,
         scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
       });
       await onMutated(
@@ -221,6 +224,7 @@ export function PrescriptionDetail({
             : "Fill created and moved to Product Fill.",
       );
       setScheduledFor("");
+      setDaysSupply("");
       await load();
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to create fill.");
@@ -361,6 +365,40 @@ export function PrescriptionDetail({
         error instanceof Error
           ? error.message
           : "Unable to select billing NDC.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function saveDaysSupply(value: string) {
+    if (!currentFill || !value) return;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      onError("Days supply must be a positive whole number.");
+      return;
+    }
+
+    setLoading(true);
+    onError(null);
+    try {
+      const result = await setFillBillingDetails(devUser, currentFill.id, {
+        daysSupply: parsed,
+      });
+      const suffix =
+        result.adjudication?.state === "PAID_LABEL_READY"
+          ? " Claim paid and dispensing label queued."
+          : result.adjudication?.state === "REJECTED"
+            ? " Claim rejected and routed to Third Party."
+            : result.adjudication?.state === "ERROR"
+              ? " Claim transmission error routed to Third Party."
+              : "";
+      await onMutated(`Days supply saved.${suffix}`);
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to save days supply.",
       );
       setLoading(false);
     }
@@ -773,6 +811,7 @@ export function PrescriptionDetail({
           {rx.status === "DUR_REVIEW" && !currentFill && (
             <form className="inline-fill-form" onSubmit={submitFill}>
               <label>Quantity<input type="number" min="0" step="0.001" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
+              <label>Days supply<input type="number" min="1" step="1" value={daysSupply} onChange={(event) => setDaysSupply(event.target.value)} placeholder="Required for third-party billing" /></label>
               <label>Schedule for later (optional)<input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} /></label>
               <button className="primary-button" type="submit" disabled={!processAllowed || loading}>
                 {rx.fills[0]?.status === "RETURNED_TO_STOCK"
@@ -1159,6 +1198,23 @@ export function PrescriptionDetail({
                     </span>
                   </div>
                   <label>
+                    Days supply
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={currentFill.daysSupply ?? ""}
+                      disabled={loading || !processAllowed}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value && Number.isInteger(Number(value))) {
+                          void saveDaysSupply(value);
+                        }
+                      }}
+                      placeholder="Required before third-party adjudication"
+                    />
+                  </label>
+                  <label>
                     Default billing NDC candidate
                     <select
                       value={currentFill.billingProductId ?? ""}
@@ -1195,10 +1251,12 @@ export function PrescriptionDetail({
                     </select>
                   </label>
                   <p className="catalog-help">
-                    This is only the fill-level default candidate. Each future
-                    immutable payer claim will snapshot the actual NDC sent to
-                    that payer; Pharmacy1OS does not infer first/majority NDC
-                    for a split-product fill.
+                    Days supply and the billed NDC are claim inputs. Once the
+                    physical sources are complete, Pharmacy1OS automatically
+                    adjudicates active coverages in COB order. The claim uses
+                    the payer-intended full-fill quantity while the dispensing
+                    label uses the physical quantity in this part. Split-product
+                    fills never infer a first/majority NDC.
                   </p>
                 </div>
 
