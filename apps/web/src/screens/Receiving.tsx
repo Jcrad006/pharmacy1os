@@ -3,6 +3,7 @@ import {
   assignReceivingBarcode,
   correctReceivingBarcode,
   getMedications,
+  receiveInventoryStock,
   scanReceivingBarcode,
 } from "../api";
 import type {
@@ -48,6 +49,10 @@ export function Receiving({
   const [correctionProductId, setCorrectionProductId] = useState("");
   const [correctionReason, setCorrectionReason] = useState("");
   const [correctionWarning, setCorrectionWarning] = useState<string | null>(null);
+  const [receiveQuantity, setReceiveQuantity] = useState("");
+  const [receiveSource, setReceiveSource] = useState("");
+  const [receiveReference, setReceiveReference] = useState("");
+  const [receiptMessage, setReceiptMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const writable = canWriteInventory(user);
   const correctable = canCorrectInventory(user);
@@ -89,6 +94,7 @@ export function Receiving({
         setCorrectionProductId("");
         setCorrectionReason("");
         setCorrectionWarning(null);
+        setReceiptMessage(null);
       }
     } catch (error) {
       onError(
@@ -122,6 +128,43 @@ export function Receiving({
     } catch (error) {
       onError(
         error instanceof Error ? error.message : "Unable to assign barcode.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function receiveKnownStock() {
+    if (!result || result.status !== "KNOWN" || !result.product) return;
+
+    const quantity = Number(receiveQuantity);
+    if (
+      !Number.isFinite(quantity) ||
+      quantity <= 0 ||
+      !result.parsed.lotNumber ||
+      !result.parsed.expirationDate
+    ) {
+      return;
+    }
+
+    setBusy(true);
+    onError(null);
+    try {
+      const received = await receiveInventoryStock(devUser, {
+        rawBarcode,
+        quantity,
+        source: receiveSource.trim() || undefined,
+        reference: receiveReference.trim() || undefined,
+      });
+
+      setReceiptMessage(
+        `Received ${quantity} ${result.product.dispensingUnit ?? "units"}. On hand: ${received.balance.onHandQuantity}; available: ${received.balance.availableQuantity}.`,
+      );
+      setReceiveQuantity("");
+      setReceiveReference("");
+    } catch (error) {
+      onError(
+        error instanceof Error ? error.message : "Unable to receive inventory.",
       );
     } finally {
       setBusy(false);
@@ -180,6 +223,10 @@ export function Receiving({
     setCorrectionProductId("");
     setCorrectionReason("");
     setCorrectionWarning(null);
+    setReceiveQuantity("");
+    setReceiveSource("");
+    setReceiveReference("");
+    setReceiptMessage(null);
     onError(null);
   }
 
@@ -277,6 +324,74 @@ export function Receiving({
                 Barcode recognized. Parsed lot/expiration data has been registered
                 under this NDC when present.
               </p>
+
+              <div className="receiving-stock-entry">
+                <div>
+                  <p className="eyebrow">Receive quantity</p>
+                  <h3>Add physical stock to inventory</h3>
+                  <p className="catalog-help">
+                    Receiving creates on-hand inventory for this exact NDC, lot,
+                    and expiration. A lot/expiration barcode is required.
+                  </p>
+                </div>
+                <div className="receiving-stock-grid">
+                  <label>
+                    Quantity ({result.product.dispensingUnit ?? "units"})
+                    <input
+                      type="number"
+                      min="0.001"
+                      step="0.001"
+                      value={receiveQuantity}
+                      onChange={(event) => setReceiveQuantity(event.target.value)}
+                      disabled={!writable || busy}
+                      placeholder="Example: 500"
+                    />
+                  </label>
+                  <label>
+                    Source / vendor
+                    <input
+                      value={receiveSource}
+                      onChange={(event) => setReceiveSource(event.target.value)}
+                      disabled={!writable || busy}
+                      placeholder="Optional"
+                    />
+                  </label>
+                  <label>
+                    Invoice / reference
+                    <input
+                      value={receiveReference}
+                      onChange={(event) => setReceiveReference(event.target.value)}
+                      disabled={!writable || busy}
+                      placeholder="Optional"
+                    />
+                  </label>
+                </div>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={
+                    !writable ||
+                    busy ||
+                    !result.parsed.lotNumber ||
+                    !result.parsed.expirationDate ||
+                    !receiveQuantity ||
+                    !Number.isFinite(Number(receiveQuantity)) ||
+                    Number(receiveQuantity) <= 0
+                  }
+                  onClick={() => void receiveKnownStock()}
+                >
+                  Receive into inventory
+                </button>
+                {(!result.parsed.lotNumber || !result.parsed.expirationDate) && (
+                  <p className="permission-note">
+                    This scan does not contain both lot and expiration. Scan the
+                    traceability barcode before posting received quantity.
+                  </p>
+                )}
+                {receiptMessage && (
+                  <p className="receiving-success">{receiptMessage}</p>
+                )}
+              </div>
 
               {correctable && result.barcode && (
                 <div className="receiving-correction">
