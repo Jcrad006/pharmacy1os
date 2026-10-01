@@ -302,6 +302,7 @@ export function CycleCounts({
                     <th>Lot / Exp</th>
                     <th>System on hand</th>
                     <th>Reserved</th>
+                    <th>Quarantined</th>
                     <th>Physical count</th>
                     <th>Discrepancy</th>
                     <th></th>
@@ -331,6 +332,7 @@ export function CycleCounts({
                       </td>
                       <td>{qty(line.expectedOnHand)}</td>
                       <td>{qty(line.expectedReserved)}</td>
+                      <td>{qty(line.expectedQuarantined)}</td>
                       <td>
                         {selected.status === "OPEN" && writable ? (
                           <input
@@ -387,9 +389,9 @@ export function CycleCounts({
             {selected.status === "OPEN" && writable && (
               <div className="cycle-count-actions">
                 <p className="catalog-help">
-                  Saving a count snapshots the system quantity at that moment.
-                  Any later inventory movement will require that line to be
-                  recounted before approval.
+                  Saving a count snapshots on-hand, reserved, and quarantined
+                  quantities at that moment. Any later inventory movement will
+                  require that line to be recounted before approval.
                 </p>
                 <button
                   type="button"
