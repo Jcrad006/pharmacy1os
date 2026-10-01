@@ -2539,6 +2539,142 @@ export async function prescriptionRoutes(app: FastifyInstance) {
     }
   });
 
+  app.put("/fills/:id/billing-product", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "thirdparty:write");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as { productId?: string | null };
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: { id, prescription: { siteId: actor.siteId } },
+        include: {
+          productSources: true,
+          prescription: true,
+        },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (fill.inventoryCommittedAt) {
+        return reply.code(409).send({
+          error: "Billing product cannot be changed after pharmacist inventory commitment.",
+        });
+      }
+
+      if (body.productId) {
+        const source = fill.productSources.find(
+          (item) => item.productId === body.productId,
+        );
+        if (!source) {
+          return reply.code(409).send({
+            error:
+              "The billing product must be one of the physical NDC products used for this dispense part.",
+          });
+        }
+      }
+
+      const updated = await db.$transaction(async (tx) => {
+        const result = await tx.prescriptionFill.update({
+          where: { id },
+          data: { billingProductId: body.productId ?? null },
+          include: {
+            productSources: {
+              include: {
+                product: { include: { manufacturer: true, medication: true } },
+                manufacturer: true,
+                productLot: true,
+                productExpiration: true,
+                inventoryBalance: true,
+              },
+              orderBy: { sequence: "asc" },
+            },
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_BILLING_PRODUCT_SELECTED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            billingProductId: body.productId ?? null,
+            physicalProductIds: fill.productSources.map(
+              (source) => source.productId,
+            ),
+          },
+        });
+        return result;
+      });
+
+      return { fill: updated };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.put("/fills/:id/packaging", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(
+        request,
+        "prescription:process",
+      );
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as {
+        dispensedInOriginalContainer?: boolean;
+      };
+      if (typeof body.dispensedInOriginalContainer !== "boolean") {
+        return reply.code(400).send({
+          error: "dispensedInOriginalContainer must be true or false.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findFirst({
+        where: { id, prescription: { siteId: actor.siteId } },
+      });
+      if (!fill) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+      if (fill.inventoryCommittedAt) {
+        return reply.code(409).send({
+          error: "Packaging status cannot be changed after pharmacist verification.",
+        });
+      }
+
+      const updated = await db.$transaction(async (tx) => {
+        const result = await tx.prescriptionFill.update({
+          where: { id },
+          data: {
+            dispensedInOriginalContainer: body.dispensedInOriginalContainer,
+          },
+        });
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_PACKAGING_STATUS_UPDATED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            dispensedInOriginalContainer:
+              body.dispensedInOriginalContainer,
+          },
+        });
+        return result;
+      });
+
+      return { fill: updated };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
   app.delete("/fills/:id/product-sources/:sourceId", async (request, reply) => {
     try {
       const actor = await resolveDevelopmentActor(
