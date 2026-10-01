@@ -189,6 +189,9 @@ const prescriptionInclude = {
         orderBy: { sequence: "asc" as const },
       },
       biologicCommunicationTask: true,
+      willCallPackage: {
+        include: { location: true },
+      },
     },
     orderBy: [
       { fillNumber: "desc" as const },
@@ -1680,6 +1683,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           where: {
             prescriptionId: fill.prescriptionId,
             fillNumber: fill.fillNumber,
+            claimReversalTransactionIds: claimReversals.map(
+              (item) => item.transaction.id,
+            ),
           },
           select: { partNumber: true },
           orderBy: { partNumber: "desc" },
@@ -3393,6 +3399,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      const claimReversals = await reverseActivePaidClaimsForFill(id, {
+        siteId: actor.siteId,
+        actorId: actor.id,
+        requestId: request.id,
+      });
+      await assertNoActivePaidClaimForMutation(id, actor.siteId);
+
       const result = await db.$transaction(async (tx) => {
         await returnInventoryForFill(tx, {
           fillId: id,
@@ -3428,6 +3441,17 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         for (const completion of linkedCompletions) {
           await cancelDemandForFill(tx, completion.id);
         }
+
+        await tx.willCallPackage.updateMany({
+          where: {
+            fillId: id,
+            status: "STAGED",
+          },
+          data: {
+            status: "RETURNED_TO_STOCK",
+            returnedAt: new Date(),
+          },
+        });
 
         const rx = await tx.prescription.update({
           where: { id: fill.prescriptionId },
