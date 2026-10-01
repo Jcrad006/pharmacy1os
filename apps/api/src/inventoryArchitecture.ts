@@ -1,4 +1,7 @@
-import { Prisma } from "@prisma/client";
+import {
+  Prisma,
+  type InventoryLocationType,
+} from "@prisma/client";
 
 export class InventoryArchitectureError extends Error {
   constructor(
@@ -20,18 +23,7 @@ export async function resolveInventoryLocation(
   input: {
     siteId: string;
     locationId?: string | null;
-    preferredTypes?: Array<
-      | "DISPENSING"
-      | "RECEIVING"
-      | "REFRIGERATOR"
-      | "FREEZER"
-      | "SAFE"
-      | "QUARANTINE"
-      | "RETURN_TO_VENDOR"
-      | "OVERFLOW"
-      | "UNASSIGNED"
-      | "OTHER"
-    >;
+    preferredTypes?: InventoryLocationType[];
   },
 ) {
   if (input.locationId) {
@@ -52,7 +44,7 @@ export async function resolveInventoryLocation(
     return location;
   }
 
-  const preferredTypes =
+  const preferredTypes: InventoryLocationType[] =
     input.preferredTypes && input.preferredTypes.length > 0
       ? input.preferredTypes
       : ["RECEIVING", "DISPENSING", "UNASSIGNED"];
@@ -89,18 +81,7 @@ export async function addInventoryPosition(
     actorId: string;
     locationId?: string | null;
     reason?: string | null;
-    preferredTypes?: Array<
-      | "DISPENSING"
-      | "RECEIVING"
-      | "REFRIGERATOR"
-      | "FREEZER"
-      | "SAFE"
-      | "QUARANTINE"
-      | "RETURN_TO_VENDOR"
-      | "OVERFLOW"
-      | "UNASSIGNED"
-      | "OTHER"
-    >;
+    preferredTypes?: InventoryLocationType[];
   },
 ) {
   const quantity = decimal(input.quantity);
