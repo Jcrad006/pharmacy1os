@@ -733,6 +733,7 @@ model InventoryTransfer {
   lotNumber                String
   expirationDate           DateTime
   quantity                 Decimal                 @db.Decimal(14, 3)
+  unitCostSnapshot         Decimal?                @db.Decimal(12, 6)
   status                   InventoryTransferStatus @default(IN_TRANSIT)
   note                     String?
   initiatedById            String
