@@ -1468,16 +1468,6 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             })
           : null;
 
-        if (wasReserved) {
-          await releaseInventoryReservation(tx, {
-            fillId: fill.id,
-            siteId: actor.siteId,
-            actorId: actor.id,
-            reason:
-              "Fill interrupted and reservation resized for physical partial dispense",
-          });
-        }
-
         const interruptionReason =
           body.interruptionReason ??
           (interruptedAfterScan
@@ -1531,25 +1521,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
 
         if (wasReserved) {
-          if (
-            !fill.productId ||
-            !fill.productLotId ||
-            !fill.productExpirationId
-          ) {
-            throw new InventoryError(
-              409,
-              "PARTIAL_RESERVATION_TRACEABILITY_MISSING",
-              "The existing reservation cannot be resized because its product traceability is incomplete.",
-            );
-          }
-
-          await reserveInventoryForFill(tx, {
+          await resizeInventoryReservationForFill(tx, {
             fillId: fill.id,
             siteId: actor.siteId,
             actorId: actor.id,
-            productId: fill.productId,
-            productLotId: fill.productLotId,
-            productExpirationId: fill.productExpirationId,
+            targetQuantity: partial,
+            reason:
+              "Fill interrupted and multi-source reservation resized for physical partial dispense",
           });
         }
 
