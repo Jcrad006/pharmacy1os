@@ -1408,16 +1408,53 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           orderBy: { partNumber: "desc" },
         });
 
-        const nextPartNumber = (existingParts[0]?.partNumber ?? fill.partNumber) + 1;
-        const rootAuthorizedQuantity =
-          fill.authorizedQuantity ?? intended;
+        const nextPartNumber =
+          (existingParts[0]?.partNumber ?? fill.partNumber) + 1;
+
+        const balanceBefore = fill.inventoryBalanceId
+          ? await tx.inventoryBalance.findUnique({
+              where: { id: fill.inventoryBalanceId },
+            })
+          : null;
+
+        if (wasReserved) {
+          await releaseInventoryReservation(tx, {
+            fillId: fill.id,
+            siteId: actor.siteId,
+            actorId: actor.id,
+            reason:
+              "Fill interrupted and reservation resized for physical partial dispense",
+          });
+        }
+
+        const interruptionReason =
+          body.interruptionReason ??
+          (interruptedAfterScan
+            ? ("INSUFFICIENT_PHYSICAL_STOCK" as FillInterruptionReason)
+            : null);
+        const interruptedAt = interruptionReason ? new Date() : null;
 
         const partialFill = await tx.prescriptionFill.update({
           where: { id: fill.id },
           data: {
             kind: "PARTIAL",
             quantity: partial,
-            authorizedQuantity: rootAuthorizedQuantity,
+            authorizedQuantity: intendedQuantity,
+            intendedQuantity,
+            payerIntendedQuantity,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity:
+              fill.billingAnchorFillId === null
+                ? intendedQuantity.minus(partial)
+                : fill.remainingOwedQuantity,
+            billingRole:
+              fill.billingAnchorFillId === null
+                ? "PRIMARY_CLAIM"
+                : "COMPLETION_OF_PRIMARY",
+            interruptionReason,
+            interruptionNote: body.reason?.trim() || null,
+            interruptedAt,
+            interruptedById: interruptionReason ? actor.id : null,
           },
         });
 
@@ -1427,11 +1464,17 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             fillNumber: fill.fillNumber,
             partNumber: nextPartNumber,
             kind: "COMPLETION",
+            billingRole: "COMPLETION_OF_PRIMARY",
+            billingAnchorFillId,
             consumesRefill: false,
             completionOfFillId: fill.id,
             scheduledFor: completionScheduledFor,
             quantity: remainder,
-            authorizedQuantity: rootAuthorizedQuantity,
+            authorizedQuantity: intendedQuantity,
+            intendedQuantity,
+            payerIntendedQuantity,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity: 0,
             status: "SCHEDULED",
           },
         });
