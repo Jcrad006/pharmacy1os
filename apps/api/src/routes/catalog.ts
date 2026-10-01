@@ -2,6 +2,7 @@ import type { ProductUnit } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
+import { parseBarcode } from "../barcode.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
 
 type MedicationQuery = {
@@ -38,6 +39,12 @@ type CreateExpirationBody = {
   expirationDate?: string;
 };
 
+type CreateBarcodeBody = {
+  rawBarcode?: string;
+  isPrimary?: boolean;
+  note?: string;
+};
+
 function normalizeNdc(value?: string) {
   return (value ?? "").replace(/\D/g, "");
 }
@@ -72,6 +79,9 @@ const productInclude = (siteId: string) => ({
   expirations: {
     where: { siteId },
     orderBy: [{ expirationDate: "asc" as const }],
+  },
+  barcodes: {
+    orderBy: [{ isPrimary: "desc" as const }, { createdAt: "asc" as const }],
   },
 });
 
@@ -499,6 +509,152 @@ export async function catalogRoutes(app: FastifyInstance) {
       });
 
       return reply.code(201).send({ expiration });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/products/:id/barcodes", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:write");
+      const productId = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as CreateBarcodeBody;
+      const parsed = parseBarcode(body.rawBarcode ?? "");
+
+      if (!parsed) {
+        return reply.code(400).send({ error: "A barcode value is required." });
+      }
+
+      const product = await db.product.findUnique({
+        where: { id: productId },
+        include: { medication: true, manufacturer: true },
+      });
+
+      if (!product) {
+        return reply.code(404).send({ error: "Product not found." });
+      }
+
+      const conflicting = await db.productBarcode.findUnique({
+        where: {
+          type_identifierSearch: {
+            type: parsed.type,
+            identifierSearch: parsed.identifierSearch,
+          },
+        },
+        include: {
+          product: { include: { medication: true, manufacturer: true } },
+        },
+      });
+
+      if (conflicting && conflicting.productId !== productId) {
+        return reply.code(409).send({
+          error: "That barcode identifier is already assigned to another product.",
+          code: "BARCODE_ALREADY_ASSIGNED",
+          assignedProduct: conflicting.product,
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const currentPrimary = await tx.productBarcode.findFirst({
+          where: { productId, isPrimary: true },
+        });
+
+        const barcode =
+          conflicting ??
+          (await tx.productBarcode.create({
+            data: {
+              productId,
+              type: parsed.type,
+              identifier: parsed.identifier,
+              identifierSearch: parsed.identifierSearch,
+              isPrimary: body.isPrimary ?? !currentPrimary,
+              note: body.note?.trim() || undefined,
+            },
+          }));
+
+        if (body.isPrimary && !barcode.isPrimary) {
+          await tx.productBarcode.updateMany({
+            where: { productId, id: { not: barcode.id } },
+            data: { isPrimary: false },
+          });
+          await tx.productBarcode.update({
+            where: { id: barcode.id },
+            data: { isPrimary: true },
+          });
+        }
+
+        let lot = null;
+        if (parsed.lotNumber) {
+          const lotNumberSearch = parsed.lotNumber
+            .replace(/[^A-Za-z0-9]/g, "")
+            .toUpperCase();
+
+          lot = await tx.productLot.upsert({
+            where: {
+              siteId_productId_lotNumberSearch: {
+                siteId: actor.siteId,
+                productId,
+                lotNumberSearch,
+              },
+            },
+            update: { active: true },
+            create: {
+              siteId: actor.siteId,
+              productId,
+              lotNumber: parsed.lotNumber,
+              lotNumberSearch,
+            },
+          });
+        }
+
+        let expiration = null;
+        if (parsed.expirationDate) {
+          expiration = await tx.productExpiration.upsert({
+            where: {
+              siteId_productId_expirationDate: {
+                siteId: actor.siteId,
+                productId,
+                expirationDate: parsed.expirationDate,
+              },
+            },
+            update: { active: true },
+            create: {
+              siteId: actor.siteId,
+              productId,
+              expirationDate: parsed.expirationDate,
+            },
+          });
+        }
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "PRODUCT_BARCODE_ASSIGNED",
+          entityType: "ProductBarcode",
+          entityId: barcode.id,
+          requestId: request.id,
+          metadata: {
+            productId,
+            medicationId: product.medicationId,
+            ndc: product.ndc,
+            type: parsed.type,
+            identifier: parsed.identifier,
+            parsedLot: parsed.lotNumber,
+            parsedExpiration: parsed.expirationDate?.toISOString() ?? null,
+          },
+        });
+
+        return { barcode, lot, expiration };
+      });
+
+      return reply.code(conflicting ? 200 : 201).send({
+        ...result,
+        parsed,
+        product,
+      });
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });
