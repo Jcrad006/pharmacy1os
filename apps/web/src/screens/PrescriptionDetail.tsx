@@ -6,6 +6,7 @@ import {
   getPrescription,
   getPrescriptionAudit,
   returnFillToStock,
+  scanFillBarcode,
   scanFillProduct,
   startFill,
   transitionPrescription,
@@ -113,6 +114,7 @@ export function PrescriptionDetail({
   const [loading, setLoading] = useState(false);
   const [openHighClinicalIssues, setOpenHighClinicalIssues] = useState<number | null>(null);
   const [medications, setMedications] = useState<Medication[]>([]);
+  const [scanBarcode, setScanBarcode] = useState("");
   const [scanNdc, setScanNdc] = useState("");
   const [scanLot, setScanLot] = useState("");
   const [scanExpiration, setScanExpiration] = useState("");
@@ -226,6 +228,29 @@ export function PrescriptionDetail({
       await load();
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to return fill to stock.");
+      setLoading(false);
+    }
+  }
+
+  async function verifyRawBarcode(event: FormEvent) {
+    event.preventDefault();
+    if (!rx || !currentFill || !scanBarcode.trim()) return;
+
+    setLoading(true);
+    onError(null);
+    try {
+      await scanFillBarcode(devUser, currentFill.id, scanBarcode);
+      setScanBarcode("");
+      await onMutated(
+        "Raw barcode verified against the selected drug and attached to this fill.",
+      );
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Barcode did not verify against the prescription.",
+      );
       setLoading(false);
     }
   }
@@ -498,48 +523,73 @@ export function PrescriptionDetail({
                   </span>
                 </div>
               ) : (
-                <form className="product-scan-form" onSubmit={verifyProductScan}>
-                  <label>
-                    Scanned NDC
-                    <input
-                      value={scanNdc}
-                      onChange={(event) => setScanNdc(event.target.value)}
-                      placeholder="NDC from stock package"
-                      required
-                    />
-                  </label>
-                  <label>
-                    Scanned lot
-                    <input
-                      value={scanLot}
-                      onChange={(event) => setScanLot(event.target.value)}
-                      placeholder="Lot number"
-                      required
-                    />
-                  </label>
-                  <label>
-                    Scanned expiration
-                    <input
-                      type="date"
-                      value={scanExpiration}
-                      onChange={(event) => setScanExpiration(event.target.value)}
-                      required
-                    />
-                  </label>
-                  <button
-                    className="primary-button"
-                    type="submit"
-                    disabled={
-                      !processAllowed ||
-                      loading ||
-                      !scanNdc ||
-                      !scanLot ||
-                      !scanExpiration
-                    }
-                  >
-                    Verify scanned product
-                  </button>
-                </form>
+                <div className="product-scan-stack">
+                  <form className="raw-barcode-form" onSubmit={verifyRawBarcode}>
+                    <label>
+                      Scan stock-package barcode
+                      <input
+                        autoFocus
+                        value={scanBarcode}
+                        onChange={(event) => setScanBarcode(event.target.value)}
+                        placeholder="Scan GS1 / registered barcode"
+                        required
+                      />
+                    </label>
+                    <button
+                      className="primary-button"
+                      type="submit"
+                      disabled={!processAllowed || loading || !scanBarcode.trim()}
+                    >
+                      Verify barcode
+                    </button>
+                  </form>
+
+                  <details className="manual-scan-fallback">
+                    <summary>Development fallback: enter NDC / lot / expiration manually</summary>
+                    <form className="product-scan-form" onSubmit={verifyProductScan}>
+                      <label>
+                        NDC
+                        <input
+                          value={scanNdc}
+                          onChange={(event) => setScanNdc(event.target.value)}
+                          placeholder="NDC from stock package"
+                          required
+                        />
+                      </label>
+                      <label>
+                        Lot
+                        <input
+                          value={scanLot}
+                          onChange={(event) => setScanLot(event.target.value)}
+                          placeholder="Lot number"
+                          required
+                        />
+                      </label>
+                      <label>
+                        Expiration
+                        <input
+                          type="date"
+                          value={scanExpiration}
+                          onChange={(event) => setScanExpiration(event.target.value)}
+                          required
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          !processAllowed ||
+                          loading ||
+                          !scanNdc ||
+                          !scanLot ||
+                          !scanExpiration
+                        }
+                      >
+                        Verify manual fields
+                      </button>
+                    </form>
+                  </details>
+                </div>
               )}
 
               <button
