@@ -79,10 +79,11 @@ export async function inventoryRoutes(app: FastifyInstance) {
       const id = (request.params as { id: string }).id;
       const body = (request.body ?? {}) as AdjustBody;
       const reason = body.reason?.trim();
+      const delta = body.delta;
 
       if (
-        typeof body.delta !== "number" ||
-        !Number.isFinite(body.delta) ||
+        typeof delta !== "number" ||
+        !Number.isFinite(delta) ||
         !reason
       ) {
         return reply.code(400).send({
@@ -95,7 +96,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
           balanceId: id,
           siteId: actor.siteId,
           actorId: actor.id,
-          delta: body.delta,
+          delta,
           reason,
         });
 
@@ -107,7 +108,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
           entityId: id,
           requestId: request.id,
           metadata: {
-            delta: body.delta,
+            delta,
             reason,
             resultingOnHand: adjusted.balance.onHandQuantity.toString(),
             resultingReserved: adjusted.balance.reservedQuantity.toString(),
