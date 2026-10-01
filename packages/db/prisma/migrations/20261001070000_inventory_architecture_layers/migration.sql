@@ -29,6 +29,13 @@ CREATE TYPE "InventoryDemandStatus" AS ENUM (
   'CANCELLED'
 );
 
+CREATE TYPE "InventoryAllocationStatus" AS ENUM (
+  'RESERVED',
+  'COMMITTED',
+  'RELEASED',
+  'RETURNED'
+);
+
 CREATE TYPE "ReceivingDiscrepancyType" AS ENUM (
   'SHORT_SHIPMENT',
   'OVERAGE',
@@ -134,6 +141,21 @@ CREATE TABLE "InventoryPolicy" (
     AND ("adjustmentApprovalThreshold" IS NULL OR "adjustmentApprovalThreshold" >= 0)
     AND "staleReservationHours" >= 1
   )
+);
+
+CREATE TABLE "InventoryAllocation" (
+  "id" TEXT NOT NULL,
+  "siteId" TEXT NOT NULL,
+  "inventoryBalanceId" TEXT NOT NULL,
+  "fillId" TEXT NOT NULL,
+  "quantity" DECIMAL(14,3) NOT NULL,
+  "status" "InventoryAllocationStatus" NOT NULL DEFAULT 'RESERVED',
+  "reservedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "committedAt" TIMESTAMP(3),
+  "releasedAt" TIMESTAMP(3),
+  "returnedAt" TIMESTAMP(3),
+  CONSTRAINT "InventoryAllocation_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "InventoryAllocation_positive_quantity" CHECK ("quantity" > 0)
 );
 
 CREATE TABLE "InventoryDemand" (
@@ -269,6 +291,10 @@ CREATE UNIQUE INDEX "InventoryPolicy_siteId_policyKey_key" ON "InventoryPolicy"(
 CREATE INDEX "InventoryPolicy_siteId_medicationId_idx" ON "InventoryPolicy"("siteId", "medicationId");
 CREATE INDEX "InventoryPolicy_siteId_productId_idx" ON "InventoryPolicy"("siteId", "productId");
 
+CREATE INDEX "InventoryAllocation_siteId_status_reservedAt_idx" ON "InventoryAllocation"("siteId", "status", "reservedAt");
+CREATE INDEX "InventoryAllocation_inventoryBalanceId_status_idx" ON "InventoryAllocation"("inventoryBalanceId", "status");
+CREATE INDEX "InventoryAllocation_fillId_status_idx" ON "InventoryAllocation"("fillId", "status");
+
 CREATE UNIQUE INDEX "InventoryDemand_fillId_key" ON "InventoryDemand"("fillId");
 CREATE INDEX "InventoryDemand_siteId_status_dueAt_idx" ON "InventoryDemand"("siteId", "status", "dueAt");
 CREATE INDEX "InventoryDemand_siteId_medicationId_status_idx" ON "InventoryDemand"("siteId", "medicationId", "status");
@@ -321,6 +347,13 @@ ALTER TABLE "InventoryPolicy" ADD CONSTRAINT "InventoryPolicy_medicationId_fkey"
   FOREIGN KEY ("medicationId") REFERENCES "Medication"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "InventoryPolicy" ADD CONSTRAINT "InventoryPolicy_productId_fkey"
   FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+ALTER TABLE "InventoryAllocation" ADD CONSTRAINT "InventoryAllocation_siteId_fkey"
+  FOREIGN KEY ("siteId") REFERENCES "PharmacySite"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "InventoryAllocation" ADD CONSTRAINT "InventoryAllocation_inventoryBalanceId_fkey"
+  FOREIGN KEY ("inventoryBalanceId") REFERENCES "InventoryBalance"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "InventoryAllocation" ADD CONSTRAINT "InventoryAllocation_fillId_fkey"
+  FOREIGN KEY ("fillId") REFERENCES "PrescriptionFill"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "InventoryDemand" ADD CONSTRAINT "InventoryDemand_siteId_fkey"
   FOREIGN KEY ("siteId") REFERENCES "PharmacySite"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
