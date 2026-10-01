@@ -668,7 +668,12 @@ export type InventoryTransfer = {
   shippedAt: string;
   receivedAt: string | null;
   cancelledAt: string | null;
+  carrier: string | null;
+  trackingNumber: string | null;
+  sealIdentifier: string | null;
+  custodyReference: string | null;
   transactions: InventoryTransaction[];
+  custodyEvents?: InventoryCustodyEvent[];
 };
 
 export type RecallAffectedFill = {
