@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   Prisma,
+  type FillInterruptionReason,
   type FillStatus,
   type PrescriptionStatus,
 } from "@prisma/client";
@@ -74,6 +75,7 @@ type CreateFillBody = {
 type CreatePartialFillBody = {
   dispenseQuantity?: number;
   completionScheduledFor?: string;
+  interruptionReason?: FillInterruptionReason;
   reason?: string;
 };
 
@@ -1136,6 +1138,21 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             data: {
               scheduledFor: scheduledFor instanceof Date ? scheduledFor : null,
               quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
+              authorizedQuantity:
+                body.quantity ?? prescription.quantityWritten ?? undefined,
+              intendedQuantity:
+                body.quantity ?? prescription.quantityWritten ?? undefined,
+              payerIntendedQuantity:
+                body.quantity ?? prescription.quantityWritten ?? undefined,
+              physicalDispensedQuantity: 0,
+              remainingOwedQuantity: 0,
+              billingRole: "PRIMARY_CLAIM",
+              billingAnchorFillId: null,
+              kind: "STANDARD",
+              interruptionReason: null,
+              interruptionNote: null,
+              interruptedAt: null,
+              interruptedById: null,
               status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
               productId: null,
               productLotId: null,
@@ -1203,6 +1220,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
             authorizedQuantity:
               body.quantity ?? prescription.quantityWritten ?? undefined,
+            intendedQuantity:
+              body.quantity ?? prescription.quantityWritten ?? undefined,
+            payerIntendedQuantity:
+              body.quantity ?? prescription.quantityWritten ?? undefined,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity: 0,
+            billingRole: "PRIMARY_CLAIM",
             status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
           },
         });
@@ -1530,9 +1554,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             fillNumber: latestAccountingFill.fillNumber,
             partNumber,
             kind: "EMERGENCY_SUPPLY",
+            billingRole: "EMERGENCY_SUPPLY",
             consumesRefill: false,
             quantity: body.quantity,
             authorizedQuantity: body.quantity,
+            intendedQuantity: body.quantity,
+            payerIntendedQuantity: body.quantity,
+            physicalDispensedQuantity: 0,
+            remainingOwedQuantity: 0,
             status: "IN_PROGRESS",
             emergencyReason: reason,
             emergencyAuthorizedById: actor.id,
