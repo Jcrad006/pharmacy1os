@@ -47,6 +47,8 @@ CREATE TYPE "ReceivingDiscrepancyStatus" AS ENUM (
   'DISMISSED'
 );
 
+ALTER TABLE "InventoryTransfer" ADD COLUMN "unitCostSnapshot" DECIMAL(12,6);
+
 CREATE TYPE "TransferCustodyEventType" AS ENUM (
   'PACKED',
   'VERIFIED',
