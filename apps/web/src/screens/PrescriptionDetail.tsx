@@ -632,6 +632,9 @@ export function PrescriptionDetail({
       fill.followUpDueAt &&
       !fill.followUpCompletedAt,
   );
+  const openBiologicCommunication = rx.fills.find(
+    (fill) => fill.biologicCommunicationTask?.status === "OPEN",
+  );
 
   return (
     <div className="detail-stack">
@@ -1532,6 +1535,45 @@ export function PrescriptionDetail({
               </div>
             )}
 
+          {openBiologicCommunication &&
+            complianceAllowed && (
+              <div className="emergency-follow-up-panel">
+                <strong>NC biologic prescriber communication required</strong>
+                <span>
+                  {openBiologicCommunication.biologicCommunicationTask?.productName} ·{" "}
+                  {openBiologicCommunication.biologicCommunicationTask?.manufacturerName}
+                </span>
+                <span>
+                  Due{" "}
+                  {openBiologicCommunication.biologicCommunicationTask?.dueAt
+                    ? new Date(
+                        openBiologicCommunication.biologicCommunicationTask.dueAt,
+                      ).toLocaleString()
+                    : "—"}
+                </span>
+                <textarea
+                  rows={3}
+                  value={biologicCommunicationNote}
+                  onChange={(event) =>
+                    setBiologicCommunicationNote(event.target.value)
+                  }
+                  placeholder="Document prescriber communication of the specific biological product and manufacturer."
+                />
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={loading || !biologicCommunicationNote.trim()}
+                  onClick={() =>
+                    void finishBiologicCommunication(
+                      openBiologicCommunication.id,
+                    )
+                  }
+                >
+                  Complete biologic communication
+                </button>
+              </div>
+            )}
+
           {rx.status === "ON_HOLD" && rx.heldFromStatus && (
             <button className="primary-button" disabled={!processAllowed || loading} onClick={() => void transition(rx.heldFromStatus!, `Prescription resumed to ${statusLabels[rx.heldFromStatus!] }.`)}>Resume → {statusLabels[rx.heldFromStatus]}</button>
           )}
@@ -1590,13 +1632,40 @@ export function PrescriptionDetail({
                     )}
                   </td>
                   <td>
-                    {fill.productVerifiedAt ? (
-                      <span className="fill-product-trace">
-                        {fill.scannedNdc} · {fill.scannedLotNumber} ·{" "}
-                        {fill.scannedExpiration
-                          ? new Date(fill.scannedExpiration).toLocaleDateString()
-                          : "—"}
-                      </span>
+                    {fill.productSources.length > 0 ? (
+                      <div className="fill-history-sources">
+                        {fill.productSources.map((source) => (
+                          <span className="fill-product-trace" key={source.id}>
+                            #{source.sequence} · NDC {source.ndcSnapshot} ·{" "}
+                            {source.manufacturerSnapshot} · Lot{" "}
+                            {source.lotNumberSnapshot} · Exp{" "}
+                            {new Date(
+                              source.expirationSnapshot,
+                            ).toLocaleDateString()} · Qty{" "}
+                            {String(source.quantity)}
+                          </span>
+                        ))}
+                        <span className="cell-subtext">
+                          Billing candidate:{" "}
+                          {fill.billingProductId
+                            ? fill.productSources.find(
+                                (source) =>
+                                  source.productId ===
+                                  fill.billingProductId,
+                              )?.ndcSnapshot ?? fill.billingProductId
+                            : "payer strategy / explicit selection"}
+                        </span>
+                        <span className="cell-subtext">
+                          NC discard date:{" "}
+                          {fill.dispensedInOriginalContainer
+                            ? "Original manufacturer container"
+                            : fill.patientDiscardDate
+                              ? new Date(
+                                  fill.patientDiscardDate,
+                                ).toLocaleDateString()
+                              : "Pending pharmacist verification"}
+                        </span>
+                      </div>
                     ) : "—"}
                   </td>
                   <td>
