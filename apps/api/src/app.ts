@@ -12,6 +12,7 @@ import { clinicalRoutes } from "./routes/clinical.js";
 import { exceptionRoutes } from "./routes/exceptions.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { receivingRoutes } from "./routes/receiving.js";
+import { inventoryRoutes } from "./routes/inventory.js";
 
 type BuildAppOptions = {
   serveWeb?: boolean;
@@ -63,6 +64,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(exceptionRoutes, { prefix: "/api" });
   app.register(catalogRoutes, { prefix: "/api" });
   app.register(receivingRoutes, { prefix: "/api" });
+  app.register(inventoryRoutes, { prefix: "/api" });
 
   if (options.serveWeb) {
     const webRoot = resolve(
