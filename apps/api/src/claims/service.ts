@@ -1,0 +1,939 @@
+import { randomUUID } from "node:crypto";
+import {
+  Prisma,
+  type BillingNdcStrategy,
+  type ClaimOutcome,
+  type ClaimStandard,
+} from "@prisma/client";
+import { db } from "../db.js";
+import { writeAuditEvent } from "../audit.js";
+import {
+  type CanonicalClaimRequest,
+  type CanonicalCobPriorPayer,
+  requireBillingNdcSelection,
+} from "./adapter.js";
+import { getClaimAdapter } from "./sandboxAdapter.js";
+
+export class ClaimError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    public readonly code: string,
+    message: string,
+    public readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+  }
+}
+
+type ClaimActorContext = {
+  siteId: string;
+  actorId: string;
+  requestId?: string;
+};
+
+type PersistableResponse = {
+  status: ClaimOutcome;
+  transactionReference?: string | null;
+  authorizationNumber?: string | null;
+  amountPaid?: string | null;
+  patientResponsibility?: string | null;
+  rejectCodes: string[];
+  messages: string[];
+  rawStandard: ClaimStandard;
+};
+
+function decimal(value: Prisma.Decimal | number | string | null | undefined) {
+  if (value === null || value === undefined) return null;
+  return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
+}
+
+function jsonSnapshot(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function activeOnDate(
+  coverage: {
+    active: boolean;
+    effectiveDate: Date | null;
+    terminationDate: Date | null;
+  },
+  at: Date,
+) {
+  return (
+    coverage.active &&
+    (!coverage.effectiveDate || coverage.effectiveDate.getTime() <= at.getTime()) &&
+    (!coverage.terminationDate || coverage.terminationDate.getTime() >= at.getTime())
+  );
+}
+
+function priorFromTransaction(transaction: {
+  coveragePosition: number;
+  payerId: string;
+  outcome: ClaimOutcome;
+  amountPaid: Prisma.Decimal | null;
+  patientResponsibility: Prisma.Decimal | null;
+  rejectCodes: Prisma.JsonValue;
+  transactionReference: string | null;
+  adjudicatedAt: Date;
+}): CanonicalCobPriorPayer {
+  if (
+    transaction.outcome !== "PAID" &&
+    transaction.outcome !== "REJECTED" &&
+    transaction.outcome !== "ERROR"
+  ) {
+    throw new ClaimError(
+      409,
+      "INVALID_PRIOR_PAYER_OUTCOME",
+      "A reversed claim cannot be forwarded as an active prior-payer COB response.",
+    );
+  }
+
+  return {
+    position: transaction.coveragePosition,
+    payerId: transaction.payerId,
+    responseStatus: transaction.outcome,
+    amountPaid: transaction.amountPaid?.toString() ?? null,
+    patientResponsibility:
+      transaction.patientResponsibility?.toString() ?? null,
+    rejectCodes: Array.isArray(transaction.rejectCodes)
+      ? transaction.rejectCodes.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [],
+    transactionReference: transaction.transactionReference,
+    adjudicatedAt: transaction.adjudicatedAt,
+  };
+}
+
+const fillForClaimsInclude = {
+  billingProduct: true,
+  productSources: {
+    include: {
+      product: true,
+      manufacturer: true,
+      productLot: true,
+      productExpiration: true,
+    },
+    orderBy: { sequence: "asc" as const },
+  },
+  prescription: {
+    include: {
+      patient: {
+        include: {
+          coverages: {
+            include: { payer: true },
+            orderBy: { position: "asc" as const },
+          },
+        },
+      },
+      prescriber: true,
+    },
+  },
+} satisfies Prisma.PrescriptionFillInclude;
+
+type FillForClaims = Prisma.PrescriptionFillGetPayload<{
+  include: typeof fillForClaimsInclude;
+}>;
+
+async function loadFillForClaims(fillId: string, siteId: string) {
+  const fill = await db.prescriptionFill.findFirst({
+    where: { id: fillId, prescription: { siteId } },
+    include: fillForClaimsInclude,
+  });
+  if (!fill) {
+    throw new ClaimError(404, "FILL_NOT_FOUND", "Fill not found.");
+  }
+  return fill;
+}
+
+function validatePhysicalFillReady(fill: FillForClaims) {
+  if (!fill.quantity || fill.quantity.lte(0)) {
+    throw new ClaimError(
+      409,
+      "FILL_QUANTITY_REQUIRED",
+      "A positive physical dispense quantity is required before adjudication.",
+    );
+  }
+
+  const sourced = fill.productSources.reduce(
+    (sum, source) => sum.plus(source.quantity),
+    new Prisma.Decimal(0),
+  );
+
+  if (!fill.productVerifiedAt || !sourced.eq(fill.quantity)) {
+    throw new ClaimError(
+      409,
+      "PRODUCT_SOURCES_INCOMPLETE",
+      "Complete barcode/product sourcing before adjudication.",
+      {
+        physicalQuantity: fill.quantity.toString(),
+        sourcedQuantity: sourced.toString(),
+      },
+    );
+  }
+
+  if (!fill.daysSupply || fill.daysSupply <= 0) {
+    throw new ClaimError(
+      409,
+      "DAYS_SUPPLY_REQUIRED",
+      "Days supply must be entered before a third-party claim can be submitted.",
+    );
+  }
+}
+
+async function createOrReuseLabel(
+  fill: FillForClaims,
+  context: ClaimActorContext,
+  claimTransactionId: string | null,
+) {
+  const active = await db.prescriptionLabel.findFirst({
+    where: { fillId: fill.id, status: "ACTIVE" },
+    include: {
+      printJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+    },
+    orderBy: { version: "desc" },
+  });
+  if (active) {
+    return { label: active, printJob: active.printJobs[0] ?? null };
+  }
+
+  const last = await db.prescriptionLabel.findFirst({
+    where: { fillId: fill.id },
+    select: { version: true },
+    orderBy: { version: "desc" },
+  });
+
+  const physicalQuantity = fill.quantity;
+  if (!physicalQuantity || physicalQuantity.lte(0)) {
+    throw new ClaimError(
+      409,
+      "FILL_QUANTITY_REQUIRED",
+      "A positive physical dispense quantity is required before label generation.",
+    );
+  }
+
+  const payerIntendedQuantity =
+    fill.payerIntendedQuantity ?? fill.intendedQuantity ?? fill.quantity;
+  const billedNdc =
+    fill.billingProduct?.ndc ??
+    (fill.productSources.length === 1
+      ? fill.productSources[0]!.ndcSnapshot
+      : null);
+
+  const sourceSummary = fill.productSources.map((source) => ({
+    sequence: source.sequence,
+    productId: source.productId,
+    ndc: source.ndcSnapshot,
+    manufacturer: source.manufacturerSnapshot,
+    lotNumber: source.lotNumberSnapshot,
+    expiration: source.expirationSnapshot.toISOString(),
+    quantity: source.quantity.toString(),
+  }));
+
+  return db.$transaction(async (tx) => {
+    const label = await tx.prescriptionLabel.create({
+      data: {
+        siteId: context.siteId,
+        fillId: fill.id,
+        version: (last?.version ?? 0) + 1,
+        claimTransactionId,
+        rxNumberSnapshot: fill.prescription.rxNumber,
+        patientNameSnapshot:
+          `${fill.prescription.patient.lastName}, ${fill.prescription.patient.firstName}`,
+        prescriberNameSnapshot:
+          `${fill.prescription.prescriber.lastName}, ${fill.prescription.prescriber.firstName}`,
+        medicationSnapshot: [
+          fill.prescription.medicationName,
+          fill.prescription.strength,
+          fill.prescription.dosageForm,
+        ]
+          .filter(Boolean)
+          .join(" "),
+        sigSnapshot: fill.prescription.sig,
+        physicalQuantity,
+        payerIntendedQuantity,
+        daysSupply: fill.daysSupply,
+        billedNdcSnapshot: billedNdc,
+        sourceSummarySnapshot: jsonSnapshot(sourceSummary),
+      },
+    });
+
+    const printJob = await tx.labelPrintJob.create({
+      data: {
+        siteId: context.siteId,
+        labelId: label.id,
+        actorId: context.actorId,
+        status: "QUEUED",
+        copies: 1,
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: "PRESCRIPTION_LABEL_GENERATED",
+      entityType: "PrescriptionLabel",
+      entityId: label.id,
+      requestId: context.requestId,
+      metadata: {
+        fillId: fill.id,
+        version: label.version,
+        claimTransactionId,
+        physicalQuantity: physicalQuantity.toString(),
+        payerIntendedQuantity: payerIntendedQuantity?.toString() ?? null,
+        billedNdc,
+        sourceCount: sourceSummary.length,
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: "LABEL_PRINT_JOB_QUEUED",
+      entityType: "LabelPrintJob",
+      entityId: printJob.id,
+      requestId: context.requestId,
+      metadata: { fillId: fill.id, labelId: label.id, copies: 1 },
+    });
+
+    return { label: { ...label, printJobs: [printJob] }, printJob };
+  });
+}
+
+async function persistClaimTransaction(input: {
+  fill: FillForClaims;
+  coverage: FillForClaims["prescription"]["patient"]["coverages"][number];
+  context: ClaimActorContext;
+  operation: "SUBMIT" | "REVERSAL";
+  originalTransactionId?: string | null;
+  request: CanonicalClaimRequest;
+  response: PersistableResponse;
+  adapterName: string;
+  adapterVersion: string;
+}) {
+  const adjudicatedAt = new Date();
+  return db.$transaction(async (tx) => {
+    const transaction = await tx.claimTransaction.create({
+      data: {
+        siteId: input.context.siteId,
+        fillId: input.fill.id,
+        payerId: input.coverage.payerId,
+        coverageIdSnapshot: input.coverage.id,
+        coveragePosition: input.coverage.position,
+        operation: input.operation,
+        outcome: input.response.status,
+        idempotencyKey: input.request.claimIdempotencyKey,
+        originalTransactionId: input.originalTransactionId ?? null,
+        claimStandard: input.coverage.payer.claimStandard,
+        adapterName: input.adapterName,
+        adapterVersion: input.adapterVersion,
+        billedProductId: input.request.billedProductId,
+        billedNdc: input.request.billedNdc,
+        memberIdSnapshot: input.coverage.memberId,
+        personCodeSnapshot: input.coverage.personCode,
+        groupIdSnapshot: input.coverage.groupId,
+        payerIntendedQuantity: new Prisma.Decimal(
+          input.request.payerIntendedQuantity,
+        ),
+        physicalPartQuantity: new Prisma.Decimal(
+          input.request.physicalPartQuantity,
+        ),
+        daysSupply: input.request.daysSupply,
+        requestSnapshot: jsonSnapshot(input.request),
+        responseSnapshot: jsonSnapshot(input.response),
+        transactionReference: input.response.transactionReference ?? null,
+        authorizationNumber: input.response.authorizationNumber ?? null,
+        amountPaid: decimal(input.response.amountPaid),
+        patientResponsibility: decimal(input.response.patientResponsibility),
+        rejectCodes: jsonSnapshot(input.response.rejectCodes),
+        messages: jsonSnapshot(input.response.messages),
+        createdById: input.context.actorId,
+        adjudicatedAt,
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      siteId: input.context.siteId,
+      actorId: input.context.actorId,
+      action:
+        input.operation === "SUBMIT"
+          ? "THIRD_PARTY_CLAIM_ADJUDICATED"
+          : "THIRD_PARTY_CLAIM_REVERSED",
+      entityType: "ClaimTransaction",
+      entityId: transaction.id,
+      requestId: input.context.requestId,
+      metadata: {
+        fillId: input.fill.id,
+        payerId: input.coverage.payerId,
+        coveragePosition: input.coverage.position,
+        operation: input.operation,
+        outcome: input.response.status,
+        transactionReference: input.response.transactionReference ?? null,
+        rejectCodes: input.response.rejectCodes,
+        payerIntendedQuantity: input.request.payerIntendedQuantity,
+        physicalPartQuantity: input.request.physicalPartQuantity,
+      },
+    });
+
+    return transaction;
+  });
+}
+
+export async function adjudicateFillClaims(
+  fillId: string,
+  context: ClaimActorContext & { retryRejected?: boolean },
+) {
+  const fill = await loadFillForClaims(fillId, context.siteId);
+  validatePhysicalFillReady(fill);
+
+  if (fill.billingRole === "COMPLETION_OF_PRIMARY") {
+    if (!fill.billingAnchorFillId) {
+      throw new ClaimError(
+        409,
+        "BILLING_ANCHOR_REQUIRED",
+        "Completion fills must retain the primary claim billing anchor.",
+      );
+    }
+
+    const paid = await db.claimTransaction.findFirst({
+      where: {
+        fillId: fill.billingAnchorFillId,
+        operation: "SUBMIT",
+        outcome: "PAID",
+        NOT: {
+          id: {
+            in: (
+              await db.claimTransaction.findMany({
+                where: {
+                  fillId: fill.billingAnchorFillId,
+                  operation: "REVERSAL",
+                  outcome: "REVERSED",
+                  originalTransactionId: { not: null },
+                },
+                select: { originalTransactionId: true },
+              })
+            )
+              .map((item) => item.originalTransactionId)
+              .filter((id): id is string => Boolean(id)),
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!paid) {
+      throw new ClaimError(
+        409,
+        "PRIMARY_CLAIM_NOT_PAID",
+        "The primary fill has no active paid claim to anchor this completion.",
+      );
+    }
+
+    const generated = await createOrReuseLabel(
+      fill,
+      context,
+      paid.id,
+    );
+    return {
+      state: "COMPLETION_LABEL_READY" as const,
+      transactions: [],
+      ...generated,
+    };
+  }
+
+  const now = new Date();
+  const coverages = fill.prescription.patient.coverages.filter((coverage) =>
+    activeOnDate(coverage, now),
+  );
+
+  if (coverages.length === 0) {
+    const generated = await createOrReuseLabel(fill, context, null);
+    return {
+      state: "CASH_LABEL_READY" as const,
+      transactions: [],
+      ...generated,
+    };
+  }
+
+  const existing = await db.claimTransaction.findMany({
+    where: { fillId: fill.id },
+    orderBy: [{ coveragePosition: "asc" }, { createdAt: "asc" }],
+  });
+  const reversedIds = new Set(
+    existing
+      .filter(
+        (item) =>
+          item.operation === "REVERSAL" &&
+          item.outcome === "REVERSED" &&
+          item.originalTransactionId,
+      )
+      .map((item) => item.originalTransactionId as string),
+  );
+
+  const physicalProductIds = fill.productSources.map((source) => source.productId);
+  const productById = new Map(
+    fill.productSources.map((source) => [source.productId, source.product]),
+  );
+  if (fill.billingProduct) {
+    productById.set(fill.billingProduct.id, fill.billingProduct);
+  }
+
+  const payerIntendedQuantity =
+    fill.payerIntendedQuantity ?? fill.intendedQuantity ?? fill.quantity;
+  if (!payerIntendedQuantity || payerIntendedQuantity.lte(0)) {
+    throw new ClaimError(
+      409,
+      "PAYER_INTENDED_QUANTITY_REQUIRED",
+      "The payer-intended quantity is missing from this fill.",
+    );
+  }
+
+  const chain: typeof existing = [];
+  let upstreamChanged = false;
+
+  for (const coverage of coverages) {
+    const submissions = existing
+      .filter(
+        (item) =>
+          item.coveragePosition === coverage.position &&
+          item.operation === "SUBMIT" &&
+          !reversedIds.has(item.id),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const current = submissions[0];
+
+    if (
+      current?.outcome === "PAID" &&
+      !upstreamChanged
+    ) {
+      chain.push(current);
+      continue;
+    }
+
+    if (
+      current &&
+      (current.outcome === "REJECTED" || current.outcome === "ERROR") &&
+      !context.retryRejected
+    ) {
+      chain.push(current);
+      if (current.outcome === "ERROR") break;
+      continue;
+    }
+
+    if (current?.outcome === "PAID" && upstreamChanged) {
+      throw new ClaimError(
+        409,
+        "DOWNSTREAM_REVERSAL_REQUIRED",
+        "A downstream paid COB claim must be reversed before an upstream payer can be re-adjudicated.",
+        {
+          coveragePosition: coverage.position,
+          claimTransactionId: current.id,
+        },
+      );
+    }
+
+    let billedProductId: string;
+    try {
+      billedProductId = requireBillingNdcSelection({
+        physicalProductIds,
+        billingProductId: fill.billingProductId,
+        billingNdcStrategy:
+          coverage.payer.billingNdcStrategy as BillingNdcStrategy,
+      });
+    } catch (error) {
+      throw new ClaimError(
+        409,
+        "BILLING_NDC_SELECTION_REQUIRED",
+        error instanceof Error
+          ? error.message
+          : "A billing NDC must be selected before adjudication.",
+        { coveragePosition: coverage.position, payerId: coverage.payerId },
+      );
+    }
+
+    const billedProduct = productById.get(billedProductId);
+    if (!billedProduct) {
+      throw new ClaimError(
+        409,
+        "BILLING_PRODUCT_NOT_FOUND",
+        "The selected billing product is not available in the physical fill sources.",
+      );
+    }
+
+    const priorPayers = chain
+      .filter(
+        (item) =>
+          item.operation === "SUBMIT" &&
+          (item.outcome === "PAID" ||
+            item.outcome === "REJECTED" ||
+            item.outcome === "ERROR"),
+      )
+      .map(priorFromTransaction);
+
+    const claimIdempotencyKey = `claim-${fill.id}-p${coverage.position}-${randomUUID()}`;
+    const claimRequest: CanonicalClaimRequest = {
+      claimIdempotencyKey,
+      siteId: context.siteId,
+      prescriptionId: fill.prescriptionId,
+      fillId: fill.id,
+      coveragePosition: coverage.position,
+      payerId: coverage.payerId,
+      memberId: coverage.memberId,
+      personCode: coverage.personCode,
+      groupId: coverage.groupId ?? coverage.payer.defaultGroupId,
+      billedProductId,
+      billedNdc: billedProduct.ndc,
+      payerIntendedQuantity: payerIntendedQuantity.toString(),
+      physicalPartQuantity: fill.quantity!.toString(),
+      daysSupply: fill.daysSupply!,
+      priorPayers,
+    };
+
+    let adapter;
+    try {
+      adapter = getClaimAdapter(coverage.payer.claimStandard);
+    } catch (error) {
+      throw new ClaimError(
+        503,
+        "CLAIM_ADAPTER_NOT_CONFIGURED",
+        error instanceof Error
+          ? error.message
+          : "No claim adapter is configured for this payer.",
+      );
+    }
+
+    const response = await adapter.submit(claimRequest, {
+      standard: coverage.payer.claimStandard,
+      billingNdcStrategy: coverage.payer.billingNdcStrategy,
+    });
+
+    const transaction = await persistClaimTransaction({
+      fill,
+      coverage,
+      context,
+      operation: "SUBMIT",
+      request: claimRequest,
+      response,
+      adapterName: adapter.name,
+      adapterVersion: adapter.version,
+    });
+    chain.push(transaction);
+    upstreamChanged = true;
+
+    if (response.status === "ERROR") break;
+  }
+
+  const hasPaid = chain.some((transaction) => transaction.outcome === "PAID");
+  const hasError = chain.some((transaction) => transaction.outcome === "ERROR");
+
+  if (hasError) {
+    return {
+      state: "ERROR" as const,
+      transactions: chain,
+      label: null,
+      printJob: null,
+    };
+  }
+
+  if (!hasPaid) {
+    return {
+      state: "REJECTED" as const,
+      transactions: chain,
+      label: null,
+      printJob: null,
+    };
+  }
+
+  const paidTransaction = [...chain]
+    .reverse()
+    .find((transaction) => transaction.outcome === "PAID")!;
+  const generated = await createOrReuseLabel(
+    fill,
+    context,
+    paidTransaction.id,
+  );
+
+  return {
+    state: "PAID_LABEL_READY" as const,
+    transactions: chain,
+    ...generated,
+  };
+}
+
+function claimRequestFromSnapshot(
+  snapshot: Prisma.JsonValue,
+  nextIdempotencyKey: string,
+): CanonicalClaimRequest {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new ClaimError(
+      409,
+      "CLAIM_SNAPSHOT_INVALID",
+      "The stored claim request snapshot is invalid.",
+    );
+  }
+  const raw = snapshot as Record<string, unknown>;
+  const prior = Array.isArray(raw.priorPayers) ? raw.priorPayers : [];
+  return {
+    claimIdempotencyKey: nextIdempotencyKey,
+    siteId: String(raw.siteId),
+    prescriptionId: String(raw.prescriptionId),
+    fillId: String(raw.fillId),
+    coveragePosition: Number(raw.coveragePosition),
+    payerId: String(raw.payerId),
+    memberId: String(raw.memberId),
+    personCode:
+      raw.personCode === null || raw.personCode === undefined
+        ? null
+        : String(raw.personCode),
+    groupId:
+      raw.groupId === null || raw.groupId === undefined
+        ? null
+        : String(raw.groupId),
+    billedProductId: String(raw.billedProductId),
+    billedNdc: String(raw.billedNdc),
+    payerIntendedQuantity: String(raw.payerIntendedQuantity),
+    physicalPartQuantity: String(raw.physicalPartQuantity),
+    daysSupply: Number(raw.daysSupply),
+    priorPayers: prior.map((item) => {
+      const value = item as Record<string, unknown>;
+      return {
+        position: Number(value.position),
+        payerId: String(value.payerId),
+        responseStatus: value.responseStatus as "PAID" | "REJECTED" | "ERROR",
+        amountPaid:
+          value.amountPaid === null || value.amountPaid === undefined
+            ? null
+            : String(value.amountPaid),
+        patientResponsibility:
+          value.patientResponsibility === null ||
+          value.patientResponsibility === undefined
+            ? null
+            : String(value.patientResponsibility),
+        rejectCodes: Array.isArray(value.rejectCodes)
+          ? value.rejectCodes.filter(
+              (code): code is string => typeof code === "string",
+            )
+          : [],
+        transactionReference:
+          value.transactionReference === null ||
+          value.transactionReference === undefined
+            ? null
+            : String(value.transactionReference),
+        adjudicatedAt: new Date(String(value.adjudicatedAt)),
+      };
+    }),
+  };
+}
+
+export async function reverseClaimTransaction(
+  claimTransactionId: string,
+  context: ClaimActorContext,
+) {
+  const original = await db.claimTransaction.findFirst({
+    where: {
+      id: claimTransactionId,
+      siteId: context.siteId,
+      operation: "SUBMIT",
+    },
+  });
+  if (!original) {
+    throw new ClaimError(404, "CLAIM_NOT_FOUND", "Claim transaction not found.");
+  }
+  if (original.outcome !== "PAID" || !original.transactionReference) {
+    throw new ClaimError(
+      409,
+      "CLAIM_NOT_REVERSIBLE",
+      "Only a paid claim with a transaction reference can be reversed.",
+    );
+  }
+
+  const priorReversal = await db.claimTransaction.findFirst({
+    where: {
+      originalTransactionId: original.id,
+      operation: "REVERSAL",
+      outcome: "REVERSED",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (priorReversal) {
+    return { transaction: priorReversal, replayed: true };
+  }
+
+  const fill = await loadFillForClaims(original.fillId, context.siteId);
+  const coverage = fill.prescription.patient.coverages.find(
+    (item) => item.id === original.coverageIdSnapshot,
+  );
+  if (!coverage) {
+    throw new ClaimError(
+      409,
+      "COVERAGE_SNAPSHOT_UNAVAILABLE",
+      "The original coverage is no longer available for reversal.",
+    );
+  }
+
+  const adapter = getClaimAdapter(original.claimStandard);
+  const nextIdempotencyKey = `reverse-${original.id}-${randomUUID()}`;
+  const request = claimRequestFromSnapshot(
+    original.requestSnapshot,
+    nextIdempotencyKey,
+  );
+  const response = await adapter.reverse(
+    {
+      ...request,
+      originalTransactionReference: original.transactionReference,
+    },
+    {
+      standard: original.claimStandard,
+      billingNdcStrategy: coverage.payer.billingNdcStrategy,
+    },
+  );
+
+  const transaction = await persistClaimTransaction({
+    fill,
+    coverage,
+    context,
+    operation: "REVERSAL",
+    originalTransactionId: original.id,
+    request,
+    response,
+    adapterName: adapter.name,
+    adapterVersion: adapter.version,
+  });
+
+  if (response.status === "REVERSED") {
+    await db.$transaction(async (tx) => {
+      const labels = await tx.prescriptionLabel.findMany({
+        where: { fillId: original.fillId, status: "ACTIVE" },
+        select: { id: true },
+      });
+      const labelIds = labels.map((label) => label.id);
+      if (labelIds.length > 0) {
+        await tx.prescriptionLabel.updateMany({
+          where: { id: { in: labelIds } },
+          data: {
+            status: "VOID",
+            voidedAt: new Date(),
+            voidReason: `Claim ${original.id} reversed.`,
+          },
+        });
+        await tx.labelPrintJob.updateMany({
+          where: { labelId: { in: labelIds }, status: "QUEUED" },
+          data: { status: "CANCELLED" },
+        });
+      }
+      await writeAuditEvent(tx, {
+        siteId: context.siteId,
+        actorId: context.actorId,
+        action: "CLAIM_REVERSAL_VOIDED_LABELS",
+        entityType: "ClaimTransaction",
+        entityId: transaction.id,
+        requestId: context.requestId,
+        metadata: {
+          originalTransactionId: original.id,
+          fillId: original.fillId,
+          labelIds,
+        },
+      });
+    });
+  }
+
+  return { transaction, replayed: false };
+}
+
+export async function assertFillBillingReadyForReview(
+  fillId: string,
+  siteId: string,
+) {
+  const fill = await db.prescriptionFill.findFirst({
+    where: { id: fillId, prescription: { siteId } },
+    include: {
+      prescription: {
+        include: {
+          patient: { include: { coverages: true } },
+        },
+      },
+    },
+  });
+  if (!fill) {
+    throw new ClaimError(404, "FILL_NOT_FOUND", "Fill not found.");
+  }
+
+  const now = new Date();
+  const hasActiveThirdParty = fill.prescription.patient.coverages.some(
+    (coverage) => activeOnDate(coverage, now),
+  );
+  if (!hasActiveThirdParty) return;
+
+  const activeLabel = await db.prescriptionLabel.findFirst({
+    where: {
+      fillId,
+      status: "ACTIVE",
+      claimTransactionId: { not: null },
+    },
+  });
+  if (!activeLabel) {
+    throw new ClaimError(
+      409,
+      "CLAIM_PAYMENT_REQUIRED",
+      "A paid third-party claim and active dispensing label are required before pharmacist review.",
+    );
+  }
+}
+
+export async function markLabelPrintJobPrinted(
+  printJobId: string,
+  context: ClaimActorContext,
+  printerName?: string | null,
+) {
+  const job = await db.labelPrintJob.findFirst({
+    where: { id: printJobId, siteId: context.siteId },
+    include: { label: true },
+  });
+  if (!job) {
+    throw new ClaimError(404, "PRINT_JOB_NOT_FOUND", "Label print job not found.");
+  }
+  if (job.label.status !== "ACTIVE") {
+    throw new ClaimError(
+      409,
+      "LABEL_VOID",
+      "A voided prescription label cannot be printed.",
+    );
+  }
+  if (job.status === "PRINTED") return job;
+  if (job.status === "CANCELLED") {
+    throw new ClaimError(
+      409,
+      "PRINT_JOB_CANCELLED",
+      "This label print job has been cancelled.",
+    );
+  }
+
+  return db.$transaction(async (tx) => {
+    const updated = await tx.labelPrintJob.update({
+      where: { id: job.id },
+      data: {
+        status: "PRINTED",
+        printerName: printerName?.trim() || job.printerName,
+        actorId: context.actorId,
+        printedAt: new Date(),
+        failedAt: null,
+        failureReason: null,
+      },
+      include: { label: true },
+    });
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: "LABEL_PRINT_JOB_PRINTED",
+      entityType: "LabelPrintJob",
+      entityId: job.id,
+      requestId: context.requestId,
+      metadata: {
+        labelId: job.labelId,
+        fillId: job.label.fillId,
+        printerName: updated.printerName,
+      },
+    });
+    return updated;
+  });
+}
