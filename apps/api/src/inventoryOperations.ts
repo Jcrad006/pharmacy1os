@@ -262,6 +262,15 @@ export async function createInventoryTransfer(
     reason: `Transfer to ${destination.name}`,
   });
 
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      inventoryTransferId: transfer.id,
+      type: "PACKED",
+      actorId: input.actorId,
+      note: input.note?.trim() || "Transfer prepared for shipment",
+    },
+  });
+
   return {
     transfer,
     sourceBalance: updatedSource,
@@ -295,6 +304,39 @@ export async function receiveInventoryTransfer(
       "Only an in-transit transfer can be received.",
       { status: transfer.status },
     );
+  }
+
+  const policyKeys = [
+    `PRODUCT:${transfer.productId}`,
+    `MEDICATION:${transfer.sourceInventoryBalance.product.medicationId}`,
+    "SITE",
+  ];
+  const policies = await tx.inventoryPolicy.findMany({
+    where: {
+      siteId: transfer.sourceSiteId,
+      policyKey: { in: policyKeys },
+    },
+  });
+  const transferPolicy =
+    policyKeys
+      .map((key) => policies.find((policy) => policy.policyKey === key))
+      .find(Boolean) ?? null;
+
+  if (transferPolicy?.requireTransferSecondCheck) {
+    const verification = await tx.inventoryTransferCustodyEvent.findFirst({
+      where: {
+        inventoryTransferId: transfer.id,
+        type: "VERIFIED",
+        actorId: { not: transfer.initiatedById },
+      },
+    });
+    if (!verification) {
+      throw new InventoryError(
+        409,
+        "TRANSFER_SECOND_CHECK_REQUIRED",
+        "This transfer requires second-person verification before destination receipt.",
+      );
+    }
   }
 
   const traceability = await upsertTraceability(tx, {
@@ -333,6 +375,15 @@ export async function receiveInventoryTransfer(
       destinationInventoryBalanceId: received.balance.id,
       receivedById: input.actorId,
       receivedAt: new Date(),
+    },
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      inventoryTransferId: transfer.id,
+      type: "RECEIVED",
+      actorId: input.actorId,
+      note: "Destination pharmacy confirmed physical receipt",
     },
   });
 
@@ -424,6 +475,15 @@ export async function cancelInventoryTransfer(
       note: transfer.note
         ? `${transfer.note} | Cancelled: ${input.reason.trim()}`
         : `Cancelled: ${input.reason.trim()}`,
+    },
+  });
+
+  await tx.inventoryTransferCustodyEvent.create({
+    data: {
+      inventoryTransferId: transfer.id,
+      type: "CANCELLED",
+      actorId: input.actorId,
+      note: input.reason.trim(),
     },
   });
 
@@ -599,6 +659,7 @@ export async function createPurchaseOrder(
     orderNumber: string;
     supplierName: string;
     note?: string | null;
+    expectedDeliveryAt?: Date | null;
     lines: Array<{
       productId: string;
       quantityOrdered: Prisma.Decimal | number | string;
@@ -644,6 +705,7 @@ export async function createPurchaseOrder(
       orderNumber: input.orderNumber.trim(),
       supplierName: input.supplierName.trim(),
       note: input.note?.trim() || null,
+      expectedDeliveryAt: input.expectedDeliveryAt ?? null,
       createdById: input.actorId,
       lines: {
         create: input.lines.map((line) => {
