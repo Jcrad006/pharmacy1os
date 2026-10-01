@@ -4,7 +4,11 @@ import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
 import { parseBarcode } from "../barcode.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
-import { InventoryError, receiveInventory } from "../inventory.js";
+import {
+  InventoryError,
+  quarantineInventory,
+  receiveInventory,
+} from "../inventory.js";
 
 type ScanBody = {
   rawBarcode?: string;
@@ -252,6 +256,31 @@ export async function receivingRoutes(app: FastifyInstance) {
           reason: "Inventory received from scanned stock",
         });
 
+        const openRecall = await tx.inventoryRecall.findFirst({
+          where: {
+            siteId: actor.siteId,
+            productId: barcode.productId,
+            productLotId: traceability.lot.id,
+            status: "OPEN",
+          },
+          select: {
+            id: true,
+            referenceNumber: true,
+          },
+        });
+
+        const recallHold = openRecall
+          ? await quarantineInventory(tx, {
+              balanceId: received.balance.id,
+              siteId: actor.siteId,
+              actorId: actor.id,
+              quantity,
+              reasonCode: "RECALL",
+              note: `Received stock automatically quarantined under recall ${openRecall.referenceNumber ?? openRecall.id}.`,
+              recallId: openRecall.id,
+            })
+          : null;
+
         await writeAuditEvent(tx, {
           siteId: actor.siteId,
           actorId: actor.id,
@@ -269,12 +298,33 @@ export async function receivingRoutes(app: FastifyInstance) {
             quantity,
             source: body.source?.trim() || null,
             reference: body.reference?.trim() || null,
+            recallId: openRecall?.id ?? null,
+            automaticallyQuarantined: Boolean(recallHold),
           },
         });
+
+        if (recallHold) {
+          await writeAuditEvent(tx, {
+            siteId: actor.siteId,
+            actorId: actor.id,
+            action: "INVENTORY_RECALLED_STOCK_RECEIVED_QUARANTINED",
+            entityType: "InventoryHold",
+            entityId: recallHold.hold.id,
+            requestId: request.id,
+            metadata: {
+              recallId: openRecall?.id ?? null,
+              inventoryBalanceId: received.balance.id,
+              productLotId: traceability.lot.id,
+              quantity,
+            },
+          });
+        }
 
         return {
           traceability,
           ...received,
+          balance: recallHold?.balance ?? received.balance,
+          recallHold: recallHold?.hold ?? null,
         };
       });
 
@@ -292,6 +342,7 @@ export async function receivingRoutes(app: FastifyInstance) {
             .toString(),
         },
         transaction: result.transaction,
+        recallHold: result.recallHold,
       });
     } catch (error) {
       if (error instanceof AccessError || error instanceof InventoryError) {
