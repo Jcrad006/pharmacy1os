@@ -93,6 +93,7 @@ enum InventoryTransactionType {
   TRANSFER_OUT
   TRANSFER_IN
   TRANSFER_CANCEL_RETURN
+  MOVE_LOCATION
 }
 
 enum InventoryHoldStatus {
