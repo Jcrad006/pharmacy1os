@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   Prisma,
   type PaymentMethod,
+  type PickupFulfillmentMode,
   type PickupIdentityMethod,
   type PickupSignatureMethod,
   type PosPriceBasis,
@@ -294,6 +295,25 @@ export async function stageWillCallPackage(
   });
 }
 
+const pickupFulfillmentModes = new Set<PickupFulfillmentMode>([
+  "WILL_CALL",
+  "IMMEDIATE",
+]);
+
+function normalizeFulfillmentMode(
+  mode: PickupFulfillmentMode | undefined,
+): PickupFulfillmentMode {
+  const resolved = mode ?? "WILL_CALL";
+  if (!pickupFulfillmentModes.has(resolved)) {
+    throw new PosError(
+      400,
+      "INVALID_PICKUP_FULFILLMENT_MODE",
+      "Pickup fulfillment mode must be WILL_CALL or IMMEDIATE.",
+    );
+  }
+  return resolved;
+}
+
 type CheckoutQuoteLine = {
   fillId: string;
   prescriptionId: string;
@@ -309,11 +329,12 @@ type CheckoutQuoteLine = {
   cashUnitPriceSnapshot: Prisma.Decimal | null;
   cashPricingSnapshot: Prisma.InputJsonValue;
   amountDue: Prisma.Decimal;
-  willCallPackageId: string;
-  bagBarcode: string;
-  willCallLocationId: string;
-  willCallLocationCode: string;
-  willCallLocationName: string;
+  pickupFulfillmentMode: PickupFulfillmentMode;
+  willCallPackageId: string | null;
+  bagBarcode: string | null;
+  willCallLocationId: string | null;
+  willCallLocationCode: string | null;
+  willCallLocationName: string | null;
   willCallLocationBarcode: string | null;
 };
 
@@ -322,6 +343,7 @@ async function quoteFill(
   fillId: string,
   siteId: string,
   at: Date,
+  pickupFulfillmentMode: PickupFulfillmentMode,
 ): Promise<CheckoutQuoteLine> {
   const fill = await tx.prescriptionFill.findFirst({
     where: {
@@ -403,22 +425,56 @@ async function quoteFill(
     );
   }
 
-  if (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED") {
-    throw new PosError(
-      409,
-      "WILL_CALL_STAGING_REQUIRED",
-      "The ready fill must be staged in a Will Call location before checkout.",
-    );
-  }
+  let packageSnapshot: Pick<
+    CheckoutQuoteLine,
+    | "willCallPackageId"
+    | "bagBarcode"
+    | "willCallLocationId"
+    | "willCallLocationCode"
+    | "willCallLocationName"
+    | "willCallLocationBarcode"
+  >;
 
-  const packageSnapshot = {
-    willCallPackageId: fill.willCallPackage.id,
-    bagBarcode: fill.willCallPackage.bagBarcode,
-    willCallLocationId: fill.willCallPackage.locationId,
-    willCallLocationCode: fill.willCallPackage.location.code,
-    willCallLocationName: fill.willCallPackage.location.name,
-    willCallLocationBarcode: fill.willCallPackage.location.barcode,
-  };
+  if (pickupFulfillmentMode === "WILL_CALL") {
+    if (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED") {
+      throw new PosError(
+        409,
+        "WILL_CALL_STAGING_REQUIRED",
+        "The ready fill must be staged in a Will Call location before Will Call checkout.",
+      );
+    }
+
+    packageSnapshot = {
+      willCallPackageId: fill.willCallPackage.id,
+      bagBarcode: fill.willCallPackage.bagBarcode,
+      willCallLocationId: fill.willCallPackage.locationId,
+      willCallLocationCode: fill.willCallPackage.location.code,
+      willCallLocationName: fill.willCallPackage.location.name,
+      willCallLocationBarcode: fill.willCallPackage.location.barcode,
+    };
+  } else {
+    if (fill.willCallPackage) {
+      throw new PosError(
+        409,
+        "IMMEDIATE_PICKUP_REQUIRES_UNSTAGED_FILL",
+        "A fill already assigned to a Will Call bag/location must use the normal Will Call pickup workflow.",
+        {
+          fillId: fill.id,
+          willCallPackageId: fill.willCallPackage.id,
+          packageStatus: fill.willCallPackage.status,
+        },
+      );
+    }
+
+    packageSnapshot = {
+      willCallPackageId: null,
+      bagBarcode: null,
+      willCallLocationId: null,
+      willCallLocationCode: null,
+      willCallLocationName: null,
+      willCallLocationBarcode: null,
+    };
+  }
 
   const activeCoverages = fill.prescription.patient.coverages.filter((coverage) =>
     activeOnDate(coverage, at),
@@ -449,6 +505,7 @@ async function quoteFill(
         note: "No additional patient charge: primary logical fill was already adjudicated.",
       },
       amountDue: money(0),
+      pickupFulfillmentMode,
       ...packageSnapshot,
     };
   }
@@ -487,6 +544,7 @@ async function quoteFill(
       cashUnitPriceSnapshot: null,
       cashPricingSnapshot: {},
       amountDue: responsibility,
+      pickupFulfillmentMode,
       ...packageSnapshot,
     };
   }
@@ -558,6 +616,7 @@ async function quoteFill(
     cashUnitPriceSnapshot: singleUnitPrice,
     cashPricingSnapshot: priceSnapshots,
     amountDue,
+    pickupFulfillmentMode,
     ...packageSnapshot,
   };
 }
@@ -566,7 +625,9 @@ async function quoteFillsInTransaction(
   tx: Prisma.TransactionClient,
   fillIds: string[],
   siteId: string,
+  fulfillmentModeInput?: PickupFulfillmentMode,
 ) {
+  const pickupFulfillmentMode = normalizeFulfillmentMode(fulfillmentModeInput);
   if (fillIds.length < 1 || fillIds.length > MAX_CHECKOUT_FILLS) {
     throw new PosError(
       400,
@@ -587,7 +648,9 @@ async function quoteFillsInTransaction(
   const now = new Date();
   const lines: CheckoutQuoteLine[] = [];
   for (const fillId of fillIds) {
-    lines.push(await quoteFill(tx, fillId, siteId, now));
+    lines.push(
+      await quoteFill(tx, fillId, siteId, now, pickupFulfillmentMode),
+    );
   }
 
   const patientIds = new Set(lines.map((line) => line.patientId));
@@ -608,6 +671,7 @@ async function quoteFillsInTransaction(
 
   return {
     patientId: lines[0]!.patientId,
+    pickupFulfillmentMode,
     lines,
     totalDue,
   };
@@ -616,9 +680,10 @@ async function quoteFillsInTransaction(
 export async function quoteFillsForCheckout(
   fillIds: string[],
   context: Pick<PosActorContext, "siteId">,
+  fulfillmentMode?: PickupFulfillmentMode,
 ) {
   return db.$transaction((tx) =>
-    quoteFillsInTransaction(tx, fillIds, context.siteId),
+    quoteFillsInTransaction(tx, fillIds, context.siteId, fulfillmentMode),
   );
 }
 
@@ -701,7 +766,19 @@ function normalizePickup(
 function validatePackageScans(
   lines: CheckoutQuoteLine[],
   packageInputs: PickupPackageInput[],
+  pickupFulfillmentMode: PickupFulfillmentMode,
 ) {
+  if (pickupFulfillmentMode === "IMMEDIATE") {
+    if (packageInputs.length > 0) {
+      throw new PosError(
+        400,
+        "IMMEDIATE_PICKUP_PACKAGE_NOT_ALLOWED",
+        "Immediate pickup does not use a Will Call bag scan.",
+      );
+    }
+    return;
+  }
+
   if (packageInputs.length !== lines.length) {
     throw new PosError(
       400,
@@ -719,7 +796,7 @@ function validatePackageScans(
 
   for (const line of lines) {
     const barcode = scanned.get(line.fillId);
-    if (!barcode || barcode !== line.bagBarcode.toUpperCase()) {
+    if (!line.bagBarcode || !barcode || barcode !== line.bagBarcode.toUpperCase()) {
       throw new PosError(
         409,
         "WILL_CALL_BAG_MISMATCH",
@@ -848,6 +925,7 @@ export async function checkoutFills(
     tenders?: PosTenderInput[];
     pickupPackages: PickupPackageInput[];
     pickup: PickupVerificationInput;
+    pickupFulfillmentMode?: PickupFulfillmentMode;
     idempotencyKey: string;
   },
   context: PosActorContext,
@@ -902,6 +980,7 @@ export async function checkoutFills(
         tx,
         input.fillIds,
         context.siteId,
+        input.pickupFulfillmentMode,
       );
       const payment = normalizeTenders(input.tenders ?? [], quote.totalDue);
       const patient = await tx.patient.findUnique({
@@ -912,7 +991,11 @@ export async function checkoutFills(
         throw new PosError(404, "PATIENT_NOT_FOUND", "Patient not found.");
       }
       const pickup = normalizePickup(input.pickup, patient);
-      validatePackageScans(quote.lines, input.pickupPackages);
+      validatePackageScans(
+        quote.lines,
+        input.pickupPackages,
+        quote.pickupFulfillmentMode,
+      );
       const pickupVerifiedAt = new Date();
       const receiptNumber =
         `POS-${randomUUID().replace(/-/g, "").slice(0, 14).toUpperCase()}`;
@@ -926,6 +1009,7 @@ export async function checkoutFills(
           totalTendered: payment.totalTendered,
           changeDue: payment.changeDue,
           idempotencyKey: key,
+          pickupFulfillmentMode: quote.pickupFulfillmentMode,
           pickupRecipientName: pickup.recipientName,
           pickupRelationship: pickup.relationship,
           pickupIdentityMethod: pickup.identityMethod,
@@ -988,16 +1072,28 @@ export async function checkoutFills(
           );
         }
 
-        if (
-          !current.willCallPackage ||
-          current.willCallPackage.status !== "STAGED" ||
-          current.willCallPackage.id !== line.willCallPackageId
-        ) {
+        if (quote.pickupFulfillmentMode === "WILL_CALL") {
+          if (
+            !current.willCallPackage ||
+            current.willCallPackage.status !== "STAGED" ||
+            current.willCallPackage.id !== line.willCallPackageId
+          ) {
+            throw new PosError(
+              409,
+              "WILL_CALL_PACKAGE_STATE_CHANGED",
+              "The staged Will Call package changed while checkout was being completed.",
+              { fillId: line.fillId },
+            );
+          }
+        } else if (current.willCallPackage) {
           throw new PosError(
             409,
-            "WILL_CALL_PACKAGE_STATE_CHANGED",
-            "The staged Will Call package changed while checkout was being completed.",
-            { fillId: line.fillId },
+            "IMMEDIATE_PICKUP_STATE_CHANGED",
+            "The fill was staged into Will Call while immediate pickup was being completed.",
+            {
+              fillId: line.fillId,
+              willCallPackageId: current.willCallPackage.id,
+            },
           );
         }
 
@@ -1011,13 +1107,15 @@ export async function checkoutFills(
           },
         });
 
-        await tx.willCallPackage.update({
-          where: { id: current.willCallPackage.id },
-          data: {
-            status: "PICKED_UP",
-            pickedUpAt: soldAt,
-          },
-        });
+        if (quote.pickupFulfillmentMode === "WILL_CALL" && current.willCallPackage) {
+          await tx.willCallPackage.update({
+            where: { id: current.willCallPackage.id },
+            data: {
+              status: "PICKED_UP",
+              pickedUpAt: soldAt,
+            },
+          });
+        }
 
         if (current.billingAnchorFillId && current.quantity) {
           const anchor = await tx.prescriptionFill.findUnique({
@@ -1068,6 +1166,7 @@ export async function checkoutFills(
             priceBasis: line.priceBasis,
             amountDue: line.amountDue.toFixed(2),
             claimTransactionId: line.claimTransactionId,
+            pickupFulfillmentMode: quote.pickupFulfillmentMode,
             willCallPackageId: line.willCallPackageId,
             bagBarcode: line.bagBarcode,
             willCallLocationCode: line.willCallLocationCode,
@@ -1084,6 +1183,7 @@ export async function checkoutFills(
         requestId: context.requestId,
         metadata: {
           receiptNumber: created.receiptNumber,
+          pickupFulfillmentMode: quote.pickupFulfillmentMode,
           fillIds: quote.lines.map((line) => line.fillId),
           totalDue: quote.totalDue.toFixed(2),
           totalTendered: payment.totalTendered.toFixed(2),
