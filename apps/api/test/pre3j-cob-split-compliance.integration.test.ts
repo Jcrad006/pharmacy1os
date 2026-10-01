@@ -519,9 +519,9 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
     expect(fourth.json().fill.productSources).toHaveLength(4);
     expect(fourth.json().fill.billingProductId).toBeNull();
 
-    const fifth = await scanSource(fillId, multiSources[0]!, 1);
-    expect(fifth.statusCode).toBe(409);
-    expect(fifth.json().code).toBe("FILL_SOURCE_LIMIT_REACHED");
+    const extraQuantity = await scanSource(fillId, multiSources[0]!, 1);
+    expect(extraQuantity.statusCode).toBe(400);
+    expect(extraQuantity.json().code).toBe("INVALID_FILL_SOURCE_QUANTITY");
 
     const invalidBilling = await app.inject({
       method: "PUT",
@@ -595,6 +595,35 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
       );
       expect(balance.reservedQuantity.toNumber()).toBe(0);
     }
+  });
+
+  it("caps an incompletely sourced dispense part at four physical sources", async () => {
+    const prescriptionId = await createPrescription({
+      medicationId: ids.multiMedicationId,
+      quantity: 110,
+    });
+    const fillId = await createInProgressFill(prescriptionId, 110);
+
+    for (const [index, quantity] of [10, 20, 30, 40].entries()) {
+      const scanned = await scanSource(
+        fillId,
+        multiSources[index]!,
+        quantity,
+      );
+      expect(scanned.statusCode).toBe(200);
+    }
+
+    const fifth = await scanSource(fillId, multiSources[0]!, 10);
+    expect(fifth.statusCode).toBe(409);
+    expect(fifth.json().code).toBe("FILL_SOURCE_LIMIT_REACHED");
+
+    const cancelled = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "CANCELLED" },
+    });
+    expect(cancelled.statusCode).toBe(200);
   });
 
   it("enforces prescriber DAW product selection before inventory can be reserved", async () => {
