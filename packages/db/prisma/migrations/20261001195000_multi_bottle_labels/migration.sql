@@ -14,8 +14,7 @@ WHERE "containerQuantity" IS NULL;
 ALTER TABLE "PrescriptionLabel"
   ALTER COLUMN "containerQuantity" SET NOT NULL;
 
-ALTER TABLE "PrescriptionLabel"
-  DROP CONSTRAINT IF EXISTS "PrescriptionLabel_fillId_version_key";
+DROP INDEX IF EXISTS "PrescriptionLabel_fillId_version_key";
 
 CREATE UNIQUE INDEX "PrescriptionLabel_fillId_version_bottleNumber_key"
   ON "PrescriptionLabel"("fillId", "version", "bottleNumber");
