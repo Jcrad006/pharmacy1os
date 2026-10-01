@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ClinicalPanel } from "./ClinicalPanel";
 import {
+  createEmergencySupply,
   createFill,
+  createPartialFill,
+  completeEmergencySupplyFollowUp,
   getMedications,
   getPrescription,
   getPrescriptionAudit,
@@ -22,6 +25,7 @@ import type {
 } from "../types";
 import {
   activeFill,
+  canAuthorizeEmergencySupply,
   canEditPrescription,
   canProcess,
   canReadAudit,
@@ -120,6 +124,13 @@ export function PrescriptionDetail({
   const [scanExpiration, setScanExpiration] = useState("");
   const [quantity, setQuantity] = useState("");
   const [scheduledFor, setScheduledFor] = useState("");
+  const [partialQuantity, setPartialQuantity] = useState("");
+  const [completionScheduledFor, setCompletionScheduledFor] = useState("");
+  const [partialReason, setPartialReason] = useState("");
+  const [emergencyQuantity, setEmergencyQuantity] = useState("");
+  const [emergencyReason, setEmergencyReason] = useState("");
+  const [emergencyFollowUpDueAt, setEmergencyFollowUpDueAt] = useState("");
+  const [emergencyFollowUpNote, setEmergencyFollowUpNote] = useState("");
   const [editing, setEditing] = useState(false);
   const [editState, setEditState] = useState<EditState | null>(null);
 
@@ -284,6 +295,108 @@ export function PrescriptionDetail({
     }
   }
 
+  async function submitPartialFill(event: FormEvent) {
+    event.preventDefault();
+    if (!rx || !currentFill) return;
+
+    const dispenseQuantity = Number(partialQuantity);
+    if (
+      !Number.isFinite(dispenseQuantity) ||
+      dispenseQuantity <= 0 ||
+      !completionScheduledFor
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    onError(null);
+    try {
+      const result = await createPartialFill(devUser, currentFill.id, {
+        dispenseQuantity,
+        completionScheduledFor: new Date(
+          completionScheduledFor,
+        ).toISOString(),
+        reason: partialReason.trim() || undefined,
+      });
+      setPartialQuantity("");
+      setCompletionScheduledFor("");
+      setPartialReason("");
+      await onMutated(
+        `Partial fill recorded: ${String(result.partialFill.quantity)} now; ${String(result.completionFill.quantity)} scheduled for completion.`,
+      );
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to create partial/completion fill.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function submitEmergencySupply(event: FormEvent) {
+    event.preventDefault();
+    if (!rx) return;
+
+    const emergencyAmount = Number(emergencyQuantity);
+    if (
+      !Number.isFinite(emergencyAmount) ||
+      emergencyAmount <= 0 ||
+      !emergencyReason.trim() ||
+      !emergencyFollowUpDueAt
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    onError(null);
+    try {
+      await createEmergencySupply(devUser, rx.id, {
+        quantity: emergencyAmount,
+        reason: emergencyReason.trim(),
+        followUpDueAt: new Date(emergencyFollowUpDueAt).toISOString(),
+      });
+      setEmergencyQuantity("");
+      setEmergencyReason("");
+      setEmergencyFollowUpDueAt("");
+      await onMutated(
+        "Pharmacist-authorized emergency supply created and moved to Product Fill.",
+      );
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to authorize emergency supply.",
+      );
+      setLoading(false);
+    }
+  }
+
+  async function completeEmergencyFollowUp(fillId: string) {
+    if (!emergencyFollowUpNote.trim()) return;
+    setLoading(true);
+    onError(null);
+    try {
+      await completeEmergencySupplyFollowUp(
+        devUser,
+        fillId,
+        emergencyFollowUpNote.trim(),
+      );
+      setEmergencyFollowUpNote("");
+      await onMutated("Emergency-supply follow-up documented.");
+      await load();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to complete emergency-supply follow-up.",
+      );
+      setLoading(false);
+    }
+  }
+
   async function submitEdit(event: FormEvent) {
     event.preventDefault();
     if (!rx || !editState) return;
@@ -324,6 +437,7 @@ export function PrescriptionDetail({
 
   const processAllowed = canProcess(user);
   const verifyAllowed = canVerify(user);
+  const emergencyAllowed = canAuthorizeEmergencySupply(user);
   const sellAllowed = canSell(user);
   const editAllowed =
     canEditPrescription(user) &&
@@ -332,7 +446,14 @@ export function PrescriptionDetail({
   const refillBalance = remainingRefills(rx.refillsAllowed, rx.refillsUsed);
   const scheduledCanStart =
     currentFill?.status === "SCHEDULED" &&
-    (!currentFill.scheduledFor || new Date(currentFill.scheduledFor).getTime() <= Date.now());
+    (!currentFill.scheduledFor ||
+      new Date(currentFill.scheduledFor).getTime() <= Date.now());
+  const unresolvedEmergencyFollowUp = rx.fills.find(
+    (fill) =>
+      fill.kind === "EMERGENCY_SUPPLY" &&
+      fill.followUpDueAt &&
+      !fill.followUpCompletedAt,
+  );
 
   return (
     <div className="detail-stack">
@@ -482,17 +603,38 @@ export function PrescriptionDetail({
             </form>
           )}
 
-          {rx.status === "DUR_REVIEW" && currentFill?.status === "SCHEDULED" && (
-            <div className="scheduled-action">
-              <div>
-                <strong>Future fill #{currentFill.fillNumber}</strong>
-                <span>{currentFill.scheduledFor ? new Date(currentFill.scheduledFor).toLocaleString() : "Scheduled"}</span>
+          {(rx.status === "DUR_REVIEW" ||
+            (rx.status === "SOLD" && currentFill?.kind === "COMPLETION")) &&
+            currentFill?.status === "SCHEDULED" && (
+              <div className="scheduled-action continuity-scheduled-action">
+                <div>
+                  <strong>
+                    {currentFill.kind === "COMPLETION"
+                      ? `Completion fill #${currentFill.fillNumber} · part ${currentFill.partNumber}`
+                      : `Future fill #${currentFill.fillNumber}`}
+                  </strong>
+                  <span>
+                    {currentFill.kind === "COMPLETION"
+                      ? `${String(currentFill.quantity ?? "—")} remaining`
+                      : ""}
+                    {currentFill.scheduledFor
+                      ? ` · ${new Date(currentFill.scheduledFor).toLocaleString()}`
+                      : "Scheduled"}
+                  </span>
+                </div>
+                <button
+                  className="primary-button"
+                  disabled={!processAllowed || !scheduledCanStart || loading}
+                  onClick={() => void beginScheduledFill(currentFill.id)}
+                >
+                  {scheduledCanStart
+                    ? currentFill.kind === "COMPLETION"
+                      ? "Start completion fill"
+                      : "Start scheduled fill"
+                    : "Waiting for scheduled time"}
+                </button>
               </div>
-              <button className="primary-button" disabled={!processAllowed || !scheduledCanStart || loading} onClick={() => void beginScheduledFill(currentFill.id)}>
-                {scheduledCanStart ? "Start scheduled fill" : "Waiting for scheduled time"}
-              </button>
-            </div>
-          )}
+            )}
 
           {rx.status === "PRODUCT_FILL" && currentFill && (
             <div className="product-scan-workflow">
@@ -507,6 +649,80 @@ export function PrescriptionDetail({
                   Any active NDC cataloged under this exact drug is acceptable.
                 </small>
               </div>
+
+              {!currentFill.productVerifiedAt &&
+                currentFill.kind !== "EMERGENCY_SUPPLY" && (
+                  <details className="partial-fill-panel">
+                    <summary>Only part of this fill is available</summary>
+                    <form
+                      className="continuity-form"
+                      onSubmit={submitPartialFill}
+                    >
+                      <p className="catalog-help">
+                        Record the quantity dispensed today. The remainder will
+                        be scheduled as a linked completion of the same fill
+                        number and will not consume another refill.
+                      </p>
+                      <label>
+                        Dispense now
+                        <input
+                          type="number"
+                          min="0.001"
+                          step="0.001"
+                          max={
+                            currentFill.quantity !== null
+                              ? Number(currentFill.quantity) - 0.001
+                              : undefined
+                          }
+                          value={partialQuantity}
+                          onChange={(event) =>
+                            setPartialQuantity(event.target.value)
+                          }
+                          placeholder={`Less than ${String(currentFill.quantity ?? "fill quantity")}`}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Completion date/time
+                        <input
+                          type="datetime-local"
+                          value={completionScheduledFor}
+                          onChange={(event) =>
+                            setCompletionScheduledFor(event.target.value)
+                          }
+                          required
+                        />
+                      </label>
+                      <label className="wide">
+                        Reason / inventory note
+                        <input
+                          value={partialReason}
+                          onChange={(event) =>
+                            setPartialReason(event.target.value)
+                          }
+                          placeholder="Example: only 3 tablets in stock; remainder ordered for next business day"
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        className="secondary-button"
+                        disabled={
+                          loading ||
+                          !processAllowed ||
+                          !partialQuantity ||
+                          !completionScheduledFor ||
+                          !Number.isFinite(Number(partialQuantity)) ||
+                          Number(partialQuantity) <= 0 ||
+                          (currentFill.quantity !== null &&
+                            Number(partialQuantity) >=
+                              Number(currentFill.quantity))
+                        }
+                      >
+                        Create partial + completion
+                      </button>
+                    </form>
+                  </details>
+                )}
 
               {currentFill.productVerifiedAt ? (
                 <div className="scan-verified-card">
@@ -668,7 +884,120 @@ export function PrescriptionDetail({
             <button className="primary-button" disabled={!processAllowed || loading} onClick={() => void transition("DUR_REVIEW", "Refill review started.")}>Start refill review</button>
           )}
 
-          {rx.status === "SOLD" && refillBalance === 0 && <p className="permission-note">No refills remain on this prescription.</p>}
+          {rx.status === "SOLD" &&
+            refillBalance === 0 &&
+            currentFill?.kind !== "COMPLETION" && (
+              <div className="continuity-stack">
+                <p className="permission-note">
+                  No authorized refills remain on this prescription.
+                </p>
+
+                {emergencyAllowed && !currentFill && (
+                  <details className="emergency-supply-panel">
+                    <summary>
+                      Pharmacist: authorize emergency supply
+                    </summary>
+                    <form
+                      className="continuity-form"
+                      onSubmit={submitEmergencySupply}
+                    >
+                      <p className="catalog-help">
+                        Use only when pharmacist professional judgment and
+                        applicable law/policy permit continuation therapy
+                        without an authorized refill. This creates a separately
+                        audited dispense and does not manufacture a refill.
+                      </p>
+                      <label>
+                        Emergency quantity
+                        <input
+                          type="number"
+                          min="0.001"
+                          step="0.001"
+                          value={emergencyQuantity}
+                          onChange={(event) =>
+                            setEmergencyQuantity(event.target.value)
+                          }
+                          required
+                        />
+                      </label>
+                      <label>
+                        Follow-up deadline
+                        <input
+                          type="datetime-local"
+                          value={emergencyFollowUpDueAt}
+                          onChange={(event) =>
+                            setEmergencyFollowUpDueAt(event.target.value)
+                          }
+                          required
+                        />
+                      </label>
+                      <label className="wide">
+                        Required pharmacist justification
+                        <textarea
+                          rows={3}
+                          value={emergencyReason}
+                          onChange={(event) =>
+                            setEmergencyReason(event.target.value)
+                          }
+                          placeholder="Document why interruption of therapy poses a clinically significant risk and the attempted/needed prescriber follow-up."
+                          required
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        className="danger-button"
+                        disabled={
+                          loading ||
+                          !emergencyReason.trim() ||
+                          !emergencyQuantity ||
+                          !emergencyFollowUpDueAt ||
+                          !Number.isFinite(Number(emergencyQuantity)) ||
+                          Number(emergencyQuantity) <= 0
+                        }
+                      >
+                        Authorize emergency supply
+                      </button>
+                    </form>
+                  </details>
+                )}
+              </div>
+            )}
+
+          {rx.status === "SOLD" &&
+            unresolvedEmergencyFollowUp &&
+            emergencyAllowed && (
+              <div className="emergency-follow-up-panel">
+                <strong>Emergency-supply follow-up remains open</strong>
+                <span>
+                  Due{" "}
+                  {unresolvedEmergencyFollowUp.followUpDueAt
+                    ? new Date(
+                        unresolvedEmergencyFollowUp.followUpDueAt,
+                      ).toLocaleString()
+                    : "—"}
+                </span>
+                <textarea
+                  rows={3}
+                  value={emergencyFollowUpNote}
+                  onChange={(event) =>
+                    setEmergencyFollowUpNote(event.target.value)
+                  }
+                  placeholder="Document prescriber notification/contact and outcome."
+                />
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={loading || !emergencyFollowUpNote.trim()}
+                  onClick={() =>
+                    void completeEmergencyFollowUp(
+                      unresolvedEmergencyFollowUp.id,
+                    )
+                  }
+                >
+                  Complete follow-up
+                </button>
+              </div>
+            )}
 
           {rx.status === "ON_HOLD" && rx.heldFromStatus && (
             <button className="primary-button" disabled={!processAllowed || loading} onClick={() => void transition(rx.heldFromStatus!, `Prescription resumed to ${statusLabels[rx.heldFromStatus!] }.`)}>Resume → {statusLabels[rx.heldFromStatus]}</button>
@@ -686,11 +1015,20 @@ export function PrescriptionDetail({
         </div>
         <div className="table-wrap">
           <table className="compact-table">
-            <thead><tr><th>Fill</th><th>Status</th><th>Quantity</th><th>NDC / Lot / Exp</th><th>Scheduled</th><th>Filled</th><th>Sold</th></tr></thead>
+            <thead><tr><th>Fill</th><th>Type</th><th>Status</th><th>Quantity</th><th>NDC / Lot / Exp</th><th>Scheduled / follow-up</th><th>Filled</th><th>Sold</th></tr></thead>
             <tbody>
               {rx.fills.map((fill) => (
                 <tr key={fill.id}>
-                  <td>#{fill.fillNumber}</td>
+                  <td>
+                    #{fill.fillNumber}
+                    {fill.partNumber > 1 ? ` · part ${fill.partNumber}` : ""}
+                  </td>
+                  <td>
+                    {fill.kind.replaceAll("_", " ")}
+                    {!fill.consumesRefill && (
+                      <span className="cell-subtext">No refill consumed</span>
+                    )}
+                  </td>
                   <td>{fill.status.replaceAll("_", " ")}</td>
                   <td>{String(fill.quantity ?? "—")}</td>
                   <td>
@@ -703,12 +1041,23 @@ export function PrescriptionDetail({
                       </span>
                     ) : "—"}
                   </td>
-                  <td>{fill.scheduledFor ? new Date(fill.scheduledFor).toLocaleString() : "—"}</td>
+                  <td>
+                    {fill.scheduledFor
+                      ? new Date(fill.scheduledFor).toLocaleString()
+                      : "—"}
+                    {fill.kind === "EMERGENCY_SUPPLY" && fill.followUpDueAt && (
+                      <span className="cell-subtext">
+                        Follow-up due{" "}
+                        {new Date(fill.followUpDueAt).toLocaleString()}
+                        {fill.followUpCompletedAt ? " · completed" : ""}
+                      </span>
+                    )}
+                  </td>
                   <td>{fill.filledAt ? new Date(fill.filledAt).toLocaleString() : "—"}</td>
                   <td>{fill.soldAt ? new Date(fill.soldAt).toLocaleString() : "—"}</td>
                 </tr>
               ))}
-              {rx.fills.length === 0 && <tr><td colSpan={6} className="empty-state">No fills created yet.</td></tr>}
+              {rx.fills.length === 0 && <tr><td colSpan={8} className="empty-state">No fills created yet.</td></tr>}
             </tbody>
           </table>
         </div>
