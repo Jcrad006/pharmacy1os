@@ -914,3 +914,68 @@ kbd {
     flex-direction: column;
   }
 }
+
+.product-scan-workflow {
+  display: grid;
+  gap: 14px;
+}
+.scan-expected-drug,
+.scan-verified-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #dce6e1;
+  border-radius: 10px;
+  padding: 13px 14px;
+  background: #f8fbf9;
+}
+.scan-expected-drug span,
+.scan-expected-drug small,
+.scan-verified-card span {
+  color: #66756e;
+  font-size: 12px;
+}
+.scan-expected-drug strong {
+  color: #173c2f;
+  font-size: 16px;
+}
+.scan-verified-card {
+  border-color: #a9d0bb;
+  background: #eef8f2;
+}
+.scan-verified-card strong {
+  color: #205f3e;
+}
+.product-scan-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 180px auto;
+  gap: 12px;
+  align-items: end;
+}
+.product-scan-form label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+.product-scan-form input {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+}
+.fill-product-trace {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+@media (max-width: 950px) {
+  .product-scan-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 650px) {
+  .product-scan-form {
+    grid-template-columns: 1fr;
+  }
+}

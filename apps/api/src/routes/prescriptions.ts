@@ -21,6 +21,7 @@ import {
 type CreatePrescriptionBody = {
   patientId?: string;
   prescriberId?: string;
+  medicationId?: string;
   rxNumber?: string;
   medicationName?: string;
   strength?: string;
@@ -36,6 +37,7 @@ type CreatePrescriptionBody = {
 
 type UpdatePrescriptionBody = {
   prescriberId?: string;
+  medicationId?: string;
   medicationName?: string;
   strength?: string | null;
   dosageForm?: string | null;
@@ -55,6 +57,12 @@ type TransitionBody = {
 type CreateFillBody = {
   scheduledFor?: string;
   quantity?: number;
+};
+
+type ScanProductBody = {
+  ndc?: string;
+  lotNumber?: string;
+  expirationDate?: string;
 };
 
 const validStatuses = new Set<PrescriptionStatus>([
@@ -79,6 +87,7 @@ const editableStatuses = new Set<PrescriptionStatus>([
 
 const prescriptionInclude = {
   patient: true,
+  medication: true,
   prescriber: {
     include: {
       identifiers: {
@@ -92,7 +101,14 @@ const prescriptionInclude = {
       },
     },
   },
-  fills: { orderBy: { fillNumber: "desc" as const } },
+  fills: {
+    include: {
+      product: { include: { manufacturer: true } },
+      productLot: true,
+      productExpiration: true,
+    },
+    orderBy: { fillNumber: "desc" as const },
+  },
 };
 
 function presentPrescription<
@@ -119,6 +135,10 @@ function activeFill(
     id: string;
     fillNumber: number;
     status: FillStatus;
+    productId?: string | null;
+    productLotId?: string | null;
+    productExpirationId?: string | null;
+    productVerifiedAt?: Date | null;
   }>,
 ) {
   return fills.find((fill) =>
@@ -144,6 +164,7 @@ function auditValue(value: unknown): string | number | boolean | null {
 
 function prescriptionSnapshot(rx: {
   prescriberId: string;
+  medicationId: string | null;
   medicationName: string;
   strength: string | null;
   dosageForm: string | null;
@@ -157,6 +178,7 @@ function prescriptionSnapshot(rx: {
 }) {
   return {
     prescriberId: auditValue(rx.prescriberId),
+    medicationId: auditValue(rx.medicationId),
     medicationName: auditValue(rx.medicationName),
     strength: auditValue(rx.strength),
     dosageForm: auditValue(rx.dosageForm),
@@ -357,11 +379,11 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (
         !body.patientId ||
         !body.prescriberId ||
-        !body.medicationName?.trim() ||
+        (!body.medicationId && !body.medicationName?.trim()) ||
         !body.sig?.trim()
       ) {
         return reply.code(400).send({
-          error: "patientId, prescriberId, medicationName, and sig are required.",
+          error: "patientId, prescriberId, a medication selection, and sig are required.",
         });
       }
 
@@ -377,14 +399,23 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid date value." });
       }
 
-      const [patient, prescriber] = await Promise.all([
+      const [patient, prescriber, selectedMedication] = await Promise.all([
         db.patient.findFirst({ where: { id: body.patientId, siteId: actor.siteId } }),
         db.prescriber.findFirst({ where: { id: body.prescriberId, siteId: actor.siteId } }),
+        body.medicationId
+          ? db.medication.findUnique({ where: { id: body.medicationId } })
+          : Promise.resolve(null),
       ]);
 
       if (!patient || !prescriber) {
         return reply.code(400).send({
           error: "Patient or prescriber does not belong to this pharmacy site.",
+        });
+      }
+
+      if (body.medicationId && (!selectedMedication || !selectedMedication.active)) {
+        return reply.code(400).send({
+          error: "Selected drug does not exist or is inactive.",
         });
       }
 
@@ -394,10 +425,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             siteId: actor.siteId,
             patientId: body.patientId!,
             prescriberId: body.prescriberId!,
+            medicationId: selectedMedication?.id,
             rxNumber: body.rxNumber?.trim() || undefined,
-            medicationName: body.medicationName!.trim(),
-            strength: body.strength?.trim() || undefined,
-            dosageForm: body.dosageForm?.trim() || undefined,
+            medicationName:
+              selectedMedication?.genericName ?? body.medicationName!.trim(),
+            strength:
+              selectedMedication?.strength ?? (body.strength?.trim() || undefined),
+            dosageForm:
+              selectedMedication?.dosageForm ?? (body.dosageForm?.trim() || undefined),
             sig: body.sig!.trim(),
             quantityWritten: body.quantityWritten,
             refillsAllowed: Math.max(0, body.refillsAllowed ?? 0),
@@ -420,7 +455,10 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           entityType: "Prescription",
           entityId: created.id,
           requestId: request.id,
-          metadata: { rxNumber: created.rxNumber ?? null },
+          metadata: {
+            rxNumber: created.rxNumber ?? null,
+            medicationId: created.medicationId ?? null,
+          },
         });
 
         return created;
@@ -467,6 +505,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       const suppliedFields = Object.keys(body).filter((key) =>
         [
           "prescriberId",
+          "medicationId",
           "medicationName",
           "strength",
           "dosageForm",
@@ -521,6 +560,32 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      let selectedMedicationForEdit: {
+        id: string;
+        genericName: string;
+        strength: string;
+        dosageForm: string;
+        active: boolean;
+      } | null = null;
+
+      if (body.medicationId !== undefined) {
+        selectedMedicationForEdit = await db.medication.findUnique({
+          where: { id: body.medicationId },
+          select: {
+            id: true,
+            genericName: true,
+            strength: true,
+            dosageForm: true,
+            active: true,
+          },
+        });
+        if (!selectedMedicationForEdit || !selectedMedicationForEdit.active) {
+          return reply.code(400).send({
+            error: "Selected drug does not exist or is inactive.",
+          });
+        }
+      }
+
       if (body.prescriberId !== undefined) {
         const prescriber = await db.prescriber.findFirst({
           where: { id: body.prescriberId, siteId: actor.siteId },
@@ -551,7 +616,12 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (body.prescriberId !== undefined) {
         data.prescriber = { connect: { id: body.prescriberId } };
       }
-      if (body.medicationName !== undefined) data.medicationName = body.medicationName.trim();
+      if (selectedMedicationForEdit) {
+        data.medication = { connect: { id: selectedMedicationForEdit.id } };
+        data.medicationName = selectedMedicationForEdit.genericName;
+        data.strength = selectedMedicationForEdit.strength;
+        data.dosageForm = selectedMedicationForEdit.dosageForm;
+      } else if (body.medicationName !== undefined) data.medicationName = body.medicationName.trim();
       if (body.strength !== undefined) data.strength = body.strength?.trim() || null;
       if (body.dosageForm !== undefined) data.dosageForm = body.dosageForm?.trim() || null;
       if (body.sig !== undefined) data.sig = body.sig.trim();
@@ -705,6 +775,22 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       ) {
         return reply.code(409).send({
           error: "An in-progress fill is required before pharmacist review.",
+        });
+      }
+
+      if (
+        current.status === "PRODUCT_FILL" &&
+        body.status === "PHARMACIST_REVIEW" &&
+        current.medicationId &&
+        (!currentActiveFill?.productId ||
+          !currentActiveFill.productLotId ||
+          !currentActiveFill.productExpirationId ||
+          !currentActiveFill.productVerifiedAt)
+      ) {
+        return reply.code(409).send({
+          error:
+            "A verified NDC, lot, and expiration scan is required before pharmacist review.",
+          code: "PRODUCT_SCAN_REQUIRED",
         });
       }
 
@@ -892,6 +978,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
               scheduledFor: scheduledFor instanceof Date ? scheduledFor : null,
               quantity: body.quantity ?? prescription.quantityWritten ?? undefined,
               status: isFuture ? "SCHEDULED" : "IN_PROGRESS",
+              productId: null,
+              productLotId: null,
+              productExpirationId: null,
+              scannedNdc: null,
+              scannedLotNumber: null,
+              scannedExpiration: null,
+              productVerifiedAt: null,
               filledAt: null,
               soldAt: null,
             },
@@ -973,6 +1066,194 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         fill: result.fill,
         prescription: presentPrescription(result.prescription),
       });
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/fills/:id/scan-product", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "prescription:process");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as ScanProductBody;
+
+      const ndcSearch = (body.ndc ?? "").replace(/\D/g, "");
+      const lotNumber = body.lotNumber?.trim();
+      const lotNumberSearch = (lotNumber ?? "")
+        .replace(/[^A-Za-z0-9]/g, "")
+        .toUpperCase();
+      const scannedExpiration = parseDate(body.expirationDate);
+
+      if (!ndcSearch || !lotNumberSearch || !(scannedExpiration instanceof Date)) {
+        return reply.code(400).send({
+          error: "NDC, lot number, and expiration date are required from the scan.",
+        });
+      }
+
+      const fill = await db.prescriptionFill.findUnique({
+        where: { id },
+        include: {
+          prescription: { include: { medication: true } },
+        },
+      });
+
+      if (!fill || fill.prescription.siteId !== actor.siteId) {
+        return reply.code(404).send({ error: "Fill not found." });
+      }
+
+      if (
+        fill.status !== "IN_PROGRESS" ||
+        fill.prescription.status !== "PRODUCT_FILL"
+      ) {
+        return reply.code(409).send({
+          error: "Product scanning is only allowed during an in-progress Product Fill.",
+        });
+      }
+
+      if (!fill.prescription.medicationId || !fill.prescription.medication) {
+        return reply.code(409).send({
+          error:
+            "This legacy prescription has no catalog drug selection. Select a drug before product verification.",
+          code: "DRUG_SELECTION_REQUIRED",
+        });
+      }
+
+      const product = await db.product.findUnique({
+        where: { ndcSearch },
+        include: {
+          manufacturer: true,
+          medication: true,
+        },
+      });
+
+      if (!product || !product.active) {
+        return reply.code(409).send({
+          error: "The scanned NDC is not an active catalog product.",
+          code: "UNKNOWN_NDC",
+        });
+      }
+
+      if (product.medicationId !== fill.prescription.medicationId) {
+        return reply.code(409).send({
+          error:
+            "The scanned NDC belongs to a different drug than the drug selected during Data Entry.",
+          code: "NDC_DRUG_MISMATCH",
+          expectedDrug: {
+            id: fill.prescription.medication.id,
+            genericName: fill.prescription.medication.genericName,
+            strength: fill.prescription.medication.strength,
+            dosageForm: fill.prescription.medication.dosageForm,
+          },
+          scannedDrug: {
+            id: product.medication.id,
+            genericName: product.medication.genericName,
+            strength: product.medication.strength,
+            dosageForm: product.medication.dosageForm,
+          },
+        });
+      }
+
+      const [lot, expiration] = await Promise.all([
+        db.productLot.findFirst({
+          where: {
+            siteId: actor.siteId,
+            productId: product.id,
+            lotNumberSearch,
+            active: true,
+          },
+        }),
+        db.productExpiration.findFirst({
+          where: {
+            siteId: actor.siteId,
+            productId: product.id,
+            expirationDate: scannedExpiration,
+            active: true,
+          },
+        }),
+      ]);
+
+      if (!lot) {
+        return reply.code(409).send({
+          error: "The scanned lot is not cataloged under this NDC at this pharmacy site.",
+          code: "LOT_NDC_MISMATCH",
+        });
+      }
+
+      if (!expiration) {
+        return reply.code(409).send({
+          error:
+            "The scanned expiration date is not cataloged under this NDC at this pharmacy site.",
+          code: "EXPIRATION_NDC_MISMATCH",
+        });
+      }
+
+      const expirationEnd = new Date(expiration.expirationDate);
+      expirationEnd.setUTCHours(23, 59, 59, 999);
+      if (expirationEnd.getTime() < Date.now()) {
+        return reply.code(409).send({
+          error: "The scanned product is expired.",
+          code: "PRODUCT_EXPIRED",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const verifiedAt = new Date();
+        const verified = await tx.prescriptionFill.update({
+          where: { id },
+          data: {
+            productId: product.id,
+            productLotId: lot.id,
+            productExpirationId: expiration.id,
+            scannedNdc: product.ndc,
+            scannedLotNumber: lot.lotNumber,
+            scannedExpiration: expiration.expirationDate,
+            productVerifiedAt: verifiedAt,
+          },
+          include: {
+            product: { include: { manufacturer: true } },
+            productLot: true,
+            productExpiration: true,
+          },
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "FILL_PRODUCT_SCAN_VERIFIED",
+          entityType: "PrescriptionFill",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            prescriptionId: fill.prescriptionId,
+            medicationId: fill.prescription.medicationId,
+            productId: product.id,
+            ndc: product.ndc,
+            lotNumber: lot.lotNumber,
+            expirationDate: expiration.expirationDate.toISOString(),
+            manufacturerName: product.manufacturer.name,
+          },
+        });
+
+        return verified;
+      });
+
+      return {
+        fill: result,
+        verifiedProduct: {
+          drug: product.medication,
+          product: {
+            id: product.id,
+            ndc: product.ndc,
+            descriptor: product.descriptor,
+            manufacturer: product.manufacturer,
+          },
+          lot,
+          expiration,
+        },
+      };
     } catch (error) {
       if (error instanceof AccessError) {
         return reply.code(error.statusCode).send({ error: error.message });

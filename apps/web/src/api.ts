@@ -10,6 +10,7 @@ import type {
   Patient,
   Prescriber,
   Medication,
+  Manufacturer,
   Product,
   ProductLot,
   ProductExpiration,
@@ -220,6 +221,7 @@ export async function updatePrescription(
   id: string,
   input: {
     prescriberId?: string;
+    medicationId?: string;
     medicationName?: string;
     strength?: string | null;
     dosageForm?: string | null;
@@ -247,8 +249,9 @@ export async function createPrescription(
   input: {
     patientId: string;
     prescriberId: string;
+    medicationId?: string;
     rxNumber?: string;
-    medicationName: string;
+    medicationName?: string;
     strength?: string;
     dosageForm?: string;
     sig: string;
@@ -274,6 +277,31 @@ export async function createFill(
     fill: PrescriptionFill;
     prescription: PrescriptionQueueItem;
   }>(`/api/prescriptions/${prescriptionId}/fills`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function scanFillProduct(
+  devUser: string,
+  fillId: string,
+  input: { ndc: string; lotNumber: string; expirationDate: string },
+) {
+  return request<{
+    fill: PrescriptionFill;
+    verifiedProduct: {
+      drug: Medication;
+      product: {
+        id: string;
+        ndc: string;
+        descriptor: string;
+        manufacturer: Manufacturer;
+      };
+      lot: ProductLot;
+      expiration: ProductExpiration;
+    };
+  }>(`/api/fills/${fillId}/scan-product`, {
     method: "POST",
     devUser,
     body: JSON.stringify(input),

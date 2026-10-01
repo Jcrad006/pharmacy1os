@@ -203,6 +203,7 @@ model Medication {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   products      Product[]
+  prescriptions Prescription[]
 
   @@index([genericName, strength, dosageForm])
   @@index([brandName])
@@ -240,6 +241,7 @@ model Product {
   updatedAt           DateTime     @updatedAt
   lots                ProductLot[]
   expirations         ProductExpiration[]
+  prescriptionFills   PrescriptionFill[]
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
@@ -262,6 +264,8 @@ model ProductLot {
 
   @@unique([siteId, productId, lotNumberSearch])
   @@index([productId, lotNumberSearch])
+  prescriptionFills PrescriptionFill[]
+
   @@index([siteId, active])
 }
 
@@ -278,6 +282,8 @@ model ProductExpiration {
 
   @@unique([siteId, productId, expirationDate])
   @@index([siteId, expirationDate])
+  prescriptionFills PrescriptionFill[]
+
   @@index([productId, expirationDate])
 }
 
@@ -289,6 +295,8 @@ model Prescription {
   patient                  Patient             @relation(fields: [patientId], references: [id])
   prescriberId             String
   prescriber               Prescriber          @relation(fields: [prescriberId], references: [id])
+  medicationId             String?
+  medication               Medication?         @relation(fields: [medicationId], references: [id], onDelete: Restrict)
   rxNumber                 String?
   medicationName           String
   strength                 String?
@@ -312,23 +320,37 @@ model Prescription {
   @@unique([siteId, rxNumber])
   @@index([siteId, status])
   @@index([patientId])
+  @@index([medicationId])
 }
 
 model PrescriptionFill {
-  id             String       @id @default(uuid())
-  prescriptionId String
-  prescription   Prescription @relation(fields: [prescriptionId], references: [id])
-  fillNumber     Int
-  scheduledFor   DateTime?
-  quantity       Decimal?     @db.Decimal(10, 3)
-  status         FillStatus   @default(SCHEDULED)
-  filledAt       DateTime?
-  soldAt         DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                  String             @id @default(uuid())
+  prescriptionId      String
+  prescription        Prescription       @relation(fields: [prescriptionId], references: [id])
+  fillNumber          Int
+  scheduledFor        DateTime?
+  quantity            Decimal?           @db.Decimal(10, 3)
+  status              FillStatus         @default(SCHEDULED)
+  productId           String?
+  product             Product?           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productLotId        String?
+  productLot          ProductLot?        @relation(fields: [productLotId], references: [id], onDelete: Restrict)
+  productExpirationId String?
+  productExpiration   ProductExpiration? @relation(fields: [productExpirationId], references: [id], onDelete: Restrict)
+  scannedNdc          String?
+  scannedLotNumber    String?
+  scannedExpiration   DateTime?
+  productVerifiedAt   DateTime?
+  filledAt            DateTime?
+  soldAt              DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 
   @@unique([prescriptionId, fillNumber])
   @@index([scheduledFor, status])
+  @@index([productId])
+  @@index([productLotId])
+  @@index([productExpirationId])
 }
 
 model DurIssue {
