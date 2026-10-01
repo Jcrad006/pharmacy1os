@@ -4,7 +4,7 @@ import {
   type InventoryExceptionType,
   type InventoryStockState,
 } from "@prisma/client";
-import { InventoryError } from "./inventory.js";
+import { InventoryError } from "./inventoryError.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
