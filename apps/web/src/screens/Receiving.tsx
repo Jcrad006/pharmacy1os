@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   assignReceivingBarcode,
   correctReceivingBarcode,
+  getInventoryLocations,
   getMedications,
   receiveInventoryStock,
   scanReceivingBarcode,
@@ -14,6 +15,7 @@ import type {
   ProductBarcode,
   ProductExpiration,
   ProductLot,
+  InventoryLocation,
 } from "../types";
 import { canCorrectInventory, canWriteInventory } from "../workflow";
 
@@ -52,6 +54,12 @@ export function Receiving({
   const [receiveQuantity, setReceiveQuantity] = useState("");
   const [receiveSource, setReceiveSource] = useState("");
   const [receiveReference, setReceiveReference] = useState("");
+  const [receiveLocationId, setReceiveLocationId] = useState("");
+  const [receiveUnitCost, setReceiveUnitCost] = useState("");
+  const [receiveIdempotencyKey, setReceiveIdempotencyKey] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [receiptMessage, setReceiptMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const writable = canWriteInventory(user);
@@ -59,13 +67,21 @@ export function Receiving({
 
   useEffect(() => {
     if (!devUser) return;
-    void getMedications(devUser)
-      .then((items) => setMedications(items.filter((item) => item.active)))
+    void Promise.all([getMedications(devUser), getInventoryLocations(devUser)])
+      .then(([items, nextLocations]) => {
+        setMedications(items.filter((item) => item.active));
+        setLocations(nextLocations.filter((location) => location.active));
+        const preferred =
+          nextLocations.find((location) => location.type === "RECEIVING") ??
+          nextLocations.find((location) => location.type === "DISPENSING") ??
+          nextLocations[0];
+        if (preferred) setReceiveLocationId(preferred.id);
+      })
       .catch((error) =>
         onError(
           error instanceof Error
             ? error.message
-            : "Unable to load Drug/Product catalog.",
+            : "Unable to load receiving configuration.",
         ),
       );
   }, [devUser]);
@@ -155,6 +171,9 @@ export function Receiving({
         quantity,
         source: receiveSource.trim() || undefined,
         reference: receiveReference.trim() || undefined,
+        locationId: receiveLocationId || undefined,
+        unitCost: receiveUnitCost ? Number(receiveUnitCost) : undefined,
+        idempotencyKey: receiveIdempotencyKey,
       });
 
       setReceiptMessage(
@@ -162,6 +181,8 @@ export function Receiving({
       );
       setReceiveQuantity("");
       setReceiveReference("");
+      setReceiveUnitCost("");
+      setReceiveIdempotencyKey(crypto.randomUUID());
     } catch (error) {
       onError(
         error instanceof Error ? error.message : "Unable to receive inventory.",
@@ -226,6 +247,8 @@ export function Receiving({
     setReceiveQuantity("");
     setReceiveSource("");
     setReceiveReference("");
+    setReceiveUnitCost("");
+    setReceiveIdempotencyKey(crypto.randomUUID());
     setReceiptMessage(null);
     onError(null);
   }
@@ -363,6 +386,33 @@ export function Receiving({
                       onChange={(event) => setReceiveReference(event.target.value)}
                       disabled={!writable || busy}
                       placeholder="Optional"
+                    />
+                  </label>
+                  <label>
+                    Physical location
+                    <select
+                      value={receiveLocationId}
+                      onChange={(event) => setReceiveLocationId(event.target.value)}
+                      disabled={!writable || busy}
+                    >
+                      <option value="">Automatic receiving location</option>
+                      {locations.map((location) => (
+                        <option key={location.id} value={location.id}>
+                          {location.code} · {location.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Unit acquisition cost
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={receiveUnitCost}
+                      onChange={(event) => setReceiveUnitCost(event.target.value)}
+                      disabled={!writable || busy}
+                      placeholder="Optional per-unit cost"
                     />
                   </label>
                 </div>
