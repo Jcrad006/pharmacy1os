@@ -600,6 +600,28 @@ export function PrescriptionDetail({
     prescriptionCanBeEdited(rx.status) &&
     !currentFill;
   const refillBalance = remainingRefills(rx.refillsAllowed, rx.refillsUsed);
+  const sourceReservedQuantity = (currentFill?.productSources ?? []).reduce(
+    (sum, source) => sum + Number(source.quantity),
+    0,
+  );
+  const sourceRequiredQuantity = Number(currentFill?.quantity ?? 0);
+  const sourceRemainingQuantity = Math.max(
+    0,
+    sourceRequiredQuantity - sourceReservedQuantity,
+  );
+  const sourceProductIds = Array.from(
+    new Set((currentFill?.productSources ?? []).map((source) => source.productId)),
+  );
+  const complianceAllowed =
+    user?.role === "ADMIN" || user?.role === "PHARMACIST";
+  const medicationManufacturers = Array.from(
+    new Map(
+      (rx.medication?.products ?? []).map((product) => [
+        product.manufacturer.id,
+        product.manufacturer,
+      ]),
+    ).values(),
+  );
   const scheduledCanStart =
     currentFill?.status === "SCHEDULED" &&
     (!currentFill.scheduledFor ||
@@ -802,7 +824,9 @@ export function PrescriptionDetail({
                     : `${rx.medicationName} ${rx.strength ?? ""} ${rx.dosageForm ?? ""}`}
                 </strong>
                 <small>
-                  Any active NDC cataloged under this exact drug is acceptable.
+                  {rx.productSelectionDirective === "DISPENSE_AS_WRITTEN"
+                    ? "Product selection prohibited: only the prescribed product/NDC may be used."
+                    : "Up to four eligible physical NDC / lot / expiration sources may satisfy this dispense part."}
                 </small>
               </div>
 
@@ -943,89 +967,379 @@ export function PrescriptionDetail({
                   </details>
                 )}
 
-              {currentFill.productVerifiedAt ? (
-                <div className="scan-verified-card">
-                  <strong>✓ Product scan verified</strong>
+              <div className="split-source-workflow">
+                <div className="split-source-summary">
                   <span>
-                    NDC {currentFill.scannedNdc} · Lot {currentFill.scannedLotNumber} · Exp{" "}
-                    {currentFill.scannedExpiration
-                      ? new Date(currentFill.scannedExpiration).toLocaleDateString()
-                      : "—"}
+                    Physical dispense
+                    <strong>{String(currentFill.quantity ?? "—")}</strong>
                   </span>
                   <span>
-                    {currentFill.product?.manufacturer.name ?? ""}{" "}
-                    {currentFill.product?.descriptor ?? ""}
+                    Reserved from sources
+                    <strong>{sourceReservedQuantity}</strong>
+                  </span>
+                  <span>
+                    Remaining
+                    <strong>{sourceRemainingQuantity}</strong>
+                  </span>
+                  <span>
+                    Sources
+                    <strong>{currentFill.productSources.length} / 4</strong>
                   </span>
                 </div>
-              ) : (
-                <div className="product-scan-stack">
-                  <form className="raw-barcode-form" onSubmit={verifyRawBarcode}>
-                    <label>
-                      Scan stock-package barcode
-                      <input
-                        autoFocus
-                        value={scanBarcode}
-                        onChange={(event) => setScanBarcode(event.target.value)}
-                        placeholder="Scan GS1 / registered barcode"
-                        required
-                      />
-                    </label>
-                    <button
-                      className="primary-button"
-                      type="submit"
-                      disabled={!processAllowed || loading || !scanBarcode.trim()}
-                    >
-                      Verify barcode
-                    </button>
-                  </form>
 
-                  <details className="manual-scan-fallback">
-                    <summary>Development fallback: enter NDC / lot / expiration manually</summary>
-                    <form className="product-scan-form" onSubmit={verifyProductScan}>
-                      <label>
-                        NDC
-                        <input
-                          value={scanNdc}
-                          onChange={(event) => setScanNdc(event.target.value)}
-                          placeholder="NDC from stock package"
-                          required
-                        />
-                      </label>
-                      <label>
-                        Lot
-                        <input
-                          value={scanLot}
-                          onChange={(event) => setScanLot(event.target.value)}
-                          placeholder="Lot number"
-                          required
-                        />
-                      </label>
-                      <label>
-                        Expiration
-                        <input
-                          type="date"
-                          value={scanExpiration}
-                          onChange={(event) => setScanExpiration(event.target.value)}
-                          required
-                        />
-                      </label>
-                      <button
-                        className="secondary-button"
-                        type="submit"
-                        disabled={
-                          !processAllowed ||
-                          loading ||
-                          !scanNdc ||
-                          !scanLot ||
-                          !scanExpiration
-                        }
+                {currentFill.productSources.length > 0 && (
+                  <div className="fill-source-list">
+                    {currentFill.productSources.map((source) => (
+                      <div className="fill-source-row" key={source.id}>
+                        <span className="source-sequence">#{source.sequence}</span>
+                        <div>
+                          <strong>
+                            {source.manufacturerSnapshot} · NDC{" "}
+                            {source.ndcSnapshot}
+                          </strong>
+                          <span>
+                            Lot {source.lotNumberSnapshot} · Exp{" "}
+                            {new Date(
+                              source.expirationSnapshot,
+                            ).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <strong>Qty {String(source.quantity)}</strong>
+                        {!currentFill.inventoryCommittedAt &&
+                          processAllowed && (
+                            <button
+                              type="button"
+                              className="secondary-button table-action"
+                              disabled={loading}
+                              onClick={() =>
+                                void removeProductSource(source.id)
+                              }
+                            >
+                              Remove
+                            </button>
+                          )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {sourceRemainingQuantity > 0 &&
+                  currentFill.productSources.length < 4 && (
+                    <div className="product-scan-stack">
+                      <div className="source-quantity-control">
+                        <label>
+                          Quantity from next source
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="0.001"
+                            max={sourceRemainingQuantity}
+                            value={scanSourceQuantity}
+                            onChange={(event) =>
+                              setScanSourceQuantity(event.target.value)
+                            }
+                            placeholder={String(sourceRemainingQuantity)}
+                          />
+                        </label>
+                        <small>
+                          Leave blank to use the entire remaining quantity.
+                        </small>
+                      </div>
+
+                      <form
+                        className="raw-barcode-form"
+                        onSubmit={verifyRawBarcode}
                       >
-                        Verify manual fields
-                      </button>
-                    </form>
-                  </details>
+                        <label>
+                          Scan stock-package barcode
+                          <input
+                            autoFocus
+                            value={scanBarcode}
+                            onChange={(event) =>
+                              setScanBarcode(event.target.value)
+                            }
+                            placeholder="Scan GS1 / registered barcode"
+                            required
+                          />
+                        </label>
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={
+                            !processAllowed ||
+                            loading ||
+                            !scanBarcode.trim()
+                          }
+                        >
+                          Add scanned source
+                        </button>
+                      </form>
+
+                      <details className="manual-scan-fallback">
+                        <summary>
+                          Development fallback: enter NDC / lot / expiration
+                          manually
+                        </summary>
+                        <form
+                          className="product-scan-form"
+                          onSubmit={verifyProductScan}
+                        >
+                          <label>
+                            NDC
+                            <input
+                              value={scanNdc}
+                              onChange={(event) =>
+                                setScanNdc(event.target.value)
+                              }
+                              placeholder="NDC from stock package"
+                              required
+                            />
+                          </label>
+                          <label>
+                            Lot
+                            <input
+                              value={scanLot}
+                              onChange={(event) =>
+                                setScanLot(event.target.value)
+                              }
+                              placeholder="Lot number"
+                              required
+                            />
+                          </label>
+                          <label>
+                            Expiration
+                            <input
+                              type="date"
+                              value={scanExpiration}
+                              onChange={(event) =>
+                                setScanExpiration(event.target.value)
+                              }
+                              required
+                            />
+                          </label>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={
+                              !processAllowed ||
+                              loading ||
+                              !scanNdc ||
+                              !scanLot ||
+                              !scanExpiration
+                            }
+                          >
+                            Add manual source
+                          </button>
+                        </form>
+                      </details>
+                    </div>
+                  )}
+
+                {sourceRemainingQuantity > 0 &&
+                  currentFill.productSources.length >= 4 && (
+                    <p className="clinical-gate-warning">
+                      Four physical sources have been reached but{" "}
+                      {sourceRemainingQuantity} units remain. Remove a source,
+                      change quantities, or convert the fill to a partial.
+                    </p>
+                  )}
+
+                <div className="fill-billing-separation">
+                  <div>
+                    <strong>Physical source NDCs</strong>
+                    <span>
+                      {sourceProductIds.length === 0
+                        ? "None yet"
+                        : currentFill.productSources
+                            .map((source) => source.ndcSnapshot)
+                            .join(" · ")}
+                    </span>
+                  </div>
+                  <label>
+                    Default billing NDC candidate
+                    <select
+                      value={currentFill.billingProductId ?? ""}
+                      disabled={
+                        loading ||
+                        !processAllowed ||
+                        currentFill.productSources.length === 0
+                      }
+                      onChange={(event) =>
+                        void selectBillingProduct(event.target.value)
+                      }
+                    >
+                      <option value="">
+                        {sourceProductIds.length > 1
+                          ? "Payer strategy / explicit selection required"
+                          : "Not selected"}
+                      </option>
+                      {Array.from(
+                        new Map(
+                          currentFill.productSources.map((source) => [
+                            source.productId,
+                            source,
+                          ]),
+                        ).values(),
+                      ).map((source) => (
+                        <option
+                          key={source.productId}
+                          value={source.productId}
+                        >
+                          {source.ndcSnapshot} ·{" "}
+                          {source.manufacturerSnapshot}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="catalog-help">
+                    This is only the fill-level default candidate. Each future
+                    immutable payer claim will snapshot the actual NDC sent to
+                    that payer; Pharmacy1OS does not infer first/majority NDC
+                    for a split-product fill.
+                  </p>
                 </div>
-              )}
+
+                <label className="architecture-check">
+                  <input
+                    type="checkbox"
+                    checked={currentFill.dispensedInOriginalContainer}
+                    disabled={loading || !processAllowed}
+                    onChange={(event) =>
+                      void changePackaging(event.target.checked)
+                    }
+                  />
+                  Dispense in manufacturer original container
+                </label>
+                {!currentFill.dispensedInOriginalContainer && (
+                  <p className="catalog-help">
+                    North Carolina patient discard date will be calculated at
+                    pharmacist verification from the earliest source
+                    expiration or one year from dispensing, whichever is
+                    earlier.
+                  </p>
+                )}
+
+                {currentFill.productVerifiedAt && (
+                  <div className="scan-verified-card">
+                    <strong>✓ Physical Product Fill fully sourced</strong>
+                    <span>
+                      {sourceReservedQuantity} of{" "}
+                      {String(currentFill.quantity ?? "—")} units reserved
+                      across {currentFill.productSources.length} source
+                      {currentFill.productSources.length === 1 ? "" : "s"}.
+                    </span>
+                  </div>
+                )}
+
+                {rx.medication?.ncNarrowTherapeuticIndex &&
+                  complianceAllowed && (
+                    <details className="partial-fill-panel">
+                      <summary>
+                        Pharmacist: document NC NTI manufacturer-change
+                        consent
+                      </summary>
+                      <form
+                        className="continuity-form"
+                        onSubmit={submitNtiConsent}
+                      >
+                        <p className="catalog-help">
+                          Use only for a manufacturer change between fills.
+                          Pharmacy1OS still blocks mixing different
+                          manufacturers within the same NTI dispense.
+                        </p>
+                        <label>
+                          Prior manufacturer
+                          <select
+                            value={ntiPriorManufacturerId}
+                            onChange={(event) =>
+                              setNtiPriorManufacturerId(event.target.value)
+                            }
+                            required
+                          >
+                            <option value="">Select manufacturer</option>
+                            {medicationManufacturers.map((manufacturer) => (
+                              <option
+                                key={manufacturer.id}
+                                value={manufacturer.id}
+                              >
+                                {manufacturer.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          New manufacturer
+                          <select
+                            value={ntiNewManufacturerId}
+                            onChange={(event) =>
+                              setNtiNewManufacturerId(event.target.value)
+                            }
+                            required
+                          >
+                            <option value="">Select manufacturer</option>
+                            {medicationManufacturers.map((manufacturer) => (
+                              <option
+                                key={manufacturer.id}
+                                value={manufacturer.id}
+                              >
+                                {manufacturer.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Prescriber consent documented
+                          <input
+                            type="datetime-local"
+                            value={ntiPrescriberConsentAt}
+                            onChange={(event) =>
+                              setNtiPrescriberConsentAt(event.target.value)
+                            }
+                            required
+                          />
+                        </label>
+                        <label>
+                          Patient consent documented
+                          <input
+                            type="datetime-local"
+                            value={ntiPatientConsentAt}
+                            onChange={(event) =>
+                              setNtiPatientConsentAt(event.target.value)
+                            }
+                            required
+                          />
+                        </label>
+                        <label className="wide">
+                          Required documentation note
+                          <textarea
+                            rows={3}
+                            value={ntiConsentNote}
+                            onChange={(event) =>
+                              setNtiConsentNote(event.target.value)
+                            }
+                            required
+                          />
+                        </label>
+                        <button
+                          type="submit"
+                          className="primary-button"
+                          disabled={
+                            loading ||
+                            !ntiPriorManufacturerId ||
+                            !ntiNewManufacturerId ||
+                            ntiPriorManufacturerId ===
+                              ntiNewManufacturerId ||
+                            !ntiPrescriberConsentAt ||
+                            !ntiPatientConsentAt ||
+                            !ntiConsentNote.trim()
+                          }
+                        >
+                          Document both consents
+                        </button>
+                      </form>
+                    </details>
+                  )}
+              </div>
 
               <button
                 className="primary-button"
