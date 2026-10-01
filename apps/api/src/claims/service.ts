@@ -925,6 +925,53 @@ export async function assertNoActivePaidClaimForMutation(
   }
 }
 
+export async function assertNoActivePaidClaimsForPatientCoverageMutation(
+  patientId: string,
+  siteId: string,
+) {
+  const paidClaims = await db.claimTransaction.findMany({
+    where: {
+      siteId,
+      operation: "SUBMIT",
+      outcome: "PAID",
+      fill: {
+        status: "IN_PROGRESS",
+        prescription: { patientId, siteId },
+      },
+    },
+    select: { id: true, fillId: true },
+  });
+  if (paidClaims.length === 0) return;
+
+  const paidIds = paidClaims.map((claim) => claim.id);
+  const reversals = await db.claimTransaction.findMany({
+    where: {
+      siteId,
+      operation: "REVERSAL",
+      outcome: "REVERSED",
+      originalTransactionId: { in: paidIds },
+    },
+    select: { originalTransactionId: true },
+  });
+  const reversedIds = new Set(
+    reversals
+      .map((item) => item.originalTransactionId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const activePaid = paidClaims.find((claim) => !reversedIds.has(claim.id));
+  if (activePaid) {
+    throw new ClaimError(
+      409,
+      "PAID_CLAIM_REVERSAL_REQUIRED",
+      "Reverse the active paid claim before changing this patient's coverage while the fill is still in progress.",
+      {
+        claimTransactionId: activePaid.id,
+        fillId: activePaid.fillId,
+      },
+    );
+  }
+}
+
 export async function assertFillBillingReadyForReview(
   fillId: string,
   siteId: string,
