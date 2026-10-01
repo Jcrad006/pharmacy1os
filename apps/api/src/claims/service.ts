@@ -884,6 +884,47 @@ export async function reverseClaimTransaction(
   return { transaction, replayed: false };
 }
 
+export async function assertNoActivePaidClaimForMutation(
+  fillId: string,
+  siteId: string,
+) {
+  const paidClaims = await db.claimTransaction.findMany({
+    where: {
+      fillId,
+      siteId,
+      operation: "SUBMIT",
+      outcome: "PAID",
+    },
+    select: { id: true },
+  });
+  if (paidClaims.length === 0) return;
+
+  const paidIds = paidClaims.map((claim) => claim.id);
+  const reversals = await db.claimTransaction.findMany({
+    where: {
+      siteId,
+      operation: "REVERSAL",
+      outcome: "REVERSED",
+      originalTransactionId: { in: paidIds },
+    },
+    select: { originalTransactionId: true },
+  });
+  const reversedIds = new Set(
+    reversals
+      .map((item) => item.originalTransactionId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const activePaid = paidIds.find((id) => !reversedIds.has(id));
+  if (activePaid) {
+    throw new ClaimError(
+      409,
+      "PAID_CLAIM_REVERSAL_REQUIRED",
+      "Reverse the active paid claim before changing claim-sensitive billing or product-source details.",
+      { claimTransactionId: activePaid },
+    );
+  }
+}
+
 export async function assertFillBillingReadyForReview(
   fillId: string,
   siteId: string,
