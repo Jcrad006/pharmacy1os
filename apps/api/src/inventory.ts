@@ -9,6 +9,8 @@ import {
   recordInventoryCostLayer,
   removeInventoryPosition,
   reverseInventoryCostConsumption,
+  resolveEffectiveInventoryPolicy,
+  InventoryArchitectureError,
 } from "./inventoryArchitecture.js";
 
 export class InventoryError extends Error {
@@ -132,6 +134,44 @@ export async function receiveInventory(
 ) {
   const quantity = positiveQuantity(input.quantity);
 
+  const productForPolicy = await tx.product.findUnique({
+    where: { id: input.productId },
+    select: { medicationId: true },
+  });
+  const policy = await resolveEffectiveInventoryPolicy(tx, {
+    siteId: input.siteId,
+    medicationId: productForPolicy?.medicationId ?? null,
+    productId: input.productId,
+  });
+
+  if (input.locationId && policy?.requiredLocationType) {
+    const selectedLocation = await tx.inventoryLocation.findFirst({
+      where: {
+        id: input.locationId,
+        siteId: input.siteId,
+        active: true,
+      },
+    });
+    if (!selectedLocation) {
+      throw new InventoryArchitectureError(
+        404,
+        "INVENTORY_LOCATION_NOT_FOUND",
+        "Selected receiving location was not found.",
+      );
+    }
+    if (selectedLocation.type !== policy.requiredLocationType) {
+      throw new InventoryArchitectureError(
+        409,
+        "INVENTORY_STORAGE_POLICY_MISMATCH",
+        `This product must be received into a ${policy.requiredLocationType.replaceAll("_", " ").toLowerCase()} location.`,
+        {
+          requiredLocationType: policy.requiredLocationType,
+          selectedLocationType: selectedLocation.type,
+        },
+      );
+    }
+  }
+
   const balance = await tx.inventoryBalance.upsert({
     where: {
       siteId_productId_productLotId_productExpirationId: {
@@ -179,7 +219,9 @@ export async function receiveInventory(
     actorId: input.actorId,
     locationId: input.locationId,
     reason: input.reason?.trim() || "Inventory received",
-    preferredTypes: input.preferredLocationTypes ?? ["RECEIVING", "UNASSIGNED"],
+    preferredTypes: policy?.requiredLocationType
+      ? [policy.requiredLocationType]
+      : input.preferredLocationTypes ?? ["RECEIVING", "UNASSIGNED"],
   });
 
   const costLayer = await recordInventoryCostLayer(tx, {
