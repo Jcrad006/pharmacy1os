@@ -145,6 +145,40 @@ async function makeReady(prescriptionId: string) {
   expect(ready.statusCode).toBe(200);
 }
 
+async function stage(fillId: string, bagBarcode?: string) {
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/fills/${fillId}/will-call/stage`,
+    headers: technicianHeaders,
+    payload: bagBarcode ? { bagBarcode } : {},
+  });
+  expect(response.statusCode).toBe(200);
+  return response.json().package as {
+    id: string;
+    bagBarcode: string;
+    status: string;
+    location: {
+      id: string;
+      code: string;
+      barcode: string | null;
+    };
+  };
+}
+
+function pickup(fillId: string, bagBarcode: string) {
+  return {
+    pickupPackages: [{ fillId, bagBarcode }],
+    pickup: {
+      recipientName: "Phase3K Pickup",
+      relationship: "Self",
+      identityMethod: "DATE_OF_BIRTH",
+      identityValue: "1990-01-01",
+      signatureMethod: "ELECTRONIC_TYPED",
+      signatureName: "Phase3K Pickup",
+    },
+  };
+}
+
 beforeAll(async () => {
   await app.ready();
 
@@ -237,7 +271,7 @@ afterAll(async () => {
 });
 
 describe("Stage 3K Will Call / POS hardening", () => {
-  it("quotes cash from physical NDC pricing, records tender/change, and prevents duplicate sale", async () => {
+  it("stages a bag, quotes cash, verifies pickup, records tender/change, and prevents duplicate sale", async () => {
     const patient = await makePatient();
     const prescriptionId = await createPrescription(patient.id, 30);
     const fillId = await createFill(prescriptionId, 30, 30);
@@ -245,6 +279,21 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const scanned = await scan(fillId, 30);
     expect(scanned.json().adjudication.state).toBe("CASH_LABEL_READY");
     await makeReady(prescriptionId);
+
+    const beforeStage = await app.inject({
+      method: "POST",
+      url: "/api/pos/quote",
+      headers: technicianHeaders,
+      payload: { fillIds: [fillId] },
+    });
+    expect(beforeStage.statusCode).toBe(409);
+    expect(beforeStage.json().code).toBe("WILL_CALL_STAGING_REQUIRED");
+
+    const staged = await stage(fillId, "WC-BAG-CASH-3K");
+    expect(staged.status).toBe("STAGED");
+    expect(staged.bagBarcode).toBe("WC-BAG-CASH-3K");
+    expect(staged.location.code).toBe("WILL-CALL");
+    expect(staged.location.barcode).toBe(`WC-DEFAULT-${siteId}`);
 
     const quote = await app.inject({
       method: "POST",
@@ -257,8 +306,42 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(quote.json().quote.lines[0]).toMatchObject({
       fillId,
       priceBasis: "CASH",
+      bagBarcode: "WC-BAG-CASH-3K",
+      willCallLocationCode: "WILL-CALL",
     });
     expect(Number(quote.json().quote.lines[0].cashUnitPriceSnapshot)).toBe(0.25);
+
+    const wrongBag = await app.inject({
+      method: "POST",
+      url: "/api/pos/checkout",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [fillId],
+        tenders: [{ method: "CASH", amount: 7.5 }],
+        ...pickup(fillId, "WRONG-BAG"),
+        idempotencyKey: `3k-wrong-bag-${randomUUID()}`,
+      },
+    });
+    expect(wrongBag.statusCode).toBe(409);
+    expect(wrongBag.json().code).toBe("WILL_CALL_BAG_MISMATCH");
+
+    const wrongDob = await app.inject({
+      method: "POST",
+      url: "/api/pos/checkout",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [fillId],
+        tenders: [{ method: "CASH", amount: 7.5 }],
+        pickupPackages: [{ fillId, bagBarcode: staged.bagBarcode }],
+        pickup: {
+          ...pickup(fillId, staged.bagBarcode).pickup,
+          identityValue: "1991-01-01",
+        },
+        idempotencyKey: `3k-wrong-dob-${randomUUID()}`,
+      },
+    });
+    expect(wrongDob.statusCode).toBe(409);
+    expect(wrongDob.json().code).toBe("PICKUP_IDENTITY_MISMATCH");
 
     const key = `3k-cash-${randomUUID()}`;
     const checkout = await app.inject({
@@ -268,6 +351,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [fillId],
         tenders: [{ method: "CASH", amount: 10 }],
+        ...pickup(fillId, staged.bagBarcode),
         idempotencyKey: key,
       },
     });
@@ -277,6 +361,14 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(Number(checkout.json().transaction.totalTendered)).toBe(10);
     expect(Number(checkout.json().transaction.changeDue)).toBe(2.5);
     expect(checkout.json().transaction.lines[0].priceBasis).toBe("CASH");
+    expect(checkout.json().transaction.pickupIdentityMethod).toBe("DATE_OF_BIRTH");
+    expect(checkout.json().transaction.pickupSignatureName).toBe("Phase3K Pickup");
+
+    const pickedPackage = await db.willCallPackage.findUniqueOrThrow({
+      where: { fillId },
+    });
+    expect(pickedPackage.status).toBe("PICKED_UP");
+    expect(pickedPackage.pickedUpAt).not.toBeNull();
 
     const replay = await app.inject({
       method: "POST",
@@ -285,6 +377,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [fillId],
         tenders: [{ method: "CASH", amount: 10 }],
+        ...pickup(fillId, staged.bagBarcode),
         idempotencyKey: key,
       },
     });
@@ -299,6 +392,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [fillId],
         tenders: [{ method: "CASH", amount: 7.5 }],
+        ...pickup(fillId, staged.bagBarcode),
         idempotencyKey: `3k-cash-duplicate-${randomUUID()}`,
       },
     });
@@ -310,10 +404,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
     });
     expect(fill.status).toBe("SOLD");
     expect(fill.soldAt).not.toBeNull();
-
-    expect(
-      await db.pointOfSaleLine.count({ where: { fillId } }),
-    ).toBe(1);
+    expect(await db.pointOfSaleLine.count({ where: { fillId } })).toBe(1);
   });
 
   it("uses the final active paid claim patient responsibility and rejects non-cash overpayment", async () => {
@@ -324,6 +415,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const scanned = await scan(fillId, 20);
     expect(scanned.json().adjudication.state).toBe("PAID_LABEL_READY");
     await makeReady(prescriptionId);
+    const staged = await stage(fillId);
 
     const claim = await db.claimTransaction.findFirstOrThrow({
       where: { fillId, operation: "SUBMIT", outcome: "PAID" },
@@ -350,6 +442,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [fillId],
         tenders: [{ method: "CARD", amount: 15 }],
+        ...pickup(fillId, staged.bagBarcode),
         idempotencyKey: `3k-overpay-${randomUUID()}`,
       },
     });
@@ -363,13 +456,18 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [fillId],
         tenders: [{ method: "CARD", amount: 12.34, reference: "TEST-AUTH" }],
+        ...pickup(fillId, staged.bagBarcode),
         idempotencyKey: `3k-insured-${randomUUID()}`,
       },
     });
     expect(checkout.statusCode).toBe(200);
     expect(Number(checkout.json().transaction.totalDue)).toBe(12.34);
     expect(checkout.json().transaction.lines[0].claimTransactionId).toBe(claim.id);
-    expect(Number(checkout.json().transaction.lines[0].patientResponsibilitySnapshot)).toBe(12.34);
+    expect(
+      Number(
+        checkout.json().transaction.lines[0].patientResponsibilitySnapshot,
+      ),
+    ).toBe(12.34);
 
     const reverse = await app.inject({
       method: "POST",
@@ -401,6 +499,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const primaryScan = await scan(fillId, 40);
     expect(primaryScan.json().adjudication.state).toBe("PAID_LABEL_READY");
     await makeReady(prescriptionId);
+    const stagedPrimary = await stage(fillId);
 
     const primaryQuote = await app.inject({
       method: "POST",
@@ -418,6 +517,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [fillId],
         tenders: [{ method: "CARD", amount: 7.5 }],
+        ...pickup(fillId, stagedPrimary.bagBarcode),
         idempotencyKey: `3k-partial-${randomUUID()}`,
       },
     });
@@ -439,6 +539,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       "COMPLETION_LABEL_READY",
     );
     await makeReady(prescriptionId);
+    const stagedCompletion = await stage(completionId);
 
     const completionQuote = await app.inject({
       method: "POST",
@@ -459,6 +560,7 @@ describe("Stage 3K Will Call / POS hardening", () => {
       payload: {
         fillIds: [completionId],
         tenders: [],
+        ...pickup(completionId, stagedCompletion.bagBarcode),
         idempotencyKey: `3k-completion-${randomUUID()}`,
       },
     });
@@ -478,5 +580,53 @@ describe("Stage 3K Will Call / POS hardening", () => {
         },
       }),
     ).toBe(1);
+  });
+
+  it("reverses a paid claim before an abandoned Ready fill is returned to stock", async () => {
+    const patient = await makePatient("PAID-COPAY0400-ABANDON-3K");
+    const prescriptionId = await createPrescription(patient.id, 12);
+    const fillId = await createFill(prescriptionId, 12, 12);
+
+    const scanned = await scan(fillId, 12);
+    expect(scanned.json().adjudication.state).toBe("PAID_LABEL_READY");
+    await makeReady(prescriptionId);
+    await stage(fillId, "WC-BAG-ABANDON-3K");
+
+    const original = await db.claimTransaction.findFirstOrThrow({
+      where: { fillId, operation: "SUBMIT", outcome: "PAID" },
+    });
+
+    const returned = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/return-to-stock`,
+      headers: technicianHeaders,
+    });
+    expect(returned.statusCode).toBe(200);
+
+    const reversal = await db.claimTransaction.findFirstOrThrow({
+      where: {
+        originalTransactionId: original.id,
+        operation: "REVERSAL",
+        outcome: "REVERSED",
+      },
+    });
+    expect(reversal.originalTransactionId).toBe(original.id);
+
+    const fill = await db.prescriptionFill.findUniqueOrThrow({
+      where: { id: fillId },
+    });
+    expect(fill.status).toBe("RETURNED_TO_STOCK");
+
+    const stagedPackage = await db.willCallPackage.findUniqueOrThrow({
+      where: { fillId },
+    });
+    expect(stagedPackage.status).toBe("RETURNED_TO_STOCK");
+    expect(stagedPackage.returnedAt).not.toBeNull();
+
+    expect(
+      await db.prescriptionLabel.count({
+        where: { fillId, status: "ACTIVE" },
+      }),
+    ).toBe(0);
   });
 });
