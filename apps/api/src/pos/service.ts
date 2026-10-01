@@ -129,6 +129,154 @@ async function activePaidClaim(
   );
 }
 
+export async function stageWillCallPackage(
+  fillId: string,
+  input: {
+    bagBarcode?: string | null;
+    locationId?: string | null;
+    locationBarcode?: string | null;
+  },
+  context: PosActorContext,
+) {
+  return db.$transaction(async (tx) => {
+    const fill = await tx.prescriptionFill.findFirst({
+      where: {
+        id: fillId,
+        prescription: { siteId: context.siteId },
+      },
+      include: {
+        prescription: true,
+        prescriptionLabels: {
+          where: { status: "ACTIVE" },
+          select: { id: true },
+          take: 1,
+        },
+        willCallPackage: {
+          include: { location: true },
+        },
+      },
+    });
+
+    if (!fill) {
+      throw new PosError(404, "FILL_NOT_FOUND", "Fill not found.");
+    }
+    if (fill.status !== "READY" || fill.prescription.status !== "READY") {
+      throw new PosError(
+        409,
+        "FILL_NOT_READY",
+        "Only a pharmacist-verified ready fill can be staged in Will Call.",
+      );
+    }
+    if (fill.prescriptionLabels.length === 0) {
+      throw new PosError(
+        409,
+        "ACTIVE_LABEL_REQUIRED",
+        "The fill must have an active dispensing label before Will Call staging.",
+      );
+    }
+    if (
+      fill.willCallPackage &&
+      fill.willCallPackage.status !== "STAGED"
+    ) {
+      throw new PosError(
+        409,
+        "WILL_CALL_PACKAGE_CLOSED",
+        "This Will Call package has already left the staged queue.",
+      );
+    }
+
+    const requestedLocationBarcode =
+      input.locationBarcode?.trim().toUpperCase() || null;
+    const location = input.locationId
+      ? await tx.inventoryLocation.findFirst({
+          where: {
+            id: input.locationId,
+            siteId: context.siteId,
+            active: true,
+          },
+        })
+      : requestedLocationBarcode
+        ? await tx.inventoryLocation.findFirst({
+            where: {
+              siteId: context.siteId,
+              barcode: requestedLocationBarcode,
+              active: true,
+            },
+          })
+        : await tx.inventoryLocation.findFirst({
+            where: {
+              siteId: context.siteId,
+              code: "WILL-CALL",
+              active: true,
+            },
+          });
+
+    if (!location || location.type !== "WILL_CALL") {
+      throw new PosError(
+        409,
+        "WILL_CALL_LOCATION_REQUIRED",
+        "Select or scan an active Will Call location before staging the package.",
+      );
+    }
+
+    const bagBarcode =
+      input.bagBarcode?.trim().toUpperCase() ||
+      fill.willCallPackage?.bagBarcode ||
+      `WC-BAG-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
+
+    if (bagBarcode.length > 120) {
+      throw new PosError(
+        400,
+        "INVALID_BAG_BARCODE",
+        "Will Call bag barcodes must be 120 characters or fewer.",
+      );
+    }
+
+    const packageRecord = fill.willCallPackage
+      ? await tx.willCallPackage.update({
+          where: { id: fill.willCallPackage.id },
+          data: {
+            bagBarcode,
+            locationId: location.id,
+            stagedById: context.actorId,
+            stagedAt: new Date(),
+          },
+          include: { location: true },
+        })
+      : await tx.willCallPackage.create({
+          data: {
+            siteId: context.siteId,
+            fillId: fill.id,
+            bagBarcode,
+            locationId: location.id,
+            stagedById: context.actorId,
+          },
+          include: { location: true },
+        });
+
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: fill.willCallPackage
+        ? "WILL_CALL_PACKAGE_RESTAGED"
+        : "WILL_CALL_PACKAGE_STAGED",
+      entityType: "WillCallPackage",
+      entityId: packageRecord.id,
+      requestId: context.requestId,
+      metadata: {
+        fillId: fill.id,
+        prescriptionId: fill.prescriptionId,
+        bagBarcode: packageRecord.bagBarcode,
+        locationId: location.id,
+        locationCode: location.code,
+        locationBarcode: location.barcode,
+      },
+    });
+
+    return packageRecord;
+  });
+}
+
 type CheckoutQuoteLine = {
   fillId: string;
   prescriptionId: string;
@@ -455,6 +603,96 @@ export async function quoteFillsForCheckout(
   return db.$transaction((tx) =>
     quoteFillsInTransaction(tx, fillIds, context.siteId),
   );
+}
+
+function normalizePickup(input: PickupVerificationInput) {
+  const recipientName = input.recipientName?.trim();
+  const relationship = input.relationship?.trim() || null;
+  const signatureName = input.signatureName?.trim() || null;
+  const signatureReference = input.signatureReference?.trim() || null;
+
+  if (!recipientName || recipientName.length > 120) {
+    throw new PosError(
+      400,
+      "PICKUP_RECIPIENT_REQUIRED",
+      "Pickup recipient name is required and must be 120 characters or fewer.",
+    );
+  }
+  if (!pickupIdentityMethods.has(input.identityMethod)) {
+    throw new PosError(
+      400,
+      "INVALID_IDENTITY_METHOD",
+      "A valid pickup identity verification method is required.",
+    );
+  }
+  if (!pickupSignatureMethods.has(input.signatureMethod)) {
+    throw new PosError(
+      400,
+      "INVALID_SIGNATURE_METHOD",
+      "A valid pickup signature method is required.",
+    );
+  }
+  if (input.signatureMethod === "ELECTRONIC_TYPED" && !signatureName) {
+    throw new PosError(
+      400,
+      "SIGNATURE_REQUIRED",
+      "A typed signer name is required for an electronic typed signature.",
+    );
+  }
+  if (
+    input.signatureMethod !== "ELECTRONIC_TYPED" &&
+    !signatureReference
+  ) {
+    throw new PosError(
+      400,
+      "SIGNATURE_REFERENCE_REQUIRED",
+      "A signature reference is required for external-device or paper signatures.",
+    );
+  }
+
+  return {
+    recipientName,
+    relationship,
+    identityMethod: input.identityMethod,
+    signatureMethod: input.signatureMethod,
+    signatureName,
+    signatureReference,
+  };
+}
+
+function validatePackageScans(
+  lines: CheckoutQuoteLine[],
+  packageInputs: PickupPackageInput[],
+) {
+  if (packageInputs.length !== lines.length) {
+    throw new PosError(
+      400,
+      "PACKAGE_SCAN_REQUIRED",
+      "Each fill in the checkout must have one scanned Will Call bag barcode.",
+    );
+  }
+
+  const scanned = new Map(
+    packageInputs.map((item) => [
+      item.fillId,
+      item.bagBarcode?.trim().toUpperCase(),
+    ]),
+  );
+
+  for (const line of lines) {
+    const barcode = scanned.get(line.fillId);
+    if (!barcode || barcode !== line.bagBarcode.toUpperCase()) {
+      throw new PosError(
+        409,
+        "WILL_CALL_BAG_MISMATCH",
+        "The scanned Will Call bag does not match the selected fill.",
+        {
+          fillId: line.fillId,
+          locationCode: line.willCallLocationCode,
+        },
+      );
+    }
+  }
 }
 
 function normalizeTenders(
