@@ -190,7 +190,7 @@ describe("Phase 3H lot recall workflow", () => {
           "Synthetic recall: affected lot must be removed from dispensing.",
       },
     });
-    expect(opened.statusCode).toBe(201);
+    expect(opened.statusCode, opened.body).toBe(201);
     expect(opened.json().recall.status).toBe("OPEN");
     expect(opened.json().recall.summary.affectedFillCount).toBe(3);
     expect(opened.json().recall.summary.soldFillCount).toBe(1);
