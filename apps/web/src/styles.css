@@ -1377,3 +1377,85 @@ kbd {
     width: 100%;
   }
 }
+
+
+.inventory-hold-panel {
+  margin-top: 24px;
+  border-color: #dfd4be;
+}
+
+.inventory-hold-create {
+  display: grid;
+  grid-template-columns: minmax(180px, .7fr) minmax(220px, 1fr);
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #eadfca;
+  border-radius: 10px;
+  background: #fffdf8;
+}
+
+.inventory-hold-create label,
+.inventory-hold-resolution label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inventory-hold-create input,
+.inventory-hold-create select,
+.inventory-hold-create textarea,
+.inventory-hold-resolution select,
+.inventory-hold-resolution textarea {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: white;
+  color: #1c2924;
+  font: inherit;
+}
+
+.inventory-hold-create textarea,
+.inventory-hold-resolution textarea {
+  resize: vertical;
+}
+
+.inventory-hold-table-wrap {
+  margin-top: 18px;
+}
+
+.inventory-hold-table {
+  min-width: 1120px;
+}
+
+.inventory-hold-resolution {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 2px solid #e7c4c4;
+}
+
+.status-active {
+  background: #fff1d6;
+  color: #74501a;
+}
+
+.status-released {
+  background: #def3e7;
+  color: #205f3e;
+}
+
+.status-disposed {
+  background: #e9edf0;
+  color: #4b555b;
+}
+
+@media (max-width: 760px) {
+  .inventory-hold-create {
+    grid-template-columns: 1fr;
+  }
+}
