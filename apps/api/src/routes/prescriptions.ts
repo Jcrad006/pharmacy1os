@@ -1644,7 +1644,16 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           },
         });
 
-        return { partialFill, completion, inventoryException };
+        const finalizedPartialFill =
+          await tx.prescriptionFill.findUniqueOrThrow({
+            where: { id: fill.id },
+          });
+
+        return {
+          partialFill: finalizedPartialFill,
+          completion,
+          inventoryException,
+        };
       });
 
       const prescription = await db.prescription.findUniqueOrThrow({
