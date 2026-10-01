@@ -3,10 +3,12 @@ import {
   checkoutPos,
   quotePosCheckout,
   returnFillToStock,
+  stageWillCallPackage,
 } from "../api";
 import type {
   DevUser,
   PaymentMethod,
+  PickupIdentityMethod,
   PosQuote,
   PrescriptionQueueItem,
 } from "../types";
@@ -23,6 +25,18 @@ type CheckoutState = {
   method: PaymentMethod;
   amount: string;
   reference: string;
+  bagBarcode: string;
+  recipientName: string;
+  relationship: string;
+  identityMethod: PickupIdentityMethod;
+  identityValue: string;
+  signatureName: string;
+};
+
+type StagingState = {
+  fillId: string;
+  bagBarcode: string;
+  locationBarcode: string;
 };
 
 function money(value: string | number) {
@@ -32,7 +46,9 @@ function money(value: string | number) {
 
 function basisLabel(basis: PosQuote["lines"][number]["priceBasis"]) {
   if (basis === "THIRD_PARTY") return "Final patient responsibility";
-  if (basis === "COMPLETION_ALREADY_BILLED") return "Already billed on primary fill";
+  if (basis === "COMPLETION_ALREADY_BILLED") {
+    return "Already billed on primary fill";
+  }
   return "Cash price";
 }
 
@@ -54,11 +70,37 @@ export function WillCall({
   onError: (message: string | null) => void;
 }) {
   const [checkout, setCheckout] = useState<CheckoutState | null>(null);
+  const [staging, setStaging] = useState<StagingState | null>(null);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+
+  async function completeStaging() {
+    if (!staging) return;
+
+    setCheckoutBusy(true);
+    onError(null);
+    try {
+      const result = await stageWillCallPackage(devUser, staging.fillId, {
+        bagBarcode: staging.bagBarcode.trim() || null,
+        locationBarcode: staging.locationBarcode.trim() || null,
+      });
+      setStaging(null);
+      await onMutated(
+        `Will Call package staged as ${result.package.bagBarcode} in ${result.package.location.code}.`,
+      );
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Unable to stage Will Call package.");
+    } finally {
+      setCheckoutBusy(false);
+    }
+  }
 
   async function beginCheckout(rx: PrescriptionQueueItem) {
     const fill = readyFill(rx.fills);
     if (!fill) return;
+    if (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED") {
+      onError("Stage the prescription in a Will Call location before checkout.");
+      return;
+    }
 
     setCheckoutBusy(true);
     onError(null);
@@ -71,7 +113,16 @@ export function WillCall({
         method: "CARD",
         amount: Number(due).toFixed(2),
         reference: "",
+        bagBarcode: "",
+        recipientName: formatPatientName(rx.patient),
+        relationship: "Self",
+        identityMethod: rx.patient.dateOfBirth
+          ? "DATE_OF_BIRTH"
+          : "KNOWN_PATIENT",
+        identityValue: "",
+        signatureName: "",
       });
+      setStaging(null);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to quote pickup.");
     } finally {
@@ -84,6 +135,25 @@ export function WillCall({
     const totalDue = Number(checkout.quote.totalDue);
     const tenderAmount = Number(checkout.amount);
 
+    if (!checkout.bagBarcode.trim()) {
+      onError("Scan or enter the Will Call bag barcode.");
+      return;
+    }
+    if (!checkout.recipientName.trim()) {
+      onError("Enter the name of the person receiving the prescription.");
+      return;
+    }
+    if (
+      checkout.identityMethod === "DATE_OF_BIRTH" &&
+      !checkout.identityValue.trim()
+    ) {
+      onError("Enter the patient's date of birth to verify pickup identity.");
+      return;
+    }
+    if (!checkout.signatureName.trim()) {
+      onError("A pickup signature is required.");
+      return;
+    }
     if (totalDue > 0 && (!Number.isFinite(tenderAmount) || tenderAmount <= 0)) {
       onError("Enter a valid payment amount.");
       return;
@@ -104,6 +174,20 @@ export function WillCall({
                 },
               ]
             : [],
+        pickupPackages: [
+          {
+            fillId: checkout.fillId,
+            bagBarcode: checkout.bagBarcode,
+          },
+        ],
+        pickup: {
+          recipientName: checkout.recipientName,
+          relationship: checkout.relationship.trim() || null,
+          identityMethod: checkout.identityMethod,
+          identityValue: checkout.identityValue.trim() || null,
+          signatureMethod: "ELECTRONIC_TYPED",
+          signatureName: checkout.signatureName,
+        },
         idempotencyKey:
           typeof crypto !== "undefined" && "randomUUID" in crypto
             ? crypto.randomUUID()
@@ -127,12 +211,18 @@ export function WillCall({
     const fill = readyFill(rx.fills);
     if (!fill) return;
 
+    setCheckoutBusy(true);
     try {
       await returnFillToStock(devUser, fill.id);
       if (checkout?.fillId === fill.id) setCheckout(null);
-      await onMutated("Prescription returned to stock and removed from Will Call.");
+      if (staging?.fillId === fill.id) setStaging(null);
+      await onMutated(
+        "Prescription returned to stock and removed from Will Call. Any active paid claim was reversed before the stock return.",
+      );
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to return fill to stock.");
+    } finally {
+      setCheckoutBusy(false);
     }
   }
 
@@ -152,8 +242,11 @@ export function WillCall({
         {prescriptions.map((rx) => {
           const fill = readyFill(rx.fills);
           const readySince = fill?.filledAt ? new Date(fill.filledAt) : null;
+          const willCallPackage = fill?.willCallPackage ?? null;
           const activeCheckout =
             fill && checkout?.fillId === fill.id ? checkout : null;
+          const activeStaging =
+            fill && staging?.fillId === fill.id ? staging : null;
           const quoteLine = activeCheckout?.quote.lines[0];
 
           return (
@@ -164,20 +257,93 @@ export function WillCall({
                   <h3>{formatPatientName(rx.patient)}</h3>
                   <p>{rx.medicationName} {rx.strength ?? ""}</p>
                 </div>
-                <span className="status status-ready">Ready</span>
+                <span className="status status-ready">
+                  {willCallPackage?.status === "STAGED" ? "Staged" : "Ready"}
+                </span>
               </div>
 
               <dl className="will-call-meta">
                 <div><dt>Fill</dt><dd>#{fill?.fillNumber ?? "—"}</dd></div>
                 <div><dt>Quantity</dt><dd>{String(fill?.quantity ?? rx.quantityWritten ?? "—")}</dd></div>
                 <div><dt>Ready since</dt><dd>{readySince ? readySince.toLocaleString() : "—"}</dd></div>
+                <div>
+                  <dt>Bag</dt>
+                  <dd className="mono">{willCallPackage?.bagBarcode ?? "Not staged"}</dd>
+                </div>
+                <div>
+                  <dt>Location</dt>
+                  <dd>
+                    {willCallPackage
+                      ? `${willCallPackage.location.code} — ${willCallPackage.location.name}`
+                      : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Location barcode</dt>
+                  <dd className="mono">
+                    {willCallPackage?.location.barcode ?? "—"}
+                  </dd>
+                </div>
               </dl>
+
+              {activeStaging && (
+                <div className="detail-card">
+                  <p className="eyebrow">Physical Will Call staging</p>
+                  <div className="form-grid">
+                    <label>
+                      Bag barcode
+                      <input
+                        value={activeStaging.bagBarcode}
+                        onChange={(event) =>
+                          setStaging((current) =>
+                            current
+                              ? { ...current, bagBarcode: event.target.value }
+                              : current,
+                          )
+                        }
+                        placeholder="Leave blank to generate"
+                        autoFocus
+                      />
+                    </label>
+                    <label>
+                      Bin / location barcode
+                      <input
+                        value={activeStaging.locationBarcode}
+                        onChange={(event) =>
+                          setStaging((current) =>
+                            current
+                              ? { ...current, locationBarcode: event.target.value }
+                              : current,
+                          )
+                        }
+                        placeholder="Leave blank for default Will Call"
+                      />
+                    </label>
+                  </div>
+                  <div className="action-row">
+                    <button
+                      className="primary-button"
+                      disabled={checkoutBusy || loading}
+                      onClick={() => void completeStaging()}
+                    >
+                      Confirm Staging
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={checkoutBusy || loading}
+                      onClick={() => setStaging(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {activeCheckout && quoteLine && (
                 <div className="detail-card">
                   <div className="panel-heading">
                     <div>
-                      <p className="eyebrow">Pickup quote</p>
+                      <p className="eyebrow">Controlled pickup</p>
                       <h3>{money(activeCheckout.quote.totalDue)} due</h3>
                     </div>
                     <span className="status">
@@ -195,10 +361,109 @@ export function WillCall({
                       <dd>{money(quoteLine.amountDue)}</dd>
                     </div>
                     <div>
-                      <dt>Receipt status</dt>
-                      <dd>Pending payment</dd>
+                      <dt>Expected location</dt>
+                      <dd>{quoteLine.willCallLocationCode}</dd>
                     </div>
                   </dl>
+
+                  <div className="form-grid">
+                    <label>
+                      Scan Will Call bag
+                      <input
+                        value={activeCheckout.bagBarcode}
+                        onChange={(event) =>
+                          setCheckout((current) =>
+                            current
+                              ? { ...current, bagBarcode: event.target.value }
+                              : current,
+                          )
+                        }
+                        placeholder={quoteLine.bagBarcode}
+                        autoFocus
+                      />
+                    </label>
+                    <label>
+                      Pickup recipient
+                      <input
+                        value={activeCheckout.recipientName}
+                        onChange={(event) =>
+                          setCheckout((current) =>
+                            current
+                              ? { ...current, recipientName: event.target.value }
+                              : current,
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      Relationship
+                      <input
+                        value={activeCheckout.relationship}
+                        onChange={(event) =>
+                          setCheckout((current) =>
+                            current
+                              ? { ...current, relationship: event.target.value }
+                              : current,
+                          )
+                        }
+                        placeholder="Self, caregiver, parent..."
+                      />
+                    </label>
+                    <label>
+                      Identity verification
+                      <select
+                        value={activeCheckout.identityMethod}
+                        onChange={(event) =>
+                          setCheckout((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  identityMethod:
+                                    event.target.value as PickupIdentityMethod,
+                                  identityValue: "",
+                                }
+                              : current,
+                          )
+                        }
+                      >
+                        <option value="DATE_OF_BIRTH">Date of birth</option>
+                        <option value="ADDRESS">Address</option>
+                        <option value="GOVERNMENT_ID">Government ID checked</option>
+                        <option value="KNOWN_PATIENT">Known patient</option>
+                        <option value="OTHER">Other verified method</option>
+                      </select>
+                    </label>
+                    {activeCheckout.identityMethod === "DATE_OF_BIRTH" && (
+                      <label>
+                        Patient date of birth
+                        <input
+                          type="date"
+                          value={activeCheckout.identityValue}
+                          onChange={(event) =>
+                            setCheckout((current) =>
+                              current
+                                ? { ...current, identityValue: event.target.value }
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                    )}
+                    <label>
+                      Electronic signature
+                      <input
+                        value={activeCheckout.signatureName}
+                        onChange={(event) =>
+                          setCheckout((current) =>
+                            current
+                              ? { ...current, signatureName: event.target.value }
+                              : current,
+                          )
+                        }
+                        placeholder="Signer types full name"
+                      />
+                    </label>
+                  </div>
 
                   {Number(activeCheckout.quote.totalDue) > 0 && (
                     <div className="form-grid">
@@ -240,7 +505,7 @@ export function WillCall({
                         />
                       </label>
                       <label>
-                        Reference (optional)
+                        Payment reference (optional)
                         <input
                           value={activeCheckout.reference}
                           onChange={(event) =>
@@ -258,7 +523,8 @@ export function WillCall({
 
                   {Number(activeCheckout.quote.totalDue) === 0 && (
                     <p className="muted">
-                      No tender is required. Confirm pickup to record the $0 transaction.
+                      No tender is required. Bag scan, identity verification, and
+                      signature are still required to record pickup.
                     </p>
                   )}
 
@@ -285,9 +551,46 @@ export function WillCall({
                 <button className="secondary-button" onClick={() => onOpen(rx.id)}>
                   Open
                 </button>
+                {willCallPackage?.status !== "STAGED" ? (
+                  <button
+                    className="secondary-button"
+                    disabled={!canProcess(user) || loading || checkoutBusy || !fill}
+                    onClick={() =>
+                      fill &&
+                      setStaging({
+                        fillId: fill.id,
+                        bagBarcode: "",
+                        locationBarcode: "",
+                      })
+                    }
+                  >
+                    Stage Bag
+                  </button>
+                ) : (
+                  <button
+                    className="secondary-button"
+                    disabled={!canProcess(user) || loading || checkoutBusy || !fill}
+                    onClick={() =>
+                      fill &&
+                      setStaging({
+                        fillId: fill.id,
+                        bagBarcode: willCallPackage.bagBarcode,
+                        locationBarcode: willCallPackage.location.barcode ?? "",
+                      })
+                    }
+                  >
+                    Relocate
+                  </button>
+                )}
                 <button
                   className="primary-button"
-                  disabled={!canSell(user) || loading || checkoutBusy || !fill}
+                  disabled={
+                    !canSell(user) ||
+                    loading ||
+                    checkoutBusy ||
+                    !fill ||
+                    willCallPackage?.status !== "STAGED"
+                  }
                   onClick={() => void beginCheckout(rx)}
                 >
                   Checkout
@@ -302,8 +605,9 @@ export function WillCall({
                     Boolean(activeCheckout)
                   }
                   onClick={() =>
-                    window.confirm("Return this ready synthetic fill to stock?") &&
-                    void returnToStock(rx)
+                    window.confirm(
+                      "Return this Ready fill to stock? Any active paid claim will be reversed before inventory is returned.",
+                    ) && void returnToStock(rx)
                   }
                 >
                   Return to Stock
