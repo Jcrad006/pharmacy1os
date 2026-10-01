@@ -395,7 +395,7 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
       const created = await app.inject({
         method: "POST",
         url: "/api/third-party/payers",
-        headers: technicianHeaders,
+        headers: pharmacistHeaders,
         payload: {
           name: `Pre3J Payer ${randomUUID()} position ${position}`,
           bin: `9${position}000${position}`,
