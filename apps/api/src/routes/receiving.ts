@@ -201,6 +201,9 @@ export async function receivingRoutes(app: FastifyInstance) {
         });
       }
 
+      const lotNumber = parsed.lotNumber;
+      const expirationDate = parsed.expirationDate;
+
       const barcode = await db.productBarcode.findUnique({
         where: {
           type_identifierSearch: {
@@ -225,8 +228,8 @@ export async function receivingRoutes(app: FastifyInstance) {
         const traceability = await recordTraceability(tx, {
           siteId: actor.siteId,
           productId: barcode.productId,
-          lotNumber: parsed.lotNumber,
-          expirationDate: parsed.expirationDate,
+          lotNumber,
+          expirationDate,
         });
 
         if (!traceability.lot || !traceability.expiration) {
