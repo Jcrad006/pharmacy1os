@@ -808,6 +808,8 @@ export async function checkoutFills(
   input: {
     fillIds: string[];
     tenders?: PosTenderInput[];
+    pickupPackages: PickupPackageInput[];
+    pickup: PickupVerificationInput;
     idempotencyKey: string;
   },
   context: PosActorContext,
@@ -864,6 +866,9 @@ export async function checkoutFills(
         context.siteId,
       );
       const payment = normalizeTenders(input.tenders ?? [], quote.totalDue);
+      const pickup = normalizePickup(input.pickup);
+      validatePackageScans(quote.lines, input.pickupPackages);
+      const pickupVerifiedAt = new Date();
       const receiptNumber =
         `POS-${randomUUID().replace(/-/g, "").slice(0, 14).toUpperCase()}`;
 
@@ -876,6 +881,13 @@ export async function checkoutFills(
           totalTendered: payment.totalTendered,
           changeDue: payment.changeDue,
           idempotencyKey: key,
+          pickupRecipientName: pickup.recipientName,
+          pickupRelationship: pickup.relationship,
+          pickupIdentityMethod: pickup.identityMethod,
+          pickupVerifiedAt,
+          pickupSignatureMethod: pickup.signatureMethod,
+          pickupSignatureName: pickup.signatureName,
+          pickupSignatureReference: pickup.signatureReference,
           createdById: context.actorId,
           lines: {
             create: quote.lines.map((line) => ({
@@ -915,6 +927,7 @@ export async function checkoutFills(
           where: { id: line.fillId },
           include: {
             prescription: true,
+            willCallPackage: true,
           },
         });
         if (
@@ -930,6 +943,19 @@ export async function checkoutFills(
           );
         }
 
+        if (
+          !current.willCallPackage ||
+          current.willCallPackage.status !== "STAGED" ||
+          current.willCallPackage.id !== line.willCallPackageId
+        ) {
+          throw new PosError(
+            409,
+            "WILL_CALL_PACKAGE_STATE_CHANGED",
+            "The staged Will Call package changed while checkout was being completed.",
+            { fillId: line.fillId },
+          );
+        }
+
         await tx.prescriptionFill.update({
           where: { id: current.id },
           data: {
@@ -937,6 +963,14 @@ export async function checkoutFills(
             soldAt,
             physicalDispensedQuantity:
               current.quantity ?? new Prisma.Decimal(0),
+          },
+        });
+
+        await tx.willCallPackage.update({
+          where: { id: current.willCallPackage.id },
+          data: {
+            status: "PICKED_UP",
+            pickedUpAt: soldAt,
           },
         });
 
@@ -989,6 +1023,9 @@ export async function checkoutFills(
             priceBasis: line.priceBasis,
             amountDue: line.amountDue.toFixed(2),
             claimTransactionId: line.claimTransactionId,
+            willCallPackageId: line.willCallPackageId,
+            bagBarcode: line.bagBarcode,
+            willCallLocationCode: line.willCallLocationCode,
           },
         });
       }
@@ -1007,6 +1044,11 @@ export async function checkoutFills(
           totalTendered: payment.totalTendered.toFixed(2),
           changeDue: payment.changeDue.toFixed(2),
           tenderMethods: payment.tenders.map((tender) => tender.method),
+          pickupRecipientName: pickup.recipientName,
+          pickupRelationship: pickup.relationship,
+          pickupIdentityMethod: pickup.identityMethod,
+          pickupSignatureMethod: pickup.signatureMethod,
+          pickupPackageIds: quote.lines.map((line) => line.willCallPackageId),
         },
       });
 
