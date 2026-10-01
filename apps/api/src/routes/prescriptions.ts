@@ -18,6 +18,13 @@ import {
   reconcileDateRuleIssues,
   recordDateRuleIssue,
 } from "../clinical/dateRules.js";
+import {
+  commitInventoryForFill,
+  InventoryError,
+  releaseInventoryReservation,
+  reserveInventoryForFill,
+  returnInventoryForFill,
+} from "../inventory.js";
 
 type CreatePrescriptionBody = {
   patientId?: string;
@@ -111,6 +118,7 @@ const prescriptionInclude = {
       product: { include: { manufacturer: true } },
       productLot: true,
       productExpiration: true,
+      inventoryBalance: true,
     },
     orderBy: { fillNumber: "desc" as const },
   },
@@ -144,6 +152,10 @@ function activeFill(
     productLotId?: string | null;
     productExpirationId?: string | null;
     productVerifiedAt?: Date | null;
+    inventoryBalanceId?: string | null;
+    inventoryReservedAt?: Date | null;
+    inventoryCommittedAt?: Date | null;
+    inventoryReturnedAt?: Date | null;
   }>,
 ) {
   return fills.find((fill) =>
@@ -270,8 +282,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -295,8 +312,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescriptions: prescriptions.map(presentPrescription),
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -318,8 +340,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { prescription: presentPrescription(prescription) };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -369,8 +396,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { events };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -473,8 +505,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(prescription),
       });
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -685,8 +722,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { prescription: presentPrescription(updated) };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -790,11 +832,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         (!currentActiveFill?.productId ||
           !currentActiveFill.productLotId ||
           !currentActiveFill.productExpirationId ||
-          !currentActiveFill.productVerifiedAt)
+          !currentActiveFill.productVerifiedAt ||
+          !currentActiveFill.inventoryBalanceId ||
+          !currentActiveFill.inventoryReservedAt)
       ) {
         return reply.code(409).send({
           error:
-            "A verified NDC, lot, and expiration scan is required before pharmacist review.",
+            "A verified NDC, lot, expiration, and inventory reservation are required before pharmacist review.",
           code: "PRODUCT_SCAN_REQUIRED",
         });
       }
@@ -819,6 +863,20 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (
+        current.status === "READY" &&
+        body.status === "SOLD" &&
+        current.medicationId &&
+        currentActiveFill &&
+        !currentActiveFill.inventoryCommittedAt
+      ) {
+        return reply.code(409).send({
+          error:
+            "Catalog-linked fills require committed inventory before sale.",
+          code: "INVENTORY_COMMIT_REQUIRED",
+        });
+      }
+
       const updated = await db.$transaction(async (tx) => {
         const prescriptionData: Prisma.PrescriptionUpdateInput = {
           status: body.status,
@@ -839,6 +897,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           body.status === "READY" &&
           currentActiveFill
         ) {
+          if (current.medicationId) {
+            await commitInventoryForFill(tx, {
+              fillId: currentActiveFill.id,
+              siteId: actor.siteId,
+              actorId: actor.id,
+            });
+          }
+
           await tx.prescriptionFill.update({
             where: { id: currentActiveFill.id },
             data: {
@@ -871,6 +937,28 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           (body.status === "CANCELLED" || body.status === "TRANSFERRED") &&
           currentActiveFill
         ) {
+          if (
+            currentActiveFill.inventoryCommittedAt &&
+            !currentActiveFill.inventoryReturnedAt
+          ) {
+            await returnInventoryForFill(tx, {
+              fillId: currentActiveFill.id,
+              siteId: actor.siteId,
+              actorId: actor.id,
+              reason: `Prescription ${body.status.toLowerCase()} after inventory commitment`,
+            });
+          } else if (
+            currentActiveFill.inventoryReservedAt &&
+            !currentActiveFill.inventoryCommittedAt
+          ) {
+            await releaseInventoryReservation(tx, {
+              fillId: currentActiveFill.id,
+              siteId: actor.siteId,
+              actorId: actor.id,
+              reason: `Prescription ${body.status.toLowerCase()} before pharmacist verification`,
+            });
+          }
+
           await tx.prescriptionFill.update({
             where: { id: currentActiveFill.id },
             data: { status: "CANCELLED" },
@@ -903,8 +991,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       return { prescription: presentPrescription(updated) };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -990,6 +1083,10 @@ export async function prescriptionRoutes(app: FastifyInstance) {
               scannedLotNumber: null,
               scannedExpiration: null,
               productVerifiedAt: null,
+              inventoryBalanceId: null,
+              inventoryReservedAt: null,
+              inventoryCommittedAt: null,
+              inventoryReturnedAt: null,
               filledAt: null,
               soldAt: null,
             },
@@ -1072,8 +1169,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       });
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -1228,6 +1330,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const verified = await db.$transaction(async (tx) => {
+        const reservation = await reserveInventoryForFill(tx, {
+          fillId: id,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          productId: product.id,
+          productLotId: lot.id,
+          productExpirationId: expiration.id,
+        });
         const verifiedAt = new Date();
         const updated = await tx.prescriptionFill.update({
           where: { id },
@@ -1265,6 +1375,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             lotNumber: lot.lotNumber,
             expirationDate: expiration.expirationDate.toISOString(),
             manufacturerName: product.manufacturer.name,
+            inventoryBalanceId: reservation.balance.id,
+            reservedQuantity: reservation.quantity.toString(),
           },
         });
 
@@ -1288,8 +1400,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -1421,6 +1538,14 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const result = await db.$transaction(async (tx) => {
+        const reservation = await reserveInventoryForFill(tx, {
+          fillId: id,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          productId: product.id,
+          productLotId: lot.id,
+          productExpirationId: expiration.id,
+        });
         const verifiedAt = new Date();
         const verified = await tx.prescriptionFill.update({
           where: { id },
@@ -1455,6 +1580,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             lotNumber: lot.lotNumber,
             expirationDate: expiration.expirationDate.toISOString(),
             manufacturerName: product.manufacturer.name,
+            inventoryBalanceId: reservation.balance.id,
+            reservedQuantity: reservation.quantity.toString(),
           },
         });
 
@@ -1476,8 +1603,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         },
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -1579,8 +1711,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
@@ -1611,6 +1748,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const result = await db.$transaction(async (tx) => {
+        await returnInventoryForFill(tx, {
+          fillId: id,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          reason: "Ready fill returned to stock",
+        });
+
         const returned = await tx.prescriptionFill.update({
           where: { id },
           data: {
@@ -1660,8 +1804,13 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         prescription: presentPrescription(result.prescription),
       };
     } catch (error) {
-      if (error instanceof AccessError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
       }
       throw error;
     }
