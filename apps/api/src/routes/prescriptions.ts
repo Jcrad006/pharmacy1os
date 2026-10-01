@@ -135,6 +135,10 @@ function activeFill(
     id: string;
     fillNumber: number;
     status: FillStatus;
+    productId?: string | null;
+    productLotId?: string | null;
+    productExpirationId?: string | null;
+    productVerifiedAt?: Date | null;
   }>,
 ) {
   return fills.find((fill) =>
