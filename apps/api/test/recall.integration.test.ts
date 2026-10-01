@@ -161,11 +161,24 @@ describe("Phase 3H recall workflow", () => {
     expect(recallCreated.json().summary.quarantinedHoldCount).toBe(1);
     const recallId = recallCreated.json().recall.id as string;
 
+    const recalledReceipt = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: tech,
+      payload: {
+        rawBarcode,
+        quantity: 1,
+        source: "Receipt after active recall",
+      },
+    });
+    expect(recalledReceipt.statusCode).toBe(201);
+    expect(Number(recalledReceipt.json().balance.quarantinedQuantity)).toBe(41);
+
     const balance = await db.inventoryBalance.findUniqueOrThrow({
       where: { id: balanceId },
     });
-    expect(balance.onHandQuantity.toNumber()).toBe(40);
-    expect(balance.quarantinedQuantity.toNumber()).toBe(40);
+    expect(balance.onHandQuantity.toNumber()).toBe(41);
+    expect(balance.quarantinedQuantity.toNumber()).toBe(41);
 
     const newFill = await createFill(5, `${suffix}B`);
     const recalledScan = await app.inject({
