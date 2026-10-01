@@ -109,7 +109,7 @@ export function ThirdParty({
   const [payerGroup, setPayerGroup] = useState("");
   const [claimStandard, setClaimStandard] = useState<ClaimStandard>("D0");
   const [billingNdcStrategy, setBillingNdcStrategy] =
-    useState<BillingNdcStrategy>("REQUIRE_MANUAL_SELECTION");
+    useState<BillingNdcStrategy>("MAJORITY_SOURCE");
 
   const editable =
     user?.role === "ADMIN" ||
@@ -247,7 +247,7 @@ export function ThirdParty({
       setPayerPcn("");
       setPayerGroup("");
       setClaimStandard("D0");
-      setBillingNdcStrategy("REQUIRE_MANUAL_SELECTION");
+      setBillingNdcStrategy("MAJORITY_SOURCE");
       await load("");
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to add payer.");
@@ -778,6 +778,9 @@ export function ThirdParty({
                   )
                 }
               >
+                <option value="MAJORITY_SOURCE">
+                  Automatically bill majority physical NDC
+                </option>
                 <option value="REQUIRE_MANUAL_SELECTION">
                   Require explicit billing NDC
                 </option>

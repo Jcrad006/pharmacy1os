@@ -19,8 +19,22 @@ let productId = "";
 let ndc = "";
 let lotNumber = "";
 let expirationDate!: Date;
+let secondaryProductId = "";
+let secondaryNdc = "";
+let secondaryLotNumber = "";
+let secondaryExpirationDate!: Date;
 
-async function makePatient(memberIds: Array<{ memberId: string; standard: "D0" | "F6" }>) {
+async function makePatient(
+  memberIds: Array<{
+    memberId: string;
+    standard: "D0" | "F6";
+    billingNdcStrategy?:
+      | "MAJORITY_SOURCE"
+      | "REQUIRE_MANUAL_SELECTION"
+      | "SINGLE_SOURCE_ONLY"
+      | "PAYER_CONFIGURED";
+  }>,
+) {
   const token = randomUUID().slice(0, 8);
   const patient = await db.patient.create({
     data: {
@@ -41,7 +55,8 @@ async function makePatient(memberIds: Array<{ memberId: string; standard: "D0" |
         bin: `9${String(index + 1).padStart(5, "0")}`,
         pcn: "PHASE3J",
         claimStandard: item.standard,
-        billingNdcStrategy: "REQUIRE_MANUAL_SELECTION",
+        billingNdcStrategy:
+          item.billingNdcStrategy ?? "REQUIRE_MANUAL_SELECTION",
       },
     });
     await db.patientCoverage.create({
@@ -112,6 +127,20 @@ async function scan(fillId: string, quantity: number) {
       ndc,
       lotNumber,
       expirationDate: expirationDate.toISOString(),
+      sourceQuantity: quantity,
+    },
+  });
+}
+
+async function scanSecondary(fillId: string, quantity: number) {
+  return app.inject({
+    method: "POST",
+    url: `/api/fills/${fillId}/scan-product`,
+    headers: technicianHeaders,
+    payload: {
+      ndc: secondaryNdc,
+      lotNumber: secondaryLotNumber,
+      expirationDate: secondaryExpirationDate.toISOString(),
       sourceQuantity: quantity,
     },
   });
@@ -195,6 +224,64 @@ beforeAll(async () => {
       productExpirationId: expiration.id,
       quantity: 1000,
       source: "PHASE3J_TEST",
+      reference: randomUUID(),
+    }),
+  );
+
+  const secondaryManufacturer = await db.manufacturer.create({
+    data: {
+      id: `mfr-3j-secondary-${randomUUID()}`,
+      name: `Phase3J Secondary Manufacturer ${randomUUID().slice(0, 8)}`,
+      labelerCode: "88124",
+    },
+  });
+
+  secondaryProductId = `product-3j-secondary-${randomUUID()}`;
+  secondaryNdc = `88124-${token}-02`;
+  await db.product.create({
+    data: {
+      id: secondaryProductId,
+      medicationId,
+      manufacturerId: secondaryManufacturer.id,
+      ndc: secondaryNdc,
+      ndcSearch: secondaryNdc.replace(/\D/g, ""),
+      descriptor: "Phase3J secondary claim regression product",
+      packageDescription: "100 count bottle",
+      packageType: "bottle",
+      unitsPerPackage: 100,
+      dispensingUnit: "EACH",
+      therapeuticEquivalenceCode: "AB",
+    },
+  });
+
+  secondaryLotNumber = `3JLOTB${token}`;
+  const secondaryLot = await db.productLot.create({
+    data: {
+      siteId,
+      productId: secondaryProductId,
+      lotNumber: secondaryLotNumber,
+      lotNumberSearch: secondaryLotNumber.toUpperCase(),
+    },
+  });
+  secondaryExpirationDate = new Date(Date.now() + 540 * 86_400_000);
+  secondaryExpirationDate.setUTCHours(0, 0, 0, 0);
+  const secondaryExpiration = await db.productExpiration.create({
+    data: {
+      siteId,
+      productId: secondaryProductId,
+      expirationDate: secondaryExpirationDate,
+    },
+  });
+
+  await db.$transaction((tx) =>
+    receiveInventory(tx, {
+      siteId,
+      actorId: technicianId,
+      productId: secondaryProductId,
+      productLotId: secondaryLot.id,
+      productExpirationId: secondaryExpiration.id,
+      quantity: 1000,
+      source: "PHASE3J_TEST_SECONDARY",
       reference: randomUUID(),
     }),
   );
@@ -574,4 +661,103 @@ describe("Phase 3J billing, adjudication, and prescription labeling", () => {
       }),
     ).toBe(1);
   });
+
+  it("automatically bills the majority NDC and re-adjudicates after a Product Fill source correction changes the majority", async () => {
+    const patient = await makePatient([
+      {
+        memberId: "PAID-MAJORITY-3J",
+        standard: "D0",
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      },
+    ]);
+    const prescriptionId = await createPrescription(patient.id, 90);
+    const fillId = await createFill(prescriptionId, 90, 30);
+
+    const firstSource = await scan(fillId, 30);
+    expect(firstSource.statusCode).toBe(200);
+    expect(firstSource.json().adjudication).toBeNull();
+
+    const completed = await scanSecondary(fillId, 60);
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().adjudication.state).toBe("PAID_LABEL_READY");
+
+    const firstPaid = await db.claimTransaction.findFirstOrThrow({
+      where: {
+        fillId,
+        operation: "SUBMIT",
+        outcome: "PAID",
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(firstPaid.billedProductId).toBe(secondaryProductId);
+    expect(firstPaid.billedNdc).toBe(secondaryNdc);
+
+    const initialSources = await db.fillProductSource.findMany({
+      where: { fillId },
+      orderBy: { sequence: "asc" },
+    });
+    expect(initialSources).toHaveLength(2);
+
+    const removePrimary = await app.inject({
+      method: "DELETE",
+      url: `/api/fills/${fillId}/product-sources/${initialSources[0]!.id}`,
+      headers: technicianHeaders,
+    });
+    expect(removePrimary.statusCode).toBe(200);
+
+    const reversal = await db.claimTransaction.findFirstOrThrow({
+      where: {
+        originalTransactionId: firstPaid.id,
+        operation: "REVERSAL",
+        outcome: "REVERSED",
+      },
+    });
+    expect(reversal.originalTransactionId).toBe(firstPaid.id);
+
+    const remainingSources = await db.fillProductSource.findMany({
+      where: { fillId },
+      orderBy: { sequence: "asc" },
+    });
+    expect(remainingSources).toHaveLength(1);
+
+    const removeSecondary = await app.inject({
+      method: "DELETE",
+      url: `/api/fills/${fillId}/product-sources/${remainingSources[0]!.id}`,
+      headers: technicianHeaders,
+    });
+    expect(removeSecondary.statusCode).toBe(200);
+
+    const correctedMajority = await scan(fillId, 60);
+    expect(correctedMajority.statusCode).toBe(200);
+    expect(correctedMajority.json().adjudication).toBeNull();
+
+    const correctedComplete = await scanSecondary(fillId, 30);
+    expect(correctedComplete.statusCode).toBe(200);
+    expect(correctedComplete.json().adjudication.state).toBe("PAID_LABEL_READY");
+
+    const submissions = await db.claimTransaction.findMany({
+      where: {
+        fillId,
+        operation: "SUBMIT",
+        outcome: "PAID",
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(submissions).toHaveLength(2);
+    expect(submissions[0]!.billedProductId).toBe(secondaryProductId);
+    expect(submissions[1]!.billedProductId).toBe(productId);
+    expect(submissions[1]!.billedNdc).toBe(ndc);
+    expect(submissions[1]!.payerIntendedQuantity.toString()).toBe("90");
+    expect(submissions[1]!.physicalPartQuantity.toString()).toBe("90");
+
+    const labels = await db.prescriptionLabel.findMany({
+      where: { fillId },
+      orderBy: { version: "asc" },
+    });
+    expect(labels).toHaveLength(2);
+    expect(labels[0]!.status).toBe("VOID");
+    expect(labels[1]!.status).toBe("ACTIVE");
+    expect(labels[1]!.billedNdcSnapshot).toBe(ndc);
+  });
+
 });

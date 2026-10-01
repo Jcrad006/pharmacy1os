@@ -20,6 +20,7 @@ import {
 
 const claimStandards = new Set<ClaimStandard>(["D0", "F6"]);
 const billingStrategies = new Set<BillingNdcStrategy>([
+  "MAJORITY_SOURCE",
   "REQUIRE_MANUAL_SELECTION",
   "SINGLE_SOURCE_ONLY",
   "PAYER_CONFIGURED",
@@ -89,7 +90,7 @@ export async function thirdPartyRoutes(app: FastifyInstance) {
             defaultGroupId: body.defaultGroupId?.trim() || null,
             claimStandard: body.claimStandard ?? "D0",
             billingNdcStrategy:
-              body.billingNdcStrategy ?? "REQUIRE_MANUAL_SELECTION",
+              body.billingNdcStrategy ?? "MAJORITY_SOURCE",
           },
         });
         await writeAuditEvent(tx, {

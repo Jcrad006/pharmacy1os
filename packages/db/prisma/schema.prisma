@@ -195,6 +195,7 @@ enum ClaimStandard {
 }
 
 enum BillingNdcStrategy {
+  MAJORITY_SOURCE
   REQUIRE_MANUAL_SELECTION
   SINGLE_SOURCE_ONLY
   PAYER_CONFIGURED
@@ -742,7 +743,7 @@ model Payer {
   pcn                String?
   defaultGroupId     String?
   claimStandard      ClaimStandard      @default(D0)
-  billingNdcStrategy BillingNdcStrategy @default(REQUIRE_MANUAL_SELECTION)
+  billingNdcStrategy BillingNdcStrategy @default(MAJORITY_SOURCE)
   active             Boolean            @default(true)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt

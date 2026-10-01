@@ -460,21 +460,27 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
   it("keeps the claim adapter strict about billed NDC selection", () => {
     expect(
       requireBillingNdcSelection({
-        physicalProductIds: [multiA.id],
+        physicalSources: [{ productId: multiA.id, quantity: 100 }],
         billingNdcStrategy: "REQUIRE_MANUAL_SELECTION",
       }),
     ).toBe(multiA.id);
 
     expect(() =>
       requireBillingNdcSelection({
-        physicalProductIds: [multiA.id, multiB.id],
+        physicalSources: [
+          { productId: multiA.id, quantity: 50 },
+          { productId: multiB.id, quantity: 50 },
+        ],
         billingNdcStrategy: "REQUIRE_MANUAL_SELECTION",
       }),
     ).toThrow(/explicitly selected/i);
 
     expect(() =>
       requireBillingNdcSelection({
-        physicalProductIds: [multiA.id, multiB.id],
+        physicalSources: [
+          { productId: multiA.id, quantity: 50 },
+          { productId: multiB.id, quantity: 50 },
+        ],
         billingProductId: multiA.id,
         billingNdcStrategy: "SINGLE_SOURCE_ONLY",
       }),
@@ -482,11 +488,46 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
 
     expect(
       requireBillingNdcSelection({
-        physicalProductIds: [multiA.id, multiB.id],
+        physicalSources: [
+          { productId: multiA.id, quantity: 50 },
+          { productId: multiB.id, quantity: 50 },
+        ],
         billingProductId: multiB.id,
         billingNdcStrategy: "REQUIRE_MANUAL_SELECTION",
       }),
     ).toBe(multiB.id);
+
+    expect(
+      requireBillingNdcSelection({
+        physicalSources: [
+          { productId: multiA.id, quantity: 30 },
+          { productId: multiA.id, quantity: 10 },
+          { productId: multiB.id, quantity: 60 },
+        ],
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      }),
+    ).toBe(multiB.id);
+
+    expect(() =>
+      requireBillingNdcSelection({
+        physicalSources: [
+          { productId: multiA.id, quantity: 45 },
+          { productId: multiB.id, quantity: 45 },
+        ],
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      }),
+    ).toThrow(/exact quantity tie/i);
+
+    expect(
+      requireBillingNdcSelection({
+        physicalSources: [
+          { productId: multiA.id, quantity: 45 },
+          { productId: multiB.id, quantity: 45 },
+        ],
+        billingProductId: multiA.id,
+        billingNdcStrategy: "MAJORITY_SOURCE",
+      }),
+    ).toBe(multiA.id);
   });
 
   it("requires all physical source quantities, caps a dispense part at four sources, commits every source, and returns every source to stock", async () => {

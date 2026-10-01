@@ -43,6 +43,7 @@ import {
   assertFillBillingReadyForReview,
   assertNoActivePaidClaimForMutation,
   ClaimError,
+  reverseActivePaidClaimsForFill,
 } from "../claims/service.js";
 
 type CreatePrescriptionBody = {
@@ -2985,7 +2986,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             "Product sources may only be removed during an in-progress Product Fill.",
         });
       }
-      await assertNoActivePaidClaimForMutation(params.id, actor.siteId);
+      const reversedClaims = await reverseActivePaidClaimsForFill(
+        params.id,
+        {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          requestId: request.id,
+        },
+        { requireMajoritySource: true },
+      );
 
       const summary = await db.$transaction(async (tx) => {
         const updated = await removeInventorySourceForFill(tx, {
@@ -3008,6 +3017,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             reservedQuantity: updated.reservedQuantity.toString(),
             remainingQuantity: updated.remainingQuantity.toString(),
             sourceCount: updated.sources.length,
+            reversedClaimTransactionIds: reversedClaims.map(
+              (item) => item.transaction.id,
+            ),
           },
         });
         return updated;

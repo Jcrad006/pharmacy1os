@@ -52,6 +52,7 @@ export type ProductSelectionDirective =
 export type ClaimStandard = "D0" | "F6";
 
 export type BillingNdcStrategy =
+  | "MAJORITY_SOURCE"
   | "REQUIRE_MANUAL_SELECTION"
   | "SINGLE_SOURCE_ONLY"
   | "PAYER_CONFIGURED";

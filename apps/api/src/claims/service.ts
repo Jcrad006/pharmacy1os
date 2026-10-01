@@ -190,7 +190,14 @@ async function createOrReuseLabel(
   const physicalQuantity = fill.quantity;
   const payerIntendedQuantity =
     fill.payerIntendedQuantity ?? fill.intendedQuantity ?? fill.quantity;
+  const claimTransaction = claimTransactionId
+    ? await db.claimTransaction.findFirst({
+        where: { id: claimTransactionId, siteId: context.siteId },
+        select: { billedNdc: true },
+      })
+    : null;
   const billedNdc =
+    claimTransaction?.billedNdc ??
     fill.billingProduct?.ndc ??
     (fill.productSources.length === 1
       ? fill.productSources[0]!.ndcSnapshot
@@ -514,7 +521,10 @@ export async function adjudicateFillClaims(
       .map((item) => item.originalTransactionId as string),
   );
 
-  const physicalProductIds = fill.productSources.map((source) => source.productId);
+  const physicalSources = fill.productSources.map((source) => ({
+    productId: source.productId,
+    quantity: source.quantity.toNumber(),
+  }));
   const productById = new Map(
     fill.productSources.map((source) => [source.productId, source.product]),
   );
@@ -579,7 +589,7 @@ export async function adjudicateFillClaims(
     let billedProductId: string;
     try {
       billedProductId = requireBillingNdcSelection({
-        physicalProductIds,
+        physicalSources,
         billingProductId: fill.billingProductId,
         billingNdcStrategy:
           coverage.payer.billingNdcStrategy as BillingNdcStrategy,
@@ -882,6 +892,74 @@ export async function reverseClaimTransaction(
   }
 
   return { transaction, replayed: false };
+}
+
+export async function reverseActivePaidClaimsForFill(
+  fillId: string,
+  context: ClaimActorContext,
+  options?: { requireMajoritySource?: boolean },
+) {
+  const paidClaims = await db.claimTransaction.findMany({
+    where: {
+      fillId,
+      siteId: context.siteId,
+      operation: "SUBMIT",
+      outcome: "PAID",
+    },
+    select: {
+      id: true,
+      coveragePosition: true,
+      createdAt: true,
+      payer: { select: { billingNdcStrategy: true } },
+    },
+  });
+  if (paidClaims.length === 0) return [];
+
+  const paidIds = paidClaims.map((claim) => claim.id);
+  const reversals = await db.claimTransaction.findMany({
+    where: {
+      siteId: context.siteId,
+      operation: "REVERSAL",
+      outcome: "REVERSED",
+      originalTransactionId: { in: paidIds },
+    },
+    select: { originalTransactionId: true },
+  });
+  const reversedIds = new Set(
+    reversals
+      .map((item) => item.originalTransactionId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  const activePaidClaims = paidClaims
+    .filter((claim) => !reversedIds.has(claim.id))
+    .sort(
+      (a, b) =>
+        b.coveragePosition - a.coveragePosition ||
+        b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+
+  if (
+    options?.requireMajoritySource &&
+    activePaidClaims.some(
+      (claim) => claim.payer.billingNdcStrategy !== "MAJORITY_SOURCE",
+    )
+  ) {
+    throw new ClaimError(
+      409,
+      "PAID_CLAIM_REVERSAL_REQUIRED",
+      "Reverse the active paid claim before changing product-source details for a payer that does not use automatic majority-NDC billing.",
+      {
+        claimTransactionIds: activePaidClaims.map((claim) => claim.id),
+      },
+    );
+  }
+
+  const results = [];
+  for (const claim of activePaidClaims) {
+    results.push(await reverseClaimTransaction(claim.id, context));
+  }
+  return results;
 }
 
 export async function assertNoActivePaidClaimForMutation(
