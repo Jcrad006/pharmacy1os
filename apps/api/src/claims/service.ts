@@ -179,15 +179,15 @@ async function createOrReuseLabel(
   context: ClaimActorContext,
   claimTransactionId: string | null,
 ) {
-  const active = await db.prescriptionLabel.findFirst({
-    where: { fillId: fill.id, status: "ACTIVE" },
-    include: {
-      printJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
-    },
-    orderBy: { version: "desc" },
-  });
-
   const physicalQuantity = fill.quantity;
+  if (!physicalQuantity || physicalQuantity.lte(0)) {
+    throw new ClaimError(
+      409,
+      "FILL_QUANTITY_REQUIRED",
+      "A positive physical dispense quantity is required before label generation.",
+    );
+  }
+
   const payerIntendedQuantity =
     fill.payerIntendedQuantity ?? fill.intendedQuantity ?? fill.quantity;
   const claimTransaction = claimTransactionId
@@ -202,29 +202,126 @@ async function createOrReuseLabel(
     (fill.productSources.length === 1
       ? fill.productSources[0]!.ndcSnapshot
       : null);
-  const sourceSummary = fill.productSources.map((source) => ({
-    sequence: source.sequence,
-    productId: source.productId,
-    ndc: source.ndcSnapshot,
-    manufacturer: source.manufacturerSnapshot,
-    lotNumber: source.lotNumberSnapshot,
-    expiration: source.expirationSnapshot.toISOString(),
-    quantity: source.quantity.toString(),
-  }));
-  const sourceSummarySnapshot = jsonSnapshot(sourceSummary);
 
-  if (
-    active &&
-    physicalQuantity &&
-    active.physicalQuantity.eq(physicalQuantity) &&
-    (active.payerIntendedQuantity?.eq(payerIntendedQuantity ?? 0) ??
-      payerIntendedQuantity === null) &&
-    active.daysSupply === fill.daysSupply &&
-    active.billedNdcSnapshot === billedNdc &&
-    JSON.stringify(active.sourceSummarySnapshot) ===
-      JSON.stringify(sourceSummarySnapshot)
-  ) {
-    return { label: active, printJob: active.printJobs[0] ?? null };
+  type BottleSourceSnapshot = {
+    sequence: number;
+    productId: string;
+    ndc: string;
+    manufacturer: string;
+    lotNumber: string;
+    expiration: string;
+    quantity: string;
+  };
+
+  type BottlePlan = {
+    productId: string;
+    ndc: string;
+    manufacturer: string;
+    productDescription: string;
+    quantity: Prisma.Decimal;
+    firstSequence: number;
+    sources: BottleSourceSnapshot[];
+  };
+
+  const grouped = new Map<string, BottlePlan>();
+  for (const source of fill.productSources) {
+    const snapshot: BottleSourceSnapshot = {
+      sequence: source.sequence,
+      productId: source.productId,
+      ndc: source.ndcSnapshot,
+      manufacturer: source.manufacturerSnapshot,
+      lotNumber: source.lotNumberSnapshot,
+      expiration: source.expirationSnapshot.toISOString(),
+      quantity: source.quantity.toString(),
+    };
+    const current = grouped.get(source.productId);
+    if (current) {
+      current.quantity = current.quantity.plus(source.quantity);
+      current.sources.push(snapshot);
+      current.firstSequence = Math.min(current.firstSequence, source.sequence);
+      continue;
+    }
+    grouped.set(source.productId, {
+      productId: source.productId,
+      ndc: source.ndcSnapshot,
+      manufacturer: source.manufacturerSnapshot,
+      productDescription:
+        source.product.descriptor ||
+        [
+          fill.prescription.medicationName,
+          fill.prescription.strength,
+          fill.prescription.dosageForm,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      quantity: new Prisma.Decimal(source.quantity),
+      firstSequence: source.sequence,
+      sources: [snapshot],
+    });
+  }
+
+  const bottles = [...grouped.values()].sort((a, b) => {
+    const quantityOrder = b.quantity.comparedTo(a.quantity);
+    if (quantityOrder !== 0) return quantityOrder;
+    if (billedNdc) {
+      if (a.ndc === billedNdc && b.ndc !== billedNdc) return -1;
+      if (b.ndc === billedNdc && a.ndc !== billedNdc) return 1;
+    }
+    return a.firstSequence - b.firstSequence;
+  });
+
+  if (bottles.length === 0) {
+    throw new ClaimError(
+      409,
+      "PRODUCT_SOURCES_INCOMPLETE",
+      "At least one physical NDC source is required before label generation.",
+    );
+  }
+
+  const activeLabels = await db.prescriptionLabel.findMany({
+    where: { fillId: fill.id, status: "ACTIVE" },
+    include: {
+      printJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+    },
+    orderBy: [{ version: "desc" }, { bottleNumber: "asc" }],
+  });
+
+  const bottleCount = bottles.length;
+  const reusable =
+    activeLabels.length === bottleCount &&
+    activeLabels.every((label, index) => {
+      const bottle = bottles[index]!;
+      const sourceSummarySnapshot = jsonSnapshot(
+        bottle.sources.sort((a, b) => a.sequence - b.sequence),
+      );
+      return (
+        label.bottleNumber === index + 1 &&
+        label.bottleCount === bottleCount &&
+        label.physicalQuantity.eq(physicalQuantity) &&
+        label.containerQuantity.eq(bottle.quantity) &&
+        label.physicalProductIdSnapshot === bottle.productId &&
+        label.physicalNdcSnapshot === bottle.ndc &&
+        label.manufacturerSnapshot === bottle.manufacturer &&
+        label.productDescriptionSnapshot === bottle.productDescription &&
+        (label.payerIntendedQuantity?.eq(payerIntendedQuantity ?? 0) ??
+          payerIntendedQuantity === null) &&
+        label.daysSupply === fill.daysSupply &&
+        label.billedNdcSnapshot === billedNdc &&
+        JSON.stringify(label.sourceSummarySnapshot) ===
+          JSON.stringify(sourceSummarySnapshot)
+      );
+    });
+
+  if (reusable) {
+    const printJobs = activeLabels
+      .map((label) => label.printJobs[0] ?? null)
+      .filter((job): job is NonNullable<typeof job> => Boolean(job));
+    return {
+      label: activeLabels[0] ?? null,
+      printJob: printJobs[0] ?? null,
+      labels: activeLabels,
+      printJobs,
+    };
   }
 
   const last = await db.prescriptionLabel.findFirst({
@@ -232,114 +329,147 @@ async function createOrReuseLabel(
     select: { version: true },
     orderBy: { version: "desc" },
   });
+  const nextVersion = (last?.version ?? 0) + 1;
 
-  if (active) {
+  if (activeLabels.length > 0) {
     await db.$transaction(async (tx) => {
-      await tx.prescriptionLabel.update({
-        where: { id: active.id },
+      const activeIds = activeLabels.map((label) => label.id);
+      await tx.prescriptionLabel.updateMany({
+        where: { id: { in: activeIds } },
         data: {
           status: "VOID",
           voidedAt: new Date(),
           voidReason:
-            "Dispensing details changed after label generation; replacement label required.",
+            "Dispensing bottle/NDC details changed after label generation; replacement label set required.",
         },
       });
       await tx.labelPrintJob.updateMany({
-        where: { labelId: active.id, status: "QUEUED" },
+        where: { labelId: { in: activeIds }, status: "QUEUED" },
         data: { status: "CANCELLED" },
       });
       await writeAuditEvent(tx, {
         siteId: context.siteId,
         actorId: context.actorId,
-        action: "PRESCRIPTION_LABEL_VOIDED_FOR_REPLACEMENT",
-        entityType: "PrescriptionLabel",
-        entityId: active.id,
+        action: "PRESCRIPTION_LABEL_SET_VOIDED_FOR_REPLACEMENT",
+        entityType: "PrescriptionFill",
+        entityId: fill.id,
         requestId: context.requestId,
         metadata: {
           fillId: fill.id,
-          priorVersion: active.version,
-          priorPhysicalQuantity: active.physicalQuantity.toString(),
-          nextPhysicalQuantity: physicalQuantity?.toString() ?? null,
+          priorLabelIds: activeIds,
+          priorVersion: activeLabels[0]?.version ?? null,
+          nextVersion,
+          nextBottleCount: bottleCount,
+          nextPhysicalQuantity: physicalQuantity.toString(),
         },
       });
     });
   }
 
-  if (!physicalQuantity || physicalQuantity.lte(0)) {
-    throw new ClaimError(
-      409,
-      "FILL_QUANTITY_REQUIRED",
-      "A positive physical dispense quantity is required before label generation.",
-    );
-  }
-
   return db.$transaction(async (tx) => {
-    const label = await tx.prescriptionLabel.create({
-      data: {
-        siteId: context.siteId,
-        fillId: fill.id,
-        version: (last?.version ?? 0) + 1,
-        claimTransactionId,
-        rxNumberSnapshot: fill.prescription.rxNumber,
-        patientNameSnapshot:
-          `${fill.prescription.patient.lastName}, ${fill.prescription.patient.firstName}`,
-        prescriberNameSnapshot:
-          `${fill.prescription.prescriber.lastName}, ${fill.prescription.prescriber.firstName}`,
-        medicationSnapshot: [
-          fill.prescription.medicationName,
-          fill.prescription.strength,
-          fill.prescription.dosageForm,
-        ]
-          .filter(Boolean)
-          .join(" "),
-        sigSnapshot: fill.prescription.sig,
-        physicalQuantity,
-        payerIntendedQuantity,
-        daysSupply: fill.daysSupply,
-        billedNdcSnapshot: billedNdc,
-        sourceSummarySnapshot,
-      },
-    });
+    const labels = [];
+    const printJobs = [];
 
-    const printJob = await tx.labelPrintJob.create({
-      data: {
+    for (const [index, bottle] of bottles.entries()) {
+      const bottleNumber = index + 1;
+      const sourceSummarySnapshot = jsonSnapshot(
+        bottle.sources.sort((a, b) => a.sequence - b.sequence),
+      );
+      const label = await tx.prescriptionLabel.create({
+        data: {
+          siteId: context.siteId,
+          fillId: fill.id,
+          version: nextVersion,
+          bottleNumber,
+          bottleCount,
+          claimTransactionId,
+          rxNumberSnapshot: fill.prescription.rxNumber,
+          patientNameSnapshot:
+            `${fill.prescription.patient.lastName}, ${fill.prescription.patient.firstName}`,
+          prescriberNameSnapshot:
+            `${fill.prescription.prescriber.lastName}, ${fill.prescription.prescriber.firstName}`,
+          medicationSnapshot: [
+            fill.prescription.medicationName,
+            fill.prescription.strength,
+            fill.prescription.dosageForm,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          sigSnapshot: fill.prescription.sig,
+          physicalQuantity,
+          containerQuantity: bottle.quantity,
+          physicalProductIdSnapshot: bottle.productId,
+          physicalNdcSnapshot: bottle.ndc,
+          manufacturerSnapshot: bottle.manufacturer,
+          productDescriptionSnapshot: bottle.productDescription,
+          payerIntendedQuantity,
+          daysSupply: fill.daysSupply,
+          billedNdcSnapshot: billedNdc,
+          sourceSummarySnapshot,
+        },
+      });
+
+      const printJob = await tx.labelPrintJob.create({
+        data: {
+          siteId: context.siteId,
+          labelId: label.id,
+          actorId: context.actorId,
+          status: "QUEUED",
+          copies: 1,
+        },
+      });
+
+      await writeAuditEvent(tx, {
         siteId: context.siteId,
-        labelId: label.id,
         actorId: context.actorId,
-        status: "QUEUED",
-        copies: 1,
-      },
-    });
+        action: "PRESCRIPTION_BOTTLE_LABEL_GENERATED",
+        entityType: "PrescriptionLabel",
+        entityId: label.id,
+        requestId: context.requestId,
+        metadata: {
+          fillId: fill.id,
+          version: label.version,
+          claimTransactionId,
+          bottleNumber,
+          bottleCount,
+          physicalProductId: bottle.productId,
+          physicalNdc: bottle.ndc,
+          manufacturer: bottle.manufacturer,
+          productDescription: bottle.productDescription,
+          containerQuantity: bottle.quantity.toString(),
+          totalPhysicalQuantity: physicalQuantity.toString(),
+          payerIntendedQuantity: payerIntendedQuantity?.toString() ?? null,
+          billedNdc,
+          sourceCount: bottle.sources.length,
+        },
+      });
 
-    await writeAuditEvent(tx, {
-      siteId: context.siteId,
-      actorId: context.actorId,
-      action: "PRESCRIPTION_LABEL_GENERATED",
-      entityType: "PrescriptionLabel",
-      entityId: label.id,
-      requestId: context.requestId,
-      metadata: {
-        fillId: fill.id,
-        version: label.version,
-        claimTransactionId,
-        physicalQuantity: physicalQuantity.toString(),
-        payerIntendedQuantity: payerIntendedQuantity?.toString() ?? null,
-        billedNdc,
-        sourceCount: sourceSummary.length,
-      },
-    });
+      await writeAuditEvent(tx, {
+        siteId: context.siteId,
+        actorId: context.actorId,
+        action: "LABEL_PRINT_JOB_QUEUED",
+        entityType: "LabelPrintJob",
+        entityId: printJob.id,
+        requestId: context.requestId,
+        metadata: {
+          fillId: fill.id,
+          labelId: label.id,
+          bottleNumber,
+          bottleCount,
+          copies: 1,
+        },
+      });
 
-    await writeAuditEvent(tx, {
-      siteId: context.siteId,
-      actorId: context.actorId,
-      action: "LABEL_PRINT_JOB_QUEUED",
-      entityType: "LabelPrintJob",
-      entityId: printJob.id,
-      requestId: context.requestId,
-      metadata: { fillId: fill.id, labelId: label.id, copies: 1 },
-    });
+      labels.push({ ...label, printJobs: [printJob] });
+      printJobs.push(printJob);
+    }
 
-    return { label: { ...label, printJobs: [printJob] }, printJob };
+    return {
+      label: labels[0] ?? null,
+      printJob: printJobs[0] ?? null,
+      labels,
+      printJobs,
+    };
   });
 }
 
