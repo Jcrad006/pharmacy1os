@@ -73,6 +73,15 @@ enum ProductBarcodeType {
   OTHER
 }
 
+enum InventoryTransactionType {
+  RECEIVE
+  RESERVE
+  RELEASE
+  DISPENSE
+  RETURN_TO_STOCK
+  ADJUSTMENT
+}
+
 model PharmacySite {
   id            String         @id @default(uuid())
   name          String
@@ -85,9 +94,11 @@ model PharmacySite {
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
-  productLots        ProductLot[]
-  productExpirations ProductExpiration[]
-  auditEvents        AuditEvent[]
+  productLots           ProductLot[]
+  productExpirations    ProductExpiration[]
+  inventoryBalances     InventoryBalance[]
+  inventoryTransactions InventoryTransaction[]
+  auditEvents           AuditEvent[]
 }
 
 model User {
@@ -102,7 +113,8 @@ model User {
   updatedAt         DateTime           @updatedAt
   auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
-  interventionNotes InterventionNote[] @relation("InterventionAuthors")
+  interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
+  inventoryTransactions InventoryTransaction[] @relation("InventoryTransactionActors")
 
   @@index([siteId, role])
 }
@@ -250,6 +262,7 @@ model Product {
   expirations         ProductExpiration[]
   prescriptionFills   PrescriptionFill[]
   barcodes             ProductBarcode[]
+  inventoryBalances    InventoryBalance[]
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
@@ -289,7 +302,8 @@ model ProductLot {
 
   @@unique([siteId, productId, lotNumberSearch])
   @@index([productId, lotNumberSearch])
-  prescriptionFills PrescriptionFill[]
+  prescriptionFills  PrescriptionFill[]
+  inventoryBalances   InventoryBalance[]
 
   @@index([siteId, active])
 }
@@ -308,6 +322,7 @@ model ProductExpiration {
   @@unique([siteId, productId, expirationDate])
   @@index([siteId, expirationDate])
   prescriptionFills PrescriptionFill[]
+  inventoryBalances  InventoryBalance[]
 
   @@index([productId, expirationDate])
 }
@@ -366,6 +381,12 @@ model PrescriptionFill {
   scannedLotNumber    String?
   scannedExpiration   DateTime?
   productVerifiedAt   DateTime?
+  inventoryBalanceId  String?
+  inventoryBalance    InventoryBalance? @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  inventoryReservedAt DateTime?
+  inventoryCommittedAt DateTime?
+  inventoryReturnedAt DateTime?
+  inventoryTransactions InventoryTransaction[]
   filledAt            DateTime?
   soldAt              DateTime?
   createdAt           DateTime           @default(now())
@@ -376,6 +397,54 @@ model PrescriptionFill {
   @@index([productId])
   @@index([productLotId])
   @@index([productExpirationId])
+  @@index([inventoryBalanceId])
+}
+
+model InventoryBalance {
+  id                  String             @id @default(uuid())
+  siteId              String
+  site                PharmacySite       @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  productId           String
+  product             Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productLotId        String
+  productLot          ProductLot         @relation(fields: [productLotId], references: [id], onDelete: Restrict)
+  productExpirationId String
+  productExpiration   ProductExpiration  @relation(fields: [productExpirationId], references: [id], onDelete: Restrict)
+  onHandQuantity      Decimal            @default(0) @db.Decimal(14, 3)
+  reservedQuantity    Decimal            @default(0) @db.Decimal(14, 3)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  fills               PrescriptionFill[]
+  transactions        InventoryTransaction[]
+
+  @@unique([siteId, productId, productLotId, productExpirationId])
+  @@index([siteId, productId])
+  @@index([productLotId])
+  @@index([productExpirationId])
+}
+
+model InventoryTransaction {
+  id                 String                   @id @default(uuid())
+  siteId             String
+  site               PharmacySite             @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  inventoryBalanceId String
+  inventoryBalance   InventoryBalance         @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  fillId             String?
+  fill               PrescriptionFill?        @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  actorId            String?
+  actor              User?                    @relation("InventoryTransactionActors", fields: [actorId], references: [id], onDelete: Restrict)
+  type               InventoryTransactionType
+  onHandDelta        Decimal                  @default(0) @db.Decimal(14, 3)
+  reservedDelta      Decimal                  @default(0) @db.Decimal(14, 3)
+  reason             String?
+  source             String?
+  reference          String?
+  occurredAt         DateTime                 @default(now())
+
+  @@index([siteId, occurredAt])
+  @@index([inventoryBalanceId, occurredAt])
+  @@index([fillId, occurredAt])
+  @@index([actorId, occurredAt])
 }
 
 model DurIssue {
