@@ -229,6 +229,7 @@ export type ExceptionSummary = {
   onHold: number;
   pharmacistReview: number;
   scheduled: number;
+  emergencyFollowUp: number;
 };
 
 
