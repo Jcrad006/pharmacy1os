@@ -169,6 +169,7 @@ export async function checkoutPos(
       recipientName: string;
       relationship?: string | null;
       identityMethod: PickupIdentityMethod;
+      identityValue?: string | null;
       signatureMethod: PickupSignatureMethod;
       signatureName?: string | null;
       signatureReference?: string | null;
