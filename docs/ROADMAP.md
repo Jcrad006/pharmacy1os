@@ -189,7 +189,18 @@
 - [x] Immutable quarantine/release/disposition ledger deltas and audit events
 - [x] Cycle-count snapshots and stale checks include quarantined quantity
 - [x] F9 quarantine hold queue with active and resolved history
-- [ ] Recall workflow linking affected on-hand stock and dispensed fills
+- [x] Recall workflow linking affected on-hand stock and dispensed fills
+- [x] Pharmacist/admin-only lot recall initiation and closure
+- [x] Open recall snapshots sold, ready, and active fills associated with the lot
+- [x] Open recall releases unsafe active reservations and resets pharmacist-review prescriptions to Product Fill
+- [x] Open recall quarantines all currently available stock for the affected lot
+- [x] Product Fill, pharmacist verification, and Ready-to-Sold transitions block open recalled lots
+- [x] Stock received during an open recall is automatically quarantined
+- [x] Ready-fill return-to-stock during an open recall is automatically quarantined
+- [x] Recall-linked quarantine cannot be released while the recall is open
+- [x] Recall closure leaves physical quarantine holds in place for separate release/disposition
+- [x] F9 recall console with affected-fill and patient exposure list
+- [ ] Patient outreach/contact documentation workflow for recall follow-up
 - [ ] Purchase orders and wholesaler receiving reconciliation
 
 ## Phase 3 — Pharmacy utilities

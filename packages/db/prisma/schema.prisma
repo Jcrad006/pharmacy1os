@@ -107,6 +107,11 @@ enum InventoryDispositionType {
   OTHER
 }
 
+enum InventoryRecallStatus {
+  OPEN
+  CLOSED
+}
+
 enum CycleCountStatus {
   OPEN
   SUBMITTED
@@ -132,6 +137,7 @@ model PharmacySite {
   inventoryTransactions InventoryTransaction[]
   cycleCountSessions    CycleCountSession[]
   inventoryHolds        InventoryHold[]
+  inventoryRecalls      InventoryRecall[]
   auditEvents            AuditEvent[]
 }
 
@@ -155,6 +161,8 @@ model User {
   countedCycleCountLines CycleCountLine[]        @relation("CycleCountCountedBy")
   createdInventoryHolds  InventoryHold[]          @relation("InventoryHoldCreatedBy")
   resolvedInventoryHolds InventoryHold[]          @relation("InventoryHoldResolvedBy")
+  initiatedInventoryRecalls InventoryRecall[]      @relation("InventoryRecallInitiatedBy")
+  closedInventoryRecalls    InventoryRecall[]      @relation("InventoryRecallClosedBy")
 
   @@index([siteId, role])
 }
@@ -303,6 +311,7 @@ model Product {
   prescriptionFills   PrescriptionFill[]
   barcodes             ProductBarcode[]
   inventoryBalances    InventoryBalance[]
+  inventoryRecalls     InventoryRecall[]
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
@@ -344,6 +353,7 @@ model ProductLot {
   @@index([productId, lotNumberSearch])
   prescriptionFills  PrescriptionFill[]
   inventoryBalances   InventoryBalance[]
+  inventoryRecalls    InventoryRecall[]
 
   @@index([siteId, active])
 }
@@ -427,6 +437,7 @@ model PrescriptionFill {
   inventoryCommittedAt DateTime?
   inventoryReturnedAt DateTime?
   inventoryTransactions InventoryTransaction[]
+  recallAffectedFills  InventoryRecallAffectedFill[]
   filledAt            DateTime?
   soldAt              DateTime?
   createdAt           DateTime           @default(now())
@@ -534,12 +545,59 @@ model InventoryHold {
   resolvedAt         DateTime?
   updatedAt          DateTime                 @updatedAt
   transactions       InventoryTransaction[]
+  recallId            String?
+  recall              InventoryRecall?           @relation(fields: [recallId], references: [id], onDelete: Restrict)
 
   @@index([siteId, status, createdAt])
   @@index([inventoryBalanceId, status])
   @@index([reasonCode, status])
   @@index([createdById, createdAt])
   @@index([resolvedById, resolvedAt])
+  @@index([recallId, status])
+}
+
+model InventoryRecall {
+  id              String                @id @default(uuid())
+  siteId          String
+  site            PharmacySite          @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  productId       String
+  product         Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productLotId    String
+  productLot      ProductLot            @relation(fields: [productLotId], references: [id], onDelete: Restrict)
+  status          InventoryRecallStatus @default(OPEN)
+  source          String?
+  referenceNumber String?
+  reason          String
+  initiatedById   String
+  initiatedBy     User                  @relation("InventoryRecallInitiatedBy", fields: [initiatedById], references: [id], onDelete: Restrict)
+  closedById      String?
+  closedBy        User?                 @relation("InventoryRecallClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
+  initiatedAt     DateTime              @default(now())
+  closedAt        DateTime?
+  closureNote     String?
+  holds           InventoryHold[]
+  affectedFills   InventoryRecallAffectedFill[]
+
+  @@index([siteId, productLotId, status])
+  @@index([siteId, status, initiatedAt])
+  @@index([productId, productLotId])
+  @@index([referenceNumber])
+  @@index([initiatedById, initiatedAt])
+  @@index([closedById, closedAt])
+}
+
+model InventoryRecallAffectedFill {
+  id                              String             @id @default(uuid())
+  recallId                        String
+  recall                          InventoryRecall    @relation(fields: [recallId], references: [id], onDelete: Cascade)
+  fillId                          String
+  fill                            PrescriptionFill   @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  fillStatusAtIdentification      FillStatus
+  prescriptionStatusAtIdentification PrescriptionStatus
+  identifiedAt                    DateTime           @default(now())
+
+  @@unique([recallId, fillId])
+  @@index([fillId, identifiedAt])
 }
 
 model InventoryTransaction {

@@ -877,6 +877,36 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (
+        current.status === "READY" &&
+        body.status === "SOLD" &&
+        currentActiveFill?.productId &&
+        currentActiveFill.productLotId
+      ) {
+        const openRecall = await db.inventoryRecall.findFirst({
+          where: {
+            siteId: actor.siteId,
+            productId: currentActiveFill.productId,
+            productLotId: currentActiveFill.productLotId,
+            status: "OPEN",
+          },
+          select: {
+            id: true,
+            referenceNumber: true,
+            reason: true,
+          },
+        });
+
+        if (openRecall) {
+          return reply.code(409).send({
+            error:
+              "This ready fill contains product from a recalled lot and cannot be sold. Return it to stock for quarantine and reprocess with unaffected product.",
+            code: "PRODUCT_RECALLED",
+            recall: openRecall,
+          });
+        }
+      }
+
       const updated = await db.$transaction(async (tx) => {
         const prescriptionData: Prisma.PrescriptionUpdateInput = {
           status: body.status,

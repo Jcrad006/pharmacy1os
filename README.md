@@ -42,6 +42,7 @@ The current prototype includes:
 - Quantity-based inventory ledger with on-hand, reserved, quarantined, and available stock by NDC/lot/expiration
 - Cycle-count sessions with technician count entry and pharmacist/admin discrepancy reconciliation
 - Quarantine holds for damaged, expired, recalled, suspect, or temperature-excursion stock with pharmacist-controlled release/disposition
+- Lot recall management that quarantines available stock, blocks affected dispensing/sale, unwinds active reservations, and snapshots affected fills for follow-up
 
 Clinical hardening now includes a server-enforced HIGH-severity DUR gate, required resolution dispositions, structured eligibility dates for date-rule issues, and automatic reconciliation of stale synthetic date-rule issues.
 

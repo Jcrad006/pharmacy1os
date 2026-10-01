@@ -348,6 +348,110 @@ export type InventoryHold = {
   transactions: InventoryTransaction[];
 };
 
+export type InventoryRecallStatus = "OPEN" | "CLOSED";
+
+export type InventoryRecallAffectedFill = {
+  id: string;
+  recallId: string;
+  fillId: string;
+  fillStatusAtIdentification: FillStatus;
+  prescriptionStatusAtIdentification: PrescriptionStatus;
+  identifiedAt: string;
+  fill: {
+    id: string;
+    fillNumber: number;
+    quantity: string | number | null;
+    status: FillStatus;
+    scannedNdc: string | null;
+    scannedLotNumber: string | null;
+    scannedExpiration: string | null;
+    filledAt: string | null;
+    soldAt: string | null;
+    productExpiration: ProductExpiration | null;
+    prescription: {
+      id: string;
+      rxNumber: string | null;
+      medicationName: string;
+      strength: string | null;
+      dosageForm: string | null;
+      status: PrescriptionStatus;
+      patient: Patient;
+      prescriber: {
+        id: string;
+        firstName: string;
+        lastName: string;
+        practiceLevel: string;
+      };
+    };
+  };
+};
+
+export type InventoryRecall = {
+  id: string;
+  siteId: string;
+  productId: string;
+  productLotId: string;
+  status: InventoryRecallStatus;
+  source: string | null;
+  referenceNumber: string | null;
+  reason: string;
+  initiatedById: string;
+  initiatedBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  closedById: string | null;
+  closedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  initiatedAt: string;
+  closedAt: string | null;
+  closureNote: string | null;
+  product: {
+    id: string;
+    ndc: string;
+    descriptor: string;
+    medication: {
+      id: string;
+      genericName: string;
+      brandName: string | null;
+      strength: string;
+      dosageForm: string;
+    };
+    manufacturer: {
+      id: string;
+      name: string;
+    };
+  };
+  productLot: ProductLot;
+  holds: Array<{
+    id: string;
+    quantity: string | number;
+    status: InventoryHoldStatus;
+    reasonCode: InventoryHoldReason;
+    createdAt: string;
+    resolvedAt: string | null;
+    inventoryBalance: {
+      id: string;
+      onHandQuantity: string | number;
+      reservedQuantity: string | number;
+      quarantinedQuantity: string | number;
+      productExpiration: ProductExpiration;
+    };
+  }>;
+  affectedFills: InventoryRecallAffectedFill[];
+  summary: {
+    affectedFillCount: number;
+    soldFillCount: number;
+    readyFillCount: number;
+    activeFillCount: number;
+    quarantinedQuantity: number;
+  };
+};
+
 export type InventoryBalance = {
   id: string;
   siteId: string;

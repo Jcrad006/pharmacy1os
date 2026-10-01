@@ -228,6 +228,34 @@ export async function reserveInventoryForFill(
 
   const quantity = positiveQuantity(fill.quantity);
 
+  const openRecall = await tx.inventoryRecall.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: input.productId,
+      productLotId: input.productLotId,
+      status: "OPEN",
+    },
+    select: {
+      id: true,
+      referenceNumber: true,
+      reason: true,
+    },
+  });
+
+  if (openRecall) {
+    throw new InventoryError(
+      409,
+      "PRODUCT_RECALLED",
+      "This product lot is under an active recall and cannot be used for dispensing.",
+      {
+        recallId: openRecall.id,
+        referenceNumber: openRecall.referenceNumber,
+        reason: openRecall.reason,
+        productLotId: input.productLotId,
+      },
+    );
+  }
+
   if (fill.inventoryBalanceId && fill.inventoryReservedAt) {
     await releaseInventoryReservation(tx, {
       fillId: fill.id,
@@ -350,6 +378,34 @@ export async function commitInventoryForFill(
   const quantity = positiveQuantity(fill.quantity);
   const balance = await lockBalance(tx, fill.inventoryBalanceId);
 
+  const openRecall = await tx.inventoryRecall.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: balance.productId,
+      productLotId: balance.productLotId,
+      status: "OPEN",
+    },
+    select: {
+      id: true,
+      referenceNumber: true,
+      reason: true,
+    },
+  });
+
+  if (openRecall) {
+    throw new InventoryError(
+      409,
+      "PRODUCT_RECALLED",
+      "This product lot entered recall after Product Fill and cannot be pharmacist-verified.",
+      {
+        recallId: openRecall.id,
+        referenceNumber: openRecall.referenceNumber,
+        reason: openRecall.reason,
+        productLotId: balance.productLotId,
+      },
+    );
+  }
+
   if (
     balance.reservedQuantity.lt(quantity) ||
     balance.onHandQuantity.lt(quantity)
@@ -459,7 +515,34 @@ export async function returnInventoryForFill(
     },
   });
 
-  return { balance: updated, returnedAt };
+  const openRecall = await tx.inventoryRecall.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: balance.productId,
+      productLotId: balance.productLotId,
+      status: "OPEN",
+    },
+    select: { id: true, referenceNumber: true },
+  });
+
+  let recallHold = null;
+  if (openRecall) {
+    recallHold = await quarantineInventory(tx, {
+      balanceId: balance.id,
+      siteId: input.siteId,
+      actorId: input.actorId,
+      quantity,
+      reasonCode: "RECALL",
+      note: `Returned fill automatically quarantined under recall ${openRecall.referenceNumber ?? openRecall.id}.`,
+      recallId: openRecall.id,
+    });
+  }
+
+  return {
+    balance: recallHold?.balance ?? updated,
+    returnedAt,
+    recallHold: recallHold?.hold ?? null,
+  };
 }
 
 export async function adjustInventoryBalance(
@@ -536,6 +619,7 @@ export async function quarantineInventory(
     quantity: number | string | Prisma.Decimal;
     reasonCode: InventoryHoldReason;
     note?: string | null;
+    recallId?: string | null;
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
@@ -576,6 +660,7 @@ export async function quarantineInventory(
       reasonCode: input.reasonCode,
       note: input.note?.trim() || null,
       createdById: input.actorId,
+      recallId: input.recallId ?? null,
     },
   });
 
@@ -597,8 +682,8 @@ export async function quarantineInventory(
       reservedDelta: 0,
       quarantinedDelta: quantity,
       reason: input.note?.trim() || input.reasonCode.replaceAll("_", " "),
-      source: "INVENTORY_HOLD",
-      reference: hold.id,
+      source: input.recallId ? "RECALL" : "INVENTORY_HOLD",
+      reference: input.recallId ?? hold.id,
     },
   });
 
@@ -639,6 +724,33 @@ export async function releaseInventoryHold(
   }
 
   const balance = await lockBalance(tx, hold.inventoryBalanceId);
+
+  const activeRecall = await tx.inventoryRecall.findFirst({
+    where: {
+      siteId: input.siteId,
+      productId: balance.productId,
+      productLotId: balance.productLotId,
+      status: "OPEN",
+    },
+    select: {
+      id: true,
+      referenceNumber: true,
+      reason: true,
+    },
+  });
+
+  if (activeRecall) {
+    throw new InventoryError(
+      409,
+      "ACTIVE_RECALL",
+      "Quarantined stock from a recalled lot cannot be released while the recall remains open.",
+      {
+        recallId: activeRecall.id,
+        referenceNumber: activeRecall.referenceNumber,
+        reason: activeRecall.reason,
+      },
+    );
+  }
 
   if (balance.quarantinedQuantity.lt(hold.quantity)) {
     throw new InventoryError(
