@@ -1942,3 +1942,147 @@ kbd {
     grid-template-columns: 1fr;
   }
 }
+
+
+.third-party-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, .8fr) minmax(0, 2fr);
+  gap: 18px;
+}
+
+.third-party-work-stack {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.third-party-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.third-party-patient-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+  max-height: 680px;
+  overflow: auto;
+}
+
+.third-party-patient {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dce5e0;
+  border-radius: 9px;
+  padding: 10px 11px;
+  background: white;
+  color: #26352e;
+  font: inherit;
+  cursor: pointer;
+}
+
+.third-party-patient.active {
+  border-color: #5f8170;
+  box-shadow: inset 3px 0 0 #5f8170;
+  background: #f4f9f6;
+}
+
+.third-party-patient span,
+.third-party-patient small {
+  color: #687970;
+}
+
+.coverage-slot-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.coverage-slot {
+  border: 1px solid #d8e3dd;
+  border-radius: 11px;
+  padding: 13px;
+  background: #fbfdfc;
+}
+
+.coverage-slot-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.coverage-slot-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.coverage-position {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 28px;
+  border-radius: 7px;
+  background: #e6f0eb;
+  color: #325645;
+  font-weight: 800;
+}
+
+.coverage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.coverage-grid label {
+  display: grid;
+  gap: 5px;
+  color: #4a5e54;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.coverage-grid input,
+.coverage-grid select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: white;
+  color: #203029;
+  font: inherit;
+}
+
+.coverage-payer-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 9px;
+  color: #6a7a72;
+  font-size: 11px;
+}
+
+@media (max-width: 1150px) {
+  .third-party-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .coverage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .third-party-search,
+  .coverage-grid {
+    grid-template-columns: 1fr;
+  }
+}
