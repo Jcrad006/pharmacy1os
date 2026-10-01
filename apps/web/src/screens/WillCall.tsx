@@ -1,8 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   checkoutPos,
+  getWillCallHistory,
   quotePosCheckout,
+  rebagWillCallPackage,
+  relocateWillCallPackage,
   returnFillToStock,
+  scanWillCallBarcode,
   stageWillCallPackage,
 } from "../api";
 import type {
@@ -12,6 +16,8 @@ import type {
   PickupIdentityMethod,
   PosQuote,
   PrescriptionQueueItem,
+  WillCallEvent,
+  WillCallPackage,
 } from "../types";
 import {
   canProcess,
@@ -35,10 +41,18 @@ type CheckoutState = {
   signatureName: string;
 };
 
+type StagingMode = "STAGE" | "RELOCATE" | "REBAG";
+
 type StagingState = {
   fillId: string;
+  mode: StagingMode;
   bagBarcode: string;
   locationBarcode: string;
+};
+
+type HistoryState = {
+  fillId: string;
+  events: WillCallEvent[];
 };
 
 function money(value: string | number) {
@@ -52,6 +66,24 @@ function basisLabel(basis: PosQuote["lines"][number]["priceBasis"]) {
     return "Already billed on primary fill";
   }
   return "Cash price";
+}
+
+function readyAge(value: Date | null) {
+  if (!value) return "—";
+  const ms = Math.max(0, Date.now() - value.getTime());
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return "Less than 1 hour";
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+function historyLabel(event: WillCallEvent) {
+  if (event.eventType === "STAGED") return "Staged";
+  if (event.eventType === "RELOCATED") return "Moved";
+  if (event.eventType === "REBAGGED") return "Bag replaced";
+  if (event.eventType === "PICKED_UP") return "Picked up";
+  return "Returned to stock";
 }
 
 export function WillCall({
@@ -73,7 +105,38 @@ export function WillCall({
 }) {
   const [checkout, setCheckout] = useState<CheckoutState | null>(null);
   const [staging, setStaging] = useState<StagingState | null>(null);
+  const [history, setHistory] = useState<HistoryState | null>(null);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [scanBarcode, setScanBarcode] = useState("");
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [locationScanPackages, setLocationScanPackages] = useState<
+    WillCallPackage[]
+  >([]);
+
+  const workstationScanRef = useRef<HTMLInputElement>(null);
+  const stagingBagRef = useRef<HTMLInputElement>(null);
+  const stagingLocationRef = useRef<HTMLInputElement>(null);
+
+  function focusWorkstationScanner() {
+    window.setTimeout(() => workstationScanRef.current?.focus(), 0);
+  }
+
+  useEffect(() => {
+    if (!checkout && !staging) {
+      focusWorkstationScanner();
+    }
+  }, [checkout, staging]);
+
+  useEffect(() => {
+    if (!staging) return;
+    window.setTimeout(() => {
+      if (staging.mode === "RELOCATE") {
+        stagingLocationRef.current?.focus();
+      } else {
+        stagingBagRef.current?.focus();
+      }
+    }, 0);
+  }, [staging?.fillId, staging?.mode]);
 
   async function completeStaging() {
     if (!staging) return;
@@ -81,16 +144,53 @@ export function WillCall({
     setCheckoutBusy(true);
     onError(null);
     try {
-      const result = await stageWillCallPackage(devUser, staging.fillId, {
-        bagBarcode: staging.bagBarcode.trim() || null,
-        locationBarcode: staging.locationBarcode.trim() || null,
-      });
+      if (staging.mode === "STAGE") {
+        const result = await stageWillCallPackage(devUser, staging.fillId, {
+          bagBarcode: staging.bagBarcode.trim() || null,
+          locationBarcode: staging.locationBarcode.trim() || null,
+        });
+        await onMutated(
+          `Will Call package staged as ${result.package.bagBarcode} in ${result.package.location.code}.`,
+        );
+      } else if (staging.mode === "REBAG") {
+        const nextBag = staging.bagBarcode.trim();
+        if (!nextBag) {
+          onError("Scan the replacement bag barcode.");
+          return;
+        }
+        const result = await rebagWillCallPackage(
+          devUser,
+          staging.fillId,
+          nextBag,
+        );
+        await onMutated(
+          `Bag replaced. Current bag is ${result.package.bagBarcode}.`,
+        );
+      } else {
+        const nextLocation = staging.locationBarcode.trim();
+        if (!nextLocation) {
+          onError("Scan the destination Will Call bin/location barcode.");
+          return;
+        }
+        const result = await relocateWillCallPackage(devUser, staging.fillId, {
+          locationBarcode: nextLocation,
+        });
+        await onMutated(
+          `Will Call package moved to ${result.package.location.code}.`,
+        );
+      }
+
       setStaging(null);
-      await onMutated(
-        `Will Call package staged as ${result.package.bagBarcode} in ${result.package.location.code}.`,
-      );
+      setHistory(null);
+      setScanMessage(null);
+      setLocationScanPackages([]);
+      focusWorkstationScanner();
     } catch (error) {
-      onError(error instanceof Error ? error.message : "Unable to stage Will Call package.");
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to update the Will Call package.",
+      );
     } finally {
       setCheckoutBusy(false);
     }
@@ -99,6 +199,7 @@ export function WillCall({
   async function beginCheckout(
     rx: PrescriptionQueueItem,
     pickupFulfillmentMode: PickupFulfillmentMode,
+    scannedBagBarcode = "",
   ) {
     const fill = readyFill(rx.fills);
     if (!fill) return;
@@ -132,7 +233,7 @@ export function WillCall({
         amount: Number(due).toFixed(2),
         reference: "",
         pickupFulfillmentMode,
-        bagBarcode: "",
+        bagBarcode: scannedBagBarcode,
         recipientName: formatPatientName(rx.patient),
         relationship: "Self",
         identityMethod: rx.patient.dateOfBirth
@@ -142,8 +243,78 @@ export function WillCall({
         signatureName: "",
       });
       setStaging(null);
+      setScanMessage(null);
+      setLocationScanPackages([]);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to quote pickup.");
+    } finally {
+      setCheckoutBusy(false);
+    }
+  }
+
+  async function handleWorkstationScan() {
+    const barcode = scanBarcode.trim();
+    if (!barcode) return;
+
+    setCheckoutBusy(true);
+    onError(null);
+    setScanMessage(null);
+    setLocationScanPackages([]);
+    try {
+      const result = await scanWillCallBarcode(devUser, barcode);
+      setScanBarcode("");
+
+      if (result.scanType === "BAG") {
+        const scannedPackage = result.packages[0];
+        const rx = prescriptions.find(
+          (item) => readyFill(item.fills)?.id === scannedPackage?.fillId,
+        );
+        if (!rx || !scannedPackage) {
+          onError(
+            "The bag is staged, but its Ready prescription is not present in the current Will Call view.",
+          );
+          focusWorkstationScanner();
+          return;
+        }
+        setCheckoutBusy(false);
+        await beginCheckout(rx, "WILL_CALL", barcode.toUpperCase());
+        return;
+      }
+
+      setLocationScanPackages(result.packages);
+      setScanMessage(
+        `Location scan found ${result.packages.length} staged prescription${result.packages.length === 1 ? "" : "s"}.`,
+      );
+      focusWorkstationScanner();
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to resolve the Will Call barcode.",
+      );
+      focusWorkstationScanner();
+    } finally {
+      setCheckoutBusy(false);
+    }
+  }
+
+  async function toggleHistory(fillId: string) {
+    if (history?.fillId === fillId) {
+      setHistory(null);
+      focusWorkstationScanner();
+      return;
+    }
+    setCheckoutBusy(true);
+    onError(null);
+    try {
+      const events = await getWillCallHistory(devUser, fillId);
+      setHistory({ fillId, events });
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to load Will Call history.",
+      );
     } finally {
       setCheckoutBusy(false);
     }
@@ -223,9 +394,11 @@ export function WillCall({
       const change = Number(result.transaction.changeDue);
       const changeText = change > 0 ? ` Change due ${money(change)}.` : "";
       setCheckout(null);
+      setHistory(null);
       await onMutated(
         `Pickup completed. Receipt ${result.transaction.receiptNumber}.${changeText}`,
       );
+      focusWorkstationScanner();
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to complete pickup.");
     } finally {
@@ -242,9 +415,11 @@ export function WillCall({
       await returnFillToStock(devUser, fill.id);
       if (checkout?.fillId === fill.id) setCheckout(null);
       if (staging?.fillId === fill.id) setStaging(null);
+      if (history?.fillId === fill.id) setHistory(null);
       await onMutated(
         "Prescription returned to stock and removed from Will Call. Any active paid claim was reversed before the stock return.",
       );
+      focusWorkstationScanner();
     } catch (error) {
       onError(error instanceof Error ? error.message : "Unable to return fill to stock.");
     } finally {
@@ -264,6 +439,70 @@ export function WillCall({
         </span>
       </div>
 
+      <div className="detail-card">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Scanner ready</p>
+            <h3>Scan bag or Will Call bin</h3>
+          </div>
+          <span className="status">F3 scan-first</span>
+        </div>
+        <div className="form-grid">
+          <label>
+            Will Call barcode
+            <input
+              ref={workstationScanRef}
+              value={scanBarcode}
+              onChange={(event) => setScanBarcode(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleWorkstationScan();
+                }
+              }}
+              placeholder="Scan staged bag or bin barcode"
+              autoComplete="off"
+            />
+          </label>
+        </div>
+        {scanMessage && <p className="muted">{scanMessage}</p>}
+        {locationScanPackages.length > 0 && (
+          <div className="will-call-grid">
+            {locationScanPackages.map((item) => {
+              const rx = prescriptions.find(
+                (candidate) => readyFill(candidate.fills)?.id === item.fillId,
+              );
+              return (
+                <div className="detail-card" key={item.id}>
+                  <div>
+                    <strong>{rx ? formatPatientName(rx.patient) : item.fillId}</strong>
+                    <p className="muted">
+                      {rx
+                        ? `${rx.medicationName} ${rx.strength ?? ""}`
+                        : `Fill ${item.fillId}`}
+                    </p>
+                    <span className="mono">{item.bagBarcode}</span>
+                  </div>
+                  {rx && (
+                    <div className="action-row">
+                      <button
+                        className="primary-button"
+                        disabled={checkoutBusy || loading}
+                        onClick={() =>
+                          void beginCheckout(rx, "WILL_CALL", item.bagBarcode)
+                        }
+                      >
+                        Open Pickup
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="will-call-grid">
         {prescriptions.map((rx) => {
           const fill = readyFill(rx.fills);
@@ -273,6 +512,8 @@ export function WillCall({
             fill && checkout?.fillId === fill.id ? checkout : null;
           const activeStaging =
             fill && staging?.fillId === fill.id ? staging : null;
+          const activeHistory =
+            fill && history?.fillId === fill.id ? history.events : null;
           const quoteLine = activeCheckout?.quote.lines[0];
 
           return (
@@ -292,6 +533,7 @@ export function WillCall({
                 <div><dt>Fill</dt><dd>#{fill?.fillNumber ?? "—"}</dd></div>
                 <div><dt>Quantity</dt><dd>{String(fill?.quantity ?? rx.quantityWritten ?? "—")}</dd></div>
                 <div><dt>Ready since</dt><dd>{readySince ? readySince.toLocaleString() : "—"}</dd></div>
+                <div><dt>Ready age</dt><dd>{readyAge(readySince)}</dd></div>
                 <div>
                   <dt>Bag</dt>
                   <dd className="mono">{willCallPackage?.bagBarcode ?? "Not staged"}</dd>
@@ -314,11 +556,21 @@ export function WillCall({
 
               {activeStaging && (
                 <div className="detail-card">
-                  <p className="eyebrow">Physical Will Call staging</p>
-                  <div className="form-grid">
+                  <p className="eyebrow">
+                    {activeStaging.mode === "STAGE"
+                      ? "Scan-first Will Call staging"
+                      : activeStaging.mode === "REBAG"
+                        ? "Replace physical bag"
+                        : "Move Will Call location"}
+                  </p>
+
+                  {activeStaging.mode !== "RELOCATE" && (
                     <label>
-                      Bag barcode
+                      {activeStaging.mode === "REBAG"
+                        ? "Scan replacement bag barcode"
+                        : "1. Scan bag barcode"}
                       <input
+                        ref={stagingBagRef}
                         value={activeStaging.bagBarcode}
                         onChange={(event) =>
                           setStaging((current) =>
@@ -327,13 +579,32 @@ export function WillCall({
                               : current,
                           )
                         }
-                        placeholder="Leave blank to generate"
-                        autoFocus
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          if (activeStaging.mode === "REBAG") {
+                            void completeStaging();
+                          } else {
+                            stagingLocationRef.current?.focus();
+                          }
+                        }}
+                        placeholder={
+                          activeStaging.mode === "REBAG"
+                            ? "New physical bag barcode"
+                            : "Leave blank only to generate a system bag ID"
+                        }
+                        autoComplete="off"
                       />
                     </label>
+                  )}
+
+                  {activeStaging.mode !== "REBAG" && (
                     <label>
-                      Bin / location barcode
+                      {activeStaging.mode === "STAGE"
+                        ? "2. Scan bin / location barcode"
+                        : "Scan destination bin / location barcode"}
                       <input
+                        ref={stagingLocationRef}
                         value={activeStaging.locationBarcode}
                         onChange={(event) =>
                           setStaging((current) =>
@@ -342,26 +613,101 @@ export function WillCall({
                               : current,
                           )
                         }
-                        placeholder="Leave blank for default Will Call"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void completeStaging();
+                          }
+                        }}
+                        placeholder={
+                          activeStaging.mode === "STAGE"
+                            ? "Blank uses default Will Call"
+                            : "Destination location barcode required"
+                        }
+                        autoComplete="off"
                       />
                     </label>
-                  </div>
+                  )}
+
+                  <p className="muted">
+                    Barcode scanners that send Enter can complete this workflow
+                    without mouse input.
+                  </p>
                   <div className="action-row">
                     <button
                       className="primary-button"
                       disabled={checkoutBusy || loading}
                       onClick={() => void completeStaging()}
                     >
-                      Confirm Staging
+                      {activeStaging.mode === "STAGE"
+                        ? "Confirm Staging"
+                        : activeStaging.mode === "REBAG"
+                          ? "Confirm New Bag"
+                          : "Confirm Move"}
                     </button>
                     <button
                       className="secondary-button"
                       disabled={checkoutBusy || loading}
-                      onClick={() => setStaging(null)}
+                      onClick={() => {
+                        setStaging(null);
+                        focusWorkstationScanner();
+                      }}
                     >
                       Cancel
                     </button>
                   </div>
+                </div>
+              )}
+
+              {activeHistory && (
+                <div className="detail-card">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">Physical custody history</p>
+                      <h3>Will Call events</h3>
+                    </div>
+                    <span className="queue-count">{activeHistory.length}</span>
+                  </div>
+                  {activeHistory.map((event) => (
+                    <div className="will-call-meta" key={event.id}>
+                      <div>
+                        <dt>Event</dt>
+                        <dd>{historyLabel(event)}</dd>
+                      </div>
+                      <div>
+                        <dt>When</dt>
+                        <dd>{new Date(event.occurredAt).toLocaleString()}</dd>
+                      </div>
+                      <div>
+                        <dt>Staff</dt>
+                        <dd>{event.actor?.displayName ?? "—"}</dd>
+                      </div>
+                      {event.oldBagBarcode && (
+                        <div>
+                          <dt>Prior bag</dt>
+                          <dd className="mono">{event.oldBagBarcode}</dd>
+                        </div>
+                      )}
+                      {event.newBagBarcode && (
+                        <div>
+                          <dt>New bag</dt>
+                          <dd className="mono">{event.newBagBarcode}</dd>
+                        </div>
+                      )}
+                      {event.fromLocation && (
+                        <div>
+                          <dt>From</dt>
+                          <dd>{event.fromLocation.code}</dd>
+                        </div>
+                      )}
+                      {event.toLocation && (
+                        <div>
+                          <dt>To</dt>
+                          <dd>{event.toLocation.code}</dd>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -424,7 +770,7 @@ export function WillCall({
                             )
                           }
                           placeholder={quoteLine.bagBarcode ?? ""}
-                          autoFocus
+                          autoFocus={!activeCheckout.bagBarcode}
                         />
                       </label>
                     )}
@@ -585,7 +931,10 @@ export function WillCall({
                     <button
                       className="secondary-button"
                       disabled={checkoutBusy || loading}
-                      onClick={() => setCheckout(null)}
+                      onClick={() => {
+                        setCheckout(null);
+                        focusWorkstationScanner();
+                      }}
                     >
                       Cancel
                     </button>
@@ -612,6 +961,7 @@ export function WillCall({
                         fill &&
                         setStaging({
                           fillId: fill.id,
+                          mode: "STAGE",
                           bagBarcode: "",
                           locationBarcode: "",
                         })
@@ -642,12 +992,41 @@ export function WillCall({
                         fill &&
                         setStaging({
                           fillId: fill.id,
-                          bagBarcode: willCallPackage.bagBarcode,
-                          locationBarcode: willCallPackage.location.barcode ?? "",
+                          mode: "RELOCATE",
+                          bagBarcode: "",
+                          locationBarcode: "",
                         })
                       }
                     >
-                      Relocate
+                      Move Bin
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={
+                        !canProcess(user) ||
+                        loading ||
+                        checkoutBusy ||
+                        !fill ||
+                        Boolean(activeCheckout)
+                      }
+                      onClick={() =>
+                        fill &&
+                        setStaging({
+                          fillId: fill.id,
+                          mode: "REBAG",
+                          bagBarcode: "",
+                          locationBarcode: "",
+                        })
+                      }
+                    >
+                      Replace Bag
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={checkoutBusy || loading || !fill}
+                      onClick={() => fill && void toggleHistory(fill.id)}
+                    >
+                      {activeHistory ? "Hide History" : "History"}
                     </button>
                     <button
                       className="primary-button"
