@@ -1,6 +1,8 @@
 import {
   mkdir,
+  readFile,
   readdir,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -10,6 +12,8 @@ import {
   DocumentVaultError,
   getDocumentStorageRoot,
 } from "./documentVault.js";
+
+const STALE_LOCK_MS = 5 * 60 * 1000;
 
 function coordinationRoot() {
   return join(getDocumentStorageRoot(), ".coordination");
@@ -23,23 +27,9 @@ function writersRoot() {
   return join(coordinationRoot(), "writers");
 }
 
-async function exists(path: string) {
+async function pathExists(path: string) {
   try {
-    await readdir(path);
-    return true;
-  } catch (error) {
-    const code =
-      typeof error === "object" && error && "code" in error
-        ? String((error as { code?: unknown }).code ?? "")
-        : "";
-    if (code === "ENOENT" || code === "ENOTDIR") return false;
-    throw error;
-  }
-}
-
-async function fileExists(path: string) {
-  try {
-    await import("node:fs/promises").then(({ stat }) => stat(path));
+    await stat(path);
     return true;
   } catch (error) {
     const code =
@@ -51,6 +41,70 @@ async function fileExists(path: string) {
   }
 }
 
+function pidAlive(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+async function readLockMetadata(path: string) {
+  try {
+    const raw = JSON.parse(await readFile(path, "utf8")) as {
+      pid?: number;
+      createdAt?: string;
+    };
+    const createdAt = raw.createdAt
+      ? new Date(raw.createdAt).getTime()
+      : Number.NaN;
+    return {
+      pid: Number(raw.pid ?? 0),
+      createdAt,
+    };
+  } catch {
+    return { pid: 0, createdAt: Number.NaN };
+  }
+}
+
+async function reclaimStaleFile(path: string) {
+  if (!(await pathExists(path))) return false;
+  const metadata = await readLockMetadata(path);
+  const age = Number.isFinite(metadata.createdAt)
+    ? Date.now() - metadata.createdAt
+    : Number.POSITIVE_INFINITY;
+
+  if (!pidAlive(metadata.pid) && age >= STALE_LOCK_MS) {
+    await unlink(path).catch(() => undefined);
+    return true;
+  }
+  return false;
+}
+
+async function reclaimStaleWriterMarkers() {
+  const writerRoot = writersRoot();
+  await mkdir(writerRoot, { recursive: true });
+  const names = await readdir(writerRoot).catch(() => []);
+  for (const name of names) {
+    await reclaimStaleFile(join(writerRoot, name));
+  }
+}
+
+async function assertNoExclusiveLock() {
+  const lockPath = backupLockPath();
+  await reclaimStaleFile(lockPath);
+  if (await pathExists(lockPath)) {
+    throw new DocumentVaultError(
+      503,
+      "DOCUMENT_VAULT_BACKUP_IN_PROGRESS",
+      "The document vault is temporarily read-only while a coordinated backup or restore is in progress.",
+    );
+  }
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -58,17 +112,9 @@ function sleep(ms: number) {
 export async function withDocumentVaultWriteLease<T>(
   action: () => Promise<T>,
 ): Promise<T> {
-  const root = coordinationRoot();
   const writerRoot = writersRoot();
   await mkdir(writerRoot, { recursive: true });
-
-  if (await fileExists(backupLockPath())) {
-    throw new DocumentVaultError(
-      503,
-      "DOCUMENT_VAULT_BACKUP_IN_PROGRESS",
-      "The document vault is temporarily read-only while a coordinated backup or restore is in progress.",
-    );
-  }
+  await assertNoExclusiveLock();
 
   const marker = join(
     writerRoot,
@@ -84,55 +130,62 @@ export async function withDocumentVaultWriteLease<T>(
   );
 
   try {
-    if (await fileExists(backupLockPath())) {
-      throw new DocumentVaultError(
-        503,
-        "DOCUMENT_VAULT_BACKUP_IN_PROGRESS",
-        "The document vault became read-only for backup before this write began.",
-      );
-    }
+    await assertNoExclusiveLock();
     return await action();
   } finally {
     await unlink(marker).catch(() => undefined);
-    if (!(await exists(writerRoot))) {
-      await mkdir(root, { recursive: true });
+  }
+}
+
+async function createExclusiveLock(
+  purpose: "BACKUP" | "RESTORE",
+) {
+  const lockPath = backupLockPath();
+  await mkdir(coordinationRoot(), { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await writeFile(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          purpose,
+          createdAt: new Date().toISOString(),
+        }),
+        { flag: "wx" },
+      );
+      return lockPath;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error && "code" in error
+          ? String((error as { code?: unknown }).code ?? "")
+          : "";
+      if (code !== "EEXIST") throw error;
+      const reclaimed = await reclaimStaleFile(lockPath);
+      if (!reclaimed) {
+        throw new DocumentVaultError(
+          409,
+          "DOCUMENT_VAULT_EXCLUSIVE_OPERATION_IN_PROGRESS",
+          "A coordinated document-vault backup or restore is already in progress.",
+        );
+      }
     }
   }
+
+  throw new DocumentVaultError(
+    409,
+    "DOCUMENT_VAULT_EXCLUSIVE_OPERATION_IN_PROGRESS",
+    "Unable to acquire the document-vault exclusive lock.",
+  );
 }
 
 export async function withExclusiveDocumentVaultLock<T>(
   purpose: "BACKUP" | "RESTORE",
   action: () => Promise<T>,
 ): Promise<T> {
-  const root = coordinationRoot();
   const writerRoot = writersRoot();
-  const lockPath = backupLockPath();
   await mkdir(writerRoot, { recursive: true });
-
-  try {
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        pid: process.pid,
-        purpose,
-        createdAt: new Date().toISOString(),
-      }),
-      { flag: "wx" },
-    );
-  } catch (error) {
-    const code =
-      typeof error === "object" && error && "code" in error
-        ? String((error as { code?: unknown }).code ?? "")
-        : "";
-    if (code === "EEXIST") {
-      throw new DocumentVaultError(
-        409,
-        "DOCUMENT_VAULT_EXCLUSIVE_OPERATION_IN_PROGRESS",
-        "A coordinated document-vault backup or restore is already in progress.",
-      );
-    }
-    throw error;
-  }
+  const lockPath = await createExclusiveLock(purpose);
 
   try {
     const timeoutMs = Math.max(
@@ -142,6 +195,7 @@ export async function withExclusiveDocumentVaultLock<T>(
     const deadline = Date.now() + timeoutMs;
 
     while (true) {
+      await reclaimStaleWriterMarkers();
       const writers = await readdir(writerRoot).catch(() => []);
       if (writers.length === 0) break;
       if (Date.now() >= deadline) {
