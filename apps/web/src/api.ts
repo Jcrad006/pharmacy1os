@@ -19,6 +19,9 @@ import type {
   InventoryBalance,
   InventoryTransaction,
   CycleCountSession,
+  InventoryHold,
+  InventoryHoldReason,
+  InventoryDispositionType,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -740,4 +743,68 @@ export async function reviewCycleCount(
       body: JSON.stringify(input),
     },
   );
+}
+
+
+export async function getInventoryHolds(devUser: string) {
+  const result = await request<{ holds: InventoryHold[] }>(
+    "/api/inventory/holds",
+    { devUser },
+  );
+  return result.holds;
+}
+
+export async function quarantineInventoryBalance(
+  devUser: string,
+  balanceId: string,
+  input: {
+    quantity: number;
+    reasonCode: InventoryHoldReason;
+    note?: string;
+  },
+) {
+  return request<{
+    hold: InventoryHold;
+    balance: InventoryBalance;
+    transaction: InventoryTransaction;
+  }>(`/api/inventory/balances/${balanceId}/quarantine`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function releaseInventoryHold(
+  devUser: string,
+  holdId: string,
+  resolutionNote: string,
+) {
+  return request<{
+    hold: InventoryHold;
+    balance: InventoryBalance;
+    transaction: InventoryTransaction;
+  }>(`/api/inventory/holds/${holdId}/release`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({ resolutionNote }),
+  });
+}
+
+export async function disposeInventoryHold(
+  devUser: string,
+  holdId: string,
+  input: {
+    dispositionType: InventoryDispositionType;
+    resolutionNote: string;
+  },
+) {
+  return request<{
+    hold: InventoryHold;
+    balance: InventoryBalance;
+    transaction: InventoryTransaction;
+  }>(`/api/inventory/holds/${holdId}/dispose`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
 }
