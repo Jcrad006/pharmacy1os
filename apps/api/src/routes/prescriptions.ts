@@ -185,6 +185,8 @@ function activeFill(
     status: FillStatus;
     consumesRefill?: boolean;
     kind?: string;
+    quantity?: Prisma.Decimal | null;
+    billingAnchorFillId?: string | null;
     productId?: string | null;
     productLotId?: string | null;
     productExpirationId?: string | null;
