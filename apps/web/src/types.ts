@@ -33,6 +33,8 @@ export type DevUser = {
   externalAuthId: string;
   displayName: string;
   role: UserRole;
+  siteId: string;
+  siteName: string;
 };
 
 export type Patient = {
