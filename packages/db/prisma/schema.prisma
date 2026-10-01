@@ -268,6 +268,19 @@ enum WillCallPackageStatus {
   RETURNED_TO_STOCK
 }
 
+enum WillCallBagBarcodeStatus {
+  ACTIVE
+  VOIDED
+}
+
+enum WillCallEventType {
+  STAGED
+  RELOCATED
+  REBAGGED
+  PICKED_UP
+  RETURNED_TO_STOCK
+}
+
 enum ProductSelectionDirective {
   UNSPECIFIED
   SELECTION_PERMITTED
@@ -380,6 +393,8 @@ model PharmacySite {
   labelPrintJobs        LabelPrintJob[]
   posTransactions       PointOfSaleTransaction[]
   willCallPackages      WillCallPackage[]
+  willCallBagBarcodes   WillCallBagBarcode[]
+  willCallEvents        WillCallEvent[]
   auditEvents           AuditEvent[]
 }
 
@@ -427,6 +442,7 @@ model User {
   posTransactionsVoided PointOfSaleTransaction[] @relation("PosTransactionVoidedBy")
   paymentTenders PaymentTender[] @relation("PaymentTenderActor")
   stagedWillCallPackages WillCallPackage[] @relation("WillCallPackageStagedBy")
+  willCallEvents WillCallEvent[] @relation("WillCallEventActor")
 
   @@index([siteId, role])
 }
@@ -1049,9 +1065,49 @@ model WillCallPackage {
   pickedUpAt  DateTime?
   returnedAt  DateTime?
   updatedAt   DateTime              @updatedAt
+  bagBarcodes   WillCallBagBarcode[]
+  events        WillCallEvent[]
 
   @@index([siteId, status, stagedAt])
   @@index([locationId, status])
+}
+
+model WillCallBagBarcode {
+  id          String                   @id @default(uuid())
+  siteId      String
+  site        PharmacySite             @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  packageId   String
+  package     WillCallPackage          @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  barcode     String                   @unique
+  status      WillCallBagBarcodeStatus @default(ACTIVE)
+  assignedAt  DateTime                 @default(now())
+  voidedAt    DateTime?
+
+  @@index([siteId, status, assignedAt])
+  @@index([packageId, status])
+}
+
+model WillCallEvent {
+  id             String            @id @default(uuid())
+  siteId         String
+  site           PharmacySite      @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  packageId      String
+  package        WillCallPackage   @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  eventType      WillCallEventType
+  actorId        String
+  actor          User              @relation("WillCallEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+  oldBagBarcode  String?
+  newBagBarcode  String?
+  fromLocationId String?
+  fromLocation   InventoryLocation? @relation("WillCallEventFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocationId   String?
+  toLocation     InventoryLocation? @relation("WillCallEventToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
+  occurredAt     DateTime          @default(now())
+
+  @@index([siteId, occurredAt])
+  @@index([packageId, occurredAt])
+  @@index([oldBagBarcode])
+  @@index([newBagBarcode])
 }
 
 model FillProductSource {
@@ -1432,6 +1488,8 @@ model InventoryLocation {
   updatedAt            DateTime              @updatedAt
   stockPositions       InventoryStockPosition[]
   willCallPackages     WillCallPackage[]
+  willCallEventsFrom    WillCallEvent[] @relation("WillCallEventFromLocation")
+  willCallEventsTo      WillCallEvent[] @relation("WillCallEventToLocation")
 
   @@unique([siteId, code])
   @@unique([siteId, barcode])
