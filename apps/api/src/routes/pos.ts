@@ -12,6 +12,7 @@ import {
 
 type QuoteBody = {
   fillIds?: string[];
+  pickupFulfillmentMode?: "WILL_CALL" | "IMMEDIATE";
 };
 
 type CheckoutBody = {
@@ -19,6 +20,7 @@ type CheckoutBody = {
   tenders?: PosTenderInput[];
   pickupPackages?: PickupPackageInput[];
   pickup?: PickupVerificationInput;
+  pickupFulfillmentMode?: "WILL_CALL" | "IMMEDIATE";
   idempotencyKey?: string;
 };
 
@@ -129,9 +131,11 @@ export async function posRoutes(app: FastifyInstance) {
       if (!Array.isArray(body.fillIds)) {
         return reply.code(400).send({ error: "fillIds must be an array." });
       }
-      const quote = await quoteFillsForCheckout(body.fillIds, {
-        siteId: actor.siteId,
-      });
+      const quote = await quoteFillsForCheckout(
+        body.fillIds,
+        { siteId: actor.siteId },
+        body.pickupFulfillmentMode,
+      );
       return { quote };
     } catch (error) {
       return handleError(error, reply);
@@ -169,6 +173,7 @@ export async function posRoutes(app: FastifyInstance) {
           tenders: body.tenders ?? [],
           pickupPackages: body.pickupPackages,
           pickup: body.pickup,
+          pickupFulfillmentMode: body.pickupFulfillmentMode,
           idempotencyKey: body.idempotencyKey,
         },
         {
