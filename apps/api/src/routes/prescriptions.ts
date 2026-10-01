@@ -2986,11 +2986,15 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             "Product sources may only be removed during an in-progress Product Fill.",
         });
       }
-      const reversedClaims = await reverseActivePaidClaimsForFill(params.id, {
-        siteId: actor.siteId,
-        actorId: actor.id,
-        requestId: request.id,
-      });
+      const reversedClaims = await reverseActivePaidClaimsForFill(
+        params.id,
+        {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          requestId: request.id,
+        },
+        { requireMajoritySource: true },
+      );
 
       const summary = await db.$transaction(async (tx) => {
         const updated = await removeInventorySourceForFill(tx, {
