@@ -641,6 +641,197 @@ describe("Pre-3J COB, split-source filling, and NC compliance hardening", () => 
 
     const correctProduct = await scanSource(fillId, multiSources[0]!, 10);
     expect(correctProduct.statusCode).toBe(200);
+
+    const cancelled = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "CANCELLED" },
+    });
+    expect(cancelled.statusCode).toBe(200);
+  });
+
+  it("preserves split-source traceability when an already-scanned fill is interrupted to a physical partial", async () => {
+    const prescriptionId = await createPrescription({
+      medicationId: ids.multiMedicationId,
+      quantity: 100,
+    });
+    const fillId = await createInProgressFill(prescriptionId, 100);
+
+    expect((await scanSource(fillId, multiSources[0]!, 40)).statusCode).toBe(200);
+    expect((await scanSource(fillId, multiSources[3]!, 60)).statusCode).toBe(200);
+
+    const partial = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/partial`,
+      headers: technicianHeaders,
+      payload: {
+        dispenseQuantity: 50,
+        completionScheduledFor: new Date(
+          Date.now() + 86_400_000,
+        ).toISOString(),
+        interruptionReason: "INSUFFICIENT_PHYSICAL_STOCK",
+        reason:
+          "Physical count changed after scanning; preserve payer intent and resize physical sources.",
+      },
+    });
+    expect(partial.statusCode).toBe(200);
+    expect(Number(partial.json().partialFill.quantity)).toBe(50);
+    expect(Number(partial.json().partialFill.payerIntendedQuantity)).toBe(100);
+    expect(Number(partial.json().partialFill.remainingOwedQuantity)).toBe(50);
+    expect(Number(partial.json().completionFill.quantity)).toBe(50);
+    expect(Number(partial.json().completionFill.payerIntendedQuantity)).toBe(100);
+
+    const sources = await db.fillProductSource.findMany({
+      where: { fillId },
+      orderBy: { sequence: "asc" },
+    });
+    expect(sources).toHaveLength(2);
+    expect(sources.map((source) => source.productId)).toEqual([
+      multiA.id,
+      multiB.id,
+    ]);
+    expect(sources.map((source) => source.quantity.toNumber())).toEqual([
+      40,
+      10,
+    ]);
+
+    const allocations = await db.inventoryAllocation.findMany({
+      where: { fillId },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(allocations).toHaveLength(4);
+    expect(allocations.slice(0, 2).map((item) => item.status)).toEqual([
+      "RELEASED",
+      "RELEASED",
+    ]);
+    expect(allocations.slice(2).map((item) => item.status)).toEqual([
+      "ACTIVE",
+      "ACTIVE",
+    ]);
+    expect(
+      allocations
+        .filter((item) => item.status === "ACTIVE")
+        .reduce((sum, item) => sum + item.quantity.toNumber(), 0),
+    ).toBe(50);
+
+    const cancelled = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${prescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "CANCELLED" },
+    });
+    expect(cancelled.statusCode).toBe(200);
+  });
+
+  it("matches a recalled secondary split source on sold fills and invalidates active split reservations", async () => {
+    const soldPrescriptionId = await createPrescription({
+      medicationId: ids.multiMedicationId,
+      quantity: 20,
+    });
+    const soldFillId = await createInProgressFill(soldPrescriptionId, 20);
+    expect((await scanSource(soldFillId, multiSources[0]!, 10)).statusCode).toBe(
+      200,
+    );
+    expect((await scanSource(soldFillId, multiSources[2]!, 10)).statusCode).toBe(
+      200,
+    );
+    await moveToReady(soldPrescriptionId);
+    await sell(soldPrescriptionId);
+
+    const activePrescriptionId = await createPrescription({
+      medicationId: ids.multiMedicationId,
+      quantity: 20,
+    });
+    const activeFillId = await createInProgressFill(activePrescriptionId, 20);
+    expect(
+      (await scanSource(activeFillId, multiSources[0]!, 10)).statusCode,
+    ).toBe(200);
+    expect(
+      (await scanSource(activeFillId, multiSources[2]!, 10)).statusCode,
+    ).toBe(200);
+
+    const review = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${activePrescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "PHARMACIST_REVIEW" },
+    });
+    expect(review.statusCode).toBe(200);
+
+    const recalledSource = multiSources[2]!;
+    const recall = await app.inject({
+      method: "POST",
+      url: "/api/inventory/recalls",
+      headers: pharmacistHeaders,
+      payload: {
+        productId: recalledSource.product.id,
+        lotNumber: recalledSource.lotNumber,
+        reference: `PRE3J-RECALL-${randomUUID()}`,
+        reason:
+          "Synthetic regression recall for a secondary NDC/lot in a split fill.",
+      },
+    });
+    expect(recall.statusCode).toBe(201);
+    expect(Number(recall.json().summary.reservedAffectedQuantity)).toBe(10);
+    expect(recall.json().summary.invalidatedReservedFillCount).toBe(1);
+    expect(recall.json().summary.affectedSoldFillCount).toBe(1);
+    const recallId = recall.json().recall.id as string;
+
+    const affected = await db.recallAffectedFill.findUnique({
+      where: {
+        recallCaseId_fillId: {
+          recallCaseId: recallId,
+          fillId: soldFillId,
+        },
+      },
+    });
+    expect(affected).toBeTruthy();
+
+    const resetPrescription = await db.prescription.findUniqueOrThrow({
+      where: { id: activePrescriptionId },
+    });
+    expect(resetPrescription.status).toBe("PRODUCT_FILL");
+
+    const resetFill = await db.prescriptionFill.findUniqueOrThrow({
+      where: { id: activeFillId },
+      include: {
+        productSources: true,
+        inventoryAllocations: true,
+      },
+    });
+    expect(resetFill.productSources).toHaveLength(0);
+    expect(resetFill.inventoryReservedAt).toBeNull();
+    expect(resetFill.productVerifiedAt).toBeNull();
+    expect(
+      resetFill.inventoryAllocations.filter(
+        (allocation) => allocation.status === "ACTIVE",
+      ),
+    ).toHaveLength(0);
+    expect(
+      resetFill.inventoryAllocations.filter(
+        (allocation) => allocation.status === "RELEASED",
+      ),
+    ).toHaveLength(2);
+
+    const blocked = await scanSource(activeFillId, recalledSource, 20);
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().code).toBe("INVENTORY_RECALLED");
+
+    const safeReplacement = await scanSource(
+      activeFillId,
+      multiSources[1]!,
+      20,
+    );
+    expect(safeReplacement.statusCode).toBe(200);
+
+    const cancelled = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${activePrescriptionId}/status`,
+      headers: technicianHeaders,
+      payload: { status: "CANCELLED" },
+    });
+    expect(cancelled.statusCode).toBe(200);
   });
 
   it("requires documented prescriber and patient consent before an NTI manufacturer change on continuing therapy", async () => {
