@@ -1,4 +1,6 @@
 -- Pre-3J architecture consolidation:
+ALTER TYPE "InventoryExceptionType" ADD VALUE IF NOT EXISTS 'PHYSICAL_STOCK_SHORTAGE';
+
 -- separate logical/payer quantities from physical dispensing and preserve
 -- completion lineage for claim/label workflows.
 
