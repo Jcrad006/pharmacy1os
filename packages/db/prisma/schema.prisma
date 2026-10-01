@@ -395,6 +395,9 @@ model PharmacySite {
   willCallPackages      WillCallPackage[]
   willCallBagBarcodes   WillCallBagBarcode[]
   willCallEvents        WillCallEvent[]
+  documents             Document[]
+  prescriptionAnnotations PrescriptionAnnotation[]
+  prescriptionChangeRecords PrescriptionChangeRecord[]
   auditEvents           AuditEvent[]
 }
 
@@ -443,6 +446,9 @@ model User {
   paymentTenders PaymentTender[] @relation("PaymentTenderActor")
   stagedWillCallPackages WillCallPackage[] @relation("WillCallPackageStagedBy")
   willCallEvents WillCallEvent[] @relation("WillCallEventActor")
+  createdDocuments Document[] @relation("DocumentCreatedBy")
+  prescriptionAnnotations PrescriptionAnnotation[] @relation("PrescriptionAnnotationCreatedBy")
+  prescriptionChangeRecords PrescriptionChangeRecord[] @relation("PrescriptionChangeRecordChangedBy")
 
   @@index([siteId, role])
 }
@@ -462,6 +468,7 @@ model Patient {
   prescriptions Prescription[]
   coverages     PatientCoverage[]
   posTransactions PointOfSaleTransaction[]
+  documents       Document[]
 
   @@index([siteId, lastName, firstName])
   @@index([siteId, dateOfBirth])
@@ -677,6 +684,60 @@ model ProductExpiration {
   @@index([productId, expirationDate])
 }
 
+enum PrescriptionSourceType {
+  MANUAL
+  PAPER
+  FAX
+  ELECTRONIC
+  VERBAL
+  TRANSFER
+}
+
+enum DocumentSourceType {
+  SCAN
+  UPLOAD
+  ELECTRONIC_RENDER
+}
+
+enum DocumentKind {
+  PRESCRIPTION_SOURCE
+  INSURANCE_CARD
+  PRESCRIBER_COMMUNICATION
+  PRIOR_AUTHORIZATION
+  OTHER
+}
+
+enum PrescriptionAnnotationStatus {
+  ACTIVE
+  SUPERSEDED
+}
+
+enum PrescriptionChangeRecordStatus {
+  ACTIVE
+  SUPERSEDED
+}
+
+enum PrescriptionChangeType {
+  SIG
+  QUANTITY
+  REFILLS
+  DRUG
+  STRENGTH
+  DOSAGE_FORM
+  DAW
+  PRESCRIBER
+  WRITTEN_DATE
+  OTHER
+}
+
+enum PrescriptionChangeCommunicationMethod {
+  PHONE
+  FAX
+  ELECTRONIC
+  IN_PERSON
+  OTHER
+}
+
 model Prescription {
   id                       String              @id @default(uuid())
   siteId                   String
@@ -702,6 +763,9 @@ model Prescription {
   expirationDate           DateTime?
   minimumDaysBetweenFills  Int?
   status                   PrescriptionStatus  @default(RECEIVED)
+  sourceType               PrescriptionSourceType @default(MANUAL)
+  electronicMessageId      String?
+  electronicRawMessage     String?
   heldFromStatus           PrescriptionStatus?
   doNotFillBefore          DateTime?
   createdAt                DateTime            @default(now())
@@ -709,6 +773,9 @@ model Prescription {
   fills                    PrescriptionFill[]
   durIssues                DurIssue[]
   interventionNotes        InterventionNote[]
+  documents                Document[]
+  annotations              PrescriptionAnnotation[]
+  changeRecords            PrescriptionChangeRecord[]
 
   @@unique([siteId, rxNumber])
   @@index([siteId, status])
@@ -801,6 +868,89 @@ model PrescriptionFill {
   @@index([productLotId])
   @@index([productExpirationId])
   @@index([inventoryBalanceId])
+}
+
+model Document {
+  id               String             @id @default(uuid())
+  siteId           String
+  site             PharmacySite       @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  patientId        String?
+  patient          Patient?           @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  prescriptionId   String?
+  prescription     Prescription?      @relation(fields: [prescriptionId], references: [id], onDelete: Restrict)
+  kind             DocumentKind       @default(PRESCRIPTION_SOURCE)
+  sourceType       DocumentSourceType
+  mimeType         String
+  originalFilename String?
+  storageKey       String             @unique
+  sha256           String
+  byteSize         Int
+  encrypted        Boolean            @default(false)
+  immutable        Boolean            @default(true)
+  createdById      String
+  createdBy        User               @relation("DocumentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt        DateTime           @default(now())
+  annotations      PrescriptionAnnotation[]
+
+  @@index([siteId, createdAt])
+  @@index([patientId, createdAt])
+  @@index([prescriptionId, createdAt])
+  @@index([sha256])
+}
+
+model PrescriptionAnnotation {
+  id                     String                       @id @default(uuid())
+  siteId                 String
+  site                   PharmacySite                 @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  prescriptionId         String
+  prescription           Prescription                 @relation(fields: [prescriptionId], references: [id], onDelete: Restrict)
+  documentId             String
+  document               Document                     @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  text                   String
+  x                      Decimal                      @db.Decimal(7, 6)
+  y                      Decimal                      @db.Decimal(7, 6)
+  width                  Decimal                      @db.Decimal(7, 6)
+  height                 Decimal                      @db.Decimal(7, 6)
+  backgroundOpacity      Decimal                      @default(1) @db.Decimal(4, 3)
+  status                 PrescriptionAnnotationStatus @default(ACTIVE)
+  createdById            String
+  createdBy              User                         @relation("PrescriptionAnnotationCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt              DateTime                     @default(now())
+  supersedesAnnotationId String?                      @unique
+  supersedesAnnotation   PrescriptionAnnotation?      @relation("PrescriptionAnnotationRevision", fields: [supersedesAnnotationId], references: [id], onDelete: Restrict)
+  supersededBy           PrescriptionAnnotation?      @relation("PrescriptionAnnotationRevision")
+  changeRecord           PrescriptionChangeRecord?
+
+  @@index([siteId, createdAt])
+  @@index([prescriptionId, status, createdAt])
+  @@index([documentId, status, createdAt])
+}
+
+model PrescriptionChangeRecord {
+  id                  String                                @id @default(uuid())
+  siteId              String
+  site                PharmacySite                          @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  prescriptionId      String
+  prescription        Prescription                          @relation(fields: [prescriptionId], references: [id], onDelete: Restrict)
+  annotationId        String                                @unique
+  annotation          PrescriptionAnnotation                @relation(fields: [annotationId], references: [id], onDelete: Restrict)
+  changeType          PrescriptionChangeType
+  whatChanged         String
+  reason              String
+  communicationMethod PrescriptionChangeCommunicationMethod?
+  contactedParty      String?
+  authorizingPrescriber String?
+  note                String?
+  status              PrescriptionChangeRecordStatus        @default(ACTIVE)
+  changedById         String
+  changedBy           User                                  @relation("PrescriptionChangeRecordChangedBy", fields: [changedById], references: [id], onDelete: Restrict)
+  changedAt           DateTime                              @default(now())
+  supersedesChangeRecordId String?                           @unique
+  supersedesChangeRecord   PrescriptionChangeRecord?         @relation("PrescriptionChangeRecordRevision", fields: [supersedesChangeRecordId], references: [id], onDelete: Restrict)
+  supersededBy             PrescriptionChangeRecord?         @relation("PrescriptionChangeRecordRevision")
+
+  @@index([siteId, changedAt])
+  @@index([prescriptionId, status, changedAt])
 }
 
 model Payer {

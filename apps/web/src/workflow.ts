@@ -61,6 +61,12 @@ export function canEditPrescription(user?: DevUser) {
   );
 }
 
+export function canManagePrescriptionDocuments(user?: DevUser) {
+  return Boolean(
+    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+  );
+}
+
 export function canVerify(user?: DevUser) {
   return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
 }

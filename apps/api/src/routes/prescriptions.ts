@@ -4,6 +4,7 @@ import {
   type FillInterruptionReason,
   type FillStatus,
   type PrescriptionStatus,
+  type PrescriptionSourceType,
   type ProductSelectionDirective,
 } from "@prisma/client";
 import { db } from "../db.js";
@@ -63,6 +64,9 @@ type CreatePrescriptionBody = {
   expirationDate?: string;
   doNotFillBefore?: string;
   minimumDaysBetweenFills?: number;
+  sourceType?: PrescriptionSourceType;
+  electronicMessageId?: string;
+  electronicRawMessage?: string;
 };
 
 type UpdatePrescriptionBody = {
@@ -120,6 +124,15 @@ type ScanBarcodeBody = {
   rawBarcode?: string;
   sourceQuantity?: number;
 };
+
+const prescriptionSourceTypes = new Set<PrescriptionSourceType>([
+  "MANUAL",
+  "PAPER",
+  "FAX",
+  "ELECTRONIC",
+  "VERBAL",
+  "TRANSFER",
+]);
 
 const productSelectionDirectives = new Set<ProductSelectionDirective>([
   "UNSPECIFIED",
@@ -603,6 +616,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
         });
       }
 
+      if (body.sourceType && !prescriptionSourceTypes.has(body.sourceType)) {
+        return reply.code(400).send({ error: "Invalid prescription source type." });
+      }
+      if (
+        body.sourceType !== "ELECTRONIC" &&
+        (body.electronicMessageId?.trim() || body.electronicRawMessage?.trim())
+      ) {
+        return reply.code(400).send({
+          error: "Electronic message metadata requires sourceType ELECTRONIC.",
+        });
+      }
+
       let prescribedProduct = null;
       if (body.prescribedProductId) {
         prescribedProduct = await db.product.findUnique({
@@ -659,6 +684,9 @@ export async function prescriptionRoutes(app: FastifyInstance) {
               body.minimumDaysBetweenFills !== undefined
                 ? Math.max(0, Math.trunc(body.minimumDaysBetweenFills))
                 : undefined,
+            sourceType: body.sourceType ?? "MANUAL",
+            electronicMessageId: body.electronicMessageId?.trim() || undefined,
+            electronicRawMessage: body.electronicRawMessage?.trim() || undefined,
             status: "DATA_ENTRY",
           },
           include: prescriptionInclude,
@@ -674,6 +702,8 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           metadata: {
             rxNumber: created.rxNumber ?? null,
             medicationId: created.medicationId ?? null,
+            sourceType: created.sourceType,
+            electronicMessageId: created.electronicMessageId ?? null,
           },
         });
 

@@ -295,6 +295,27 @@
 - [ ] Receipt printing/device integration and hardware signature-pad adapter
 - [ ] Post-pickup return/refund workflow with coordinated POS void, claim reversal/rebill, and inventory disposition
 
+## Phase 3L — Local document vault / prescription imaging
+- [x] Local server-managed immutable document storage with PostgreSQL metadata
+- [x] SHA-256 integrity hash for every stored prescription source
+- [x] Optional AES-256-GCM encryption at rest using a local server key
+- [x] Site/patient/prescription linkage for stored source documents
+- [x] Authenticated document retrieval without exposing filesystem paths to workstations
+- [x] JPEG, PNG, WebP, TIFF, and PDF source retention
+- [x] Prescription source-type model for manual, paper, fax, electronic, verbal, and transfer prescriptions
+- [x] Human-readable visual rendering of structured electronic prescriptions
+- [x] Raw electronic message retained separately from the human-readable rendering
+- [x] Drag-to-create opaque visual text boxes over image/eRx prescription visuals
+- [x] Separate structured change documentation for who/what/when/why
+- [x] Communication method, contacted party, and authorizing-prescriber documentation
+- [x] Active/superseded annotation history with no silent deletion of prior corrections
+- [x] Pharmacist-review warning when documented visual changes are present
+- [x] Technician/pharmacist/intern annotation permissions
+- [x] Database-backed regression tests for immutable bytes, encryption, revisions, authorization, and eRx rendering
+- [ ] Native scanner/TWAIN/SANE device adapter
+- [ ] Multi-page PDF page-specific annotation canvas
+- [ ] Backup/restore orchestration that snapshots PostgreSQL and the local document vault as one logical backup set
+
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
 - [x] Barcode scanning

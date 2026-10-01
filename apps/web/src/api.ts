@@ -58,6 +58,11 @@ import type {
   WillCallEvent,
   WillCallPackage,
   WillCallScanResult,
+  PrescriptionDocument,
+  PrescriptionAnnotation,
+  PrescriptionChangeType,
+  PrescriptionChangeCommunicationMethod,
+  PrescriptionSourceType,
 } from "./types";
 
 type ApiOptions = RequestInit & {
@@ -80,6 +85,17 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   }
 
   return payload as T;
+}
+
+async function requestBlob(path: string, devUser: string) {
+  const headers = new Headers();
+  headers.set("x-dev-user", devUser);
+  const response = await fetch(path, { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error ?? `Request failed with status ${response.status}`);
+  }
+  return response.blob();
 }
 
 export async function getDevelopmentUsers() {
@@ -252,6 +268,105 @@ export async function getPrescription(devUser: string, id: string) {
     { devUser },
   );
   return result.prescription;
+}
+
+export async function getPrescriptionDocuments(
+  devUser: string,
+  prescriptionId: string,
+) {
+  const result = await request<{ documents: PrescriptionDocument[] }>(
+    `/api/prescriptions/${prescriptionId}/documents`,
+    { devUser },
+  );
+  return result.documents;
+}
+
+export async function uploadPrescriptionOriginal(
+  devUser: string,
+  prescriptionId: string,
+  input: {
+    sourceType: "SCAN" | "UPLOAD";
+    mimeType: string;
+    originalFilename?: string | null;
+    base64Data: string;
+  },
+) {
+  return request<{ document: PrescriptionDocument }>(
+    `/api/prescriptions/${prescriptionId}/documents/original`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function ensureElectronicPrescriptionRender(
+  devUser: string,
+  prescriptionId: string,
+) {
+  return request<{ document: PrescriptionDocument }>(
+    `/api/prescriptions/${prescriptionId}/documents/electronic-render`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function getPrescriptionDocumentBlob(
+  devUser: string,
+  documentId: string,
+) {
+  return requestBlob(`/api/documents/${documentId}/content`, devUser);
+}
+
+export type PrescriptionAnnotationInput = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  change: {
+    changeType: PrescriptionChangeType;
+    whatChanged: string;
+    reason: string;
+    communicationMethod?: PrescriptionChangeCommunicationMethod | null;
+    contactedParty?: string | null;
+    authorizingPrescriber?: string | null;
+    note?: string | null;
+  };
+};
+
+export async function createPrescriptionVisualAnnotation(
+  devUser: string,
+  documentId: string,
+  input: PrescriptionAnnotationInput,
+) {
+  return request<{ annotation: PrescriptionAnnotation }>(
+    `/api/documents/${documentId}/annotations`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function supersedePrescriptionVisualAnnotation(
+  devUser: string,
+  annotationId: string,
+  input: PrescriptionAnnotationInput,
+) {
+  return request<{ annotation: PrescriptionAnnotation }>(
+    `/api/annotations/${annotationId}/supersede`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function getPrescriptionAudit(devUser: string, id: string) {
@@ -427,6 +542,9 @@ export async function createPrescription(
     refillsAllowed?: number;
     writtenDate?: string;
     doNotFillBefore?: string;
+    sourceType?: PrescriptionSourceType;
+    electronicMessageId?: string;
+    electronicRawMessage?: string;
   },
 ) {
   return request<{ prescription: PrescriptionQueueItem }>("/api/prescriptions", {

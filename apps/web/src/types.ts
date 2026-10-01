@@ -49,6 +49,41 @@ export type ProductSelectionDirective =
   | "SELECTION_PERMITTED"
   | "DISPENSE_AS_WRITTEN";
 
+export type PrescriptionSourceType =
+  | "MANUAL"
+  | "PAPER"
+  | "FAX"
+  | "ELECTRONIC"
+  | "VERBAL"
+  | "TRANSFER";
+
+export type DocumentSourceType = "SCAN" | "UPLOAD" | "ELECTRONIC_RENDER";
+export type DocumentKind =
+  | "PRESCRIPTION_SOURCE"
+  | "INSURANCE_CARD"
+  | "PRESCRIBER_COMMUNICATION"
+  | "PRIOR_AUTHORIZATION"
+  | "OTHER";
+export type PrescriptionAnnotationStatus = "ACTIVE" | "SUPERSEDED";
+export type PrescriptionChangeRecordStatus = "ACTIVE" | "SUPERSEDED";
+export type PrescriptionChangeType =
+  | "SIG"
+  | "QUANTITY"
+  | "REFILLS"
+  | "DRUG"
+  | "STRENGTH"
+  | "DOSAGE_FORM"
+  | "DAW"
+  | "PRESCRIBER"
+  | "WRITTEN_DATE"
+  | "OTHER";
+export type PrescriptionChangeCommunicationMethod =
+  | "PHONE"
+  | "FAX"
+  | "ELECTRONIC"
+  | "IN_PERSON"
+  | "OTHER";
+
 export type ClaimStandard = "D0" | "F6";
 
 export type BillingNdcStrategy =
@@ -194,6 +229,8 @@ export type PrescriptionQueueItem = {
   expirationDate: string | null;
   minimumDaysBetweenFills: number | null;
   status: PrescriptionStatus;
+  sourceType: PrescriptionSourceType;
+  electronicMessageId: string | null;
   heldFromStatus: PrescriptionStatus | null;
   doNotFillBefore: string | null;
   createdAt: string;
@@ -202,6 +239,75 @@ export type PrescriptionQueueItem = {
   prescriber: Prescriber;
   fills: PrescriptionFill[];
   allowedTransitions: PrescriptionStatus[];
+};
+
+export type PrescriptionChangeRecord = {
+  id: string;
+  siteId: string;
+  prescriptionId: string;
+  annotationId: string;
+  changeType: PrescriptionChangeType;
+  whatChanged: string;
+  reason: string;
+  communicationMethod: PrescriptionChangeCommunicationMethod | null;
+  contactedParty: string | null;
+  authorizingPrescriber: string | null;
+  note: string | null;
+  status: PrescriptionChangeRecordStatus;
+  changedById: string;
+  changedAt: string;
+  supersedesChangeRecordId: string | null;
+  changedBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+};
+
+export type PrescriptionAnnotation = {
+  id: string;
+  siteId: string;
+  prescriptionId: string;
+  documentId: string;
+  text: string;
+  x: string | number;
+  y: string | number;
+  width: string | number;
+  height: string | number;
+  backgroundOpacity: string | number;
+  status: PrescriptionAnnotationStatus;
+  createdById: string;
+  createdAt: string;
+  supersedesAnnotationId: string | null;
+  createdBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  changeRecord: PrescriptionChangeRecord | null;
+};
+
+export type PrescriptionDocument = {
+  id: string;
+  siteId: string;
+  patientId: string | null;
+  prescriptionId: string | null;
+  kind: DocumentKind;
+  sourceType: DocumentSourceType;
+  mimeType: string;
+  originalFilename: string | null;
+  sha256: string;
+  byteSize: number;
+  encrypted: boolean;
+  immutable: boolean;
+  createdById: string;
+  createdAt: string;
+  createdBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  annotations: PrescriptionAnnotation[];
 };
 
 export type AuditEvent = {

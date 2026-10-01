@@ -17,6 +17,7 @@ import { inventoryOperationsRoutes } from "./routes/inventoryOperations.js";
 import { inventoryArchitectureRoutes } from "./routes/inventoryArchitecture.js";
 import { thirdPartyRoutes } from "./routes/thirdParty.js";
 import { posRoutes } from "./routes/pos.js";
+import { documentRoutes } from "./routes/documents.js";
 
 type BuildAppOptions = {
   serveWeb?: boolean;
@@ -53,6 +54,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-request-id",
+    bodyLimit: 36 * 1024 * 1024,
   });
 
   app.register(cors, {
@@ -73,6 +75,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(inventoryArchitectureRoutes, { prefix: "/api" });
   app.register(thirdPartyRoutes, { prefix: "/api" });
   app.register(posRoutes, { prefix: "/api" });
+  app.register(documentRoutes, { prefix: "/api" });
 
   if (options.serveWeb) {
     const webRoot = resolve(

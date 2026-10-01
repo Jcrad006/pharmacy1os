@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ClinicalPanel } from "./ClinicalPanel";
+import { PrescriptionDocumentPanel } from "./PrescriptionDocumentPanel";
 import {
   createEmergencySupply,
   createFill,
@@ -738,6 +739,14 @@ export function PrescriptionDetail({
         </div>
         <span className={`status large-status status-${rx.status.toLowerCase()}`}>{statusLabels[rx.status]}</span>
       </section>
+
+      <PrescriptionDocumentPanel
+        prescription={rx}
+        devUser={devUser}
+        user={user}
+        onMutated={onMutated}
+        onError={onError}
+      />
 
       {editing && editState && (
         <section className="panel edit-panel">
