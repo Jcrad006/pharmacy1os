@@ -349,6 +349,84 @@ export async function moveInventoryPosition(
   return { from: updatedFrom, to: updatedTo, movement };
 }
 
+export async function repositionInventoryQuantity(
+  tx: Prisma.TransactionClient,
+  input: {
+    siteId: string;
+    balanceId: string;
+    quantity: Prisma.Decimal | number | string;
+    actorId: string;
+    destinationType: InventoryLocationType;
+    sourceType?: InventoryLocationType | null;
+    reason: string;
+  },
+) {
+  let remaining = decimal(input.quantity);
+  if (remaining.lte(0)) return [];
+
+  const destination = await resolveInventoryLocation(tx, {
+    siteId: input.siteId,
+    preferredTypes: [input.destinationType],
+  });
+
+  const sources = await tx.inventoryPosition.findMany({
+    where: {
+      inventoryBalanceId: input.balanceId,
+      quantity: { gt: 0 },
+      location: {
+        siteId: input.siteId,
+        active: true,
+        id: { not: destination.id },
+        ...(input.sourceType ? { type: input.sourceType } : {}),
+      },
+    },
+    include: { location: true },
+    orderBy: [
+      { location: { pickPriority: "asc" } },
+      { updatedAt: "asc" },
+    ],
+  });
+
+  const sourceTotal = sources.reduce(
+    (sum, position) => sum.plus(position.quantity),
+    new Prisma.Decimal(0),
+  );
+
+  if (sourceTotal.lt(remaining)) {
+    throw new InventoryArchitectureError(
+      409,
+      "INVENTORY_LOCATION_COVERAGE_INSUFFICIENT",
+      "Physical stock in the required source locations does not cover this movement.",
+      {
+        sourceType: input.sourceType ?? "ANY",
+        destinationType: input.destinationType,
+        positionedQuantity: sourceTotal.toString(),
+        requestedQuantity: remaining.toString(),
+      },
+    );
+  }
+
+  const movements = [];
+  for (const source of sources) {
+    if (remaining.lte(0)) break;
+    const take = Prisma.Decimal.min(source.quantity, remaining);
+    movements.push(
+      await moveInventoryPosition(tx, {
+        siteId: input.siteId,
+        balanceId: input.balanceId,
+        fromLocationId: source.locationId,
+        toLocationId: destination.id,
+        quantity: take,
+        actorId: input.actorId,
+        reason: input.reason,
+      }),
+    );
+    remaining = remaining.minus(take);
+  }
+
+  return movements;
+}
+
 export async function recordInventoryCostLayer(
   tx: Prisma.TransactionClient,
   input: {
