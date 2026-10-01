@@ -243,6 +243,26 @@ enum PaymentMethod {
   OTHER
 }
 
+enum PickupIdentityMethod {
+  DATE_OF_BIRTH
+  ADDRESS
+  GOVERNMENT_ID
+  KNOWN_PATIENT
+  OTHER
+}
+
+enum PickupSignatureMethod {
+  ELECTRONIC_TYPED
+  EXTERNAL_DEVICE
+  PAPER
+}
+
+enum WillCallPackageStatus {
+  STAGED
+  PICKED_UP
+  RETURNED_TO_STOCK
+}
+
 enum ProductSelectionDirective {
   UNSPECIFIED
   SELECTION_PERMITTED
@@ -354,6 +374,7 @@ model PharmacySite {
   prescriptionLabels    PrescriptionLabel[]
   labelPrintJobs        LabelPrintJob[]
   posTransactions       PointOfSaleTransaction[]
+  willCallPackages      WillCallPackage[]
   auditEvents           AuditEvent[]
 }
 
@@ -400,6 +421,7 @@ model User {
   posTransactionsCreated PointOfSaleTransaction[] @relation("PosTransactionCreatedBy")
   posTransactionsVoided PointOfSaleTransaction[] @relation("PosTransactionVoidedBy")
   paymentTenders PaymentTender[] @relation("PaymentTenderActor")
+  stagedWillCallPackages WillCallPackage[] @relation("WillCallPackageStagedBy")
 
   @@index([siteId, role])
 }
@@ -738,6 +760,7 @@ model PrescriptionFill {
   claimTransactions   ClaimTransaction[]
   prescriptionLabels  PrescriptionLabel[]
   posSaleLine          PointOfSaleLine?
+  willCallPackage       WillCallPackage?
   inventoryDemand     InventoryDemand?
   filledAt            DateTime?
   soldAt              DateTime?
@@ -944,6 +967,13 @@ model PointOfSaleTransaction {
   totalTendered   Decimal              @db.Decimal(12, 2)
   changeDue       Decimal              @default(0) @db.Decimal(12, 2)
   idempotencyKey  String               @unique
+  pickupRecipientName String
+  pickupRelationship String?
+  pickupIdentityMethod PickupIdentityMethod
+  pickupVerifiedAt DateTime
+  pickupSignatureMethod PickupSignatureMethod
+  pickupSignatureName String?
+  pickupSignatureReference String?
   createdById     String
   createdBy       User                 @relation("PosTransactionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   voidedById      String?
@@ -994,6 +1024,28 @@ model PaymentTender {
 
   @@index([transactionId, createdAt])
   @@index([actorId, createdAt])
+}
+
+
+model WillCallPackage {
+  id          String                @id @default(uuid())
+  siteId      String
+  site        PharmacySite          @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  fillId      String                @unique
+  fill        PrescriptionFill      @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  bagBarcode  String                @unique
+  locationId  String
+  location    InventoryLocation     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  status      WillCallPackageStatus @default(STAGED)
+  stagedById  String
+  stagedBy    User                  @relation("WillCallPackageStagedBy", fields: [stagedById], references: [id], onDelete: Restrict)
+  stagedAt    DateTime              @default(now())
+  pickedUpAt  DateTime?
+  returnedAt  DateTime?
+  updatedAt   DateTime              @updatedAt
+
+  @@index([siteId, status, stagedAt])
+  @@index([locationId, status])
 }
 
 model FillProductSource {
@@ -1369,11 +1421,14 @@ model InventoryLocation {
   isQuarantine         Boolean               @default(false)
   temperatureMinC      Decimal?              @db.Decimal(6, 2)
   temperatureMaxC      Decimal?              @db.Decimal(6, 2)
+  barcode              String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   stockPositions       InventoryStockPosition[]
+  willCallPackages     WillCallPackage[]
 
   @@unique([siteId, code])
+  @@unique([siteId, barcode])
   @@index([siteId, active, type])
 }
 
