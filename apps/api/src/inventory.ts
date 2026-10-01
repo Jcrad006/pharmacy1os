@@ -432,6 +432,19 @@ export async function reserveInventoryForFill(
     },
   });
 
+  const demand = await tx.inventoryDemand.findUnique({
+    where: { fillId: fill.id },
+  });
+  if (demand && demand.status !== "CANCELLED") {
+    await tx.inventoryDemand.update({
+      where: { id: demand.id },
+      data: {
+        quantitySatisfied: demand.quantityRequired,
+        status: "SATISFIED",
+      },
+    });
+  }
+
   return {
     balance: updated,
     quantity,
