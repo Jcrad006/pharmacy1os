@@ -374,6 +374,15 @@ export async function recallRoutes(app: FastifyInstance) {
         recall: presentRecall(recall),
       });
     } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        return reply.code(409).send({
+          error: "This lot already has an open recall.",
+          code: "RECALL_ALREADY_OPEN",
+        });
+      }
       if (error instanceof AccessError || error instanceof InventoryError) {
         return reply.code(error.statusCode).send({
           error: error.message,
