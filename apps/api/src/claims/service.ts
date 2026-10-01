@@ -193,25 +193,8 @@ async function createOrReuseLabel(
     },
     orderBy: { version: "desc" },
   });
-  if (active) {
-    return { label: active, printJob: active.printJobs[0] ?? null };
-  }
-
-  const last = await db.prescriptionLabel.findFirst({
-    where: { fillId: fill.id },
-    select: { version: true },
-    orderBy: { version: "desc" },
-  });
 
   const physicalQuantity = fill.quantity;
-  if (!physicalQuantity || physicalQuantity.lte(0)) {
-    throw new ClaimError(
-      409,
-      "FILL_QUANTITY_REQUIRED",
-      "A positive physical dispense quantity is required before label generation.",
-    );
-  }
-
   const payerIntendedQuantity =
     fill.payerIntendedQuantity ?? fill.intendedQuantity ?? fill.quantity;
   const billedNdc =
@@ -219,7 +202,6 @@ async function createOrReuseLabel(
     (fill.productSources.length === 1
       ? fill.productSources[0]!.ndcSnapshot
       : null);
-
   const sourceSummary = fill.productSources.map((source) => ({
     sequence: source.sequence,
     productId: source.productId,
@@ -229,6 +211,67 @@ async function createOrReuseLabel(
     expiration: source.expirationSnapshot.toISOString(),
     quantity: source.quantity.toString(),
   }));
+  const sourceSummarySnapshot = jsonSnapshot(sourceSummary);
+
+  if (
+    active &&
+    physicalQuantity &&
+    active.physicalQuantity.eq(physicalQuantity) &&
+    (active.payerIntendedQuantity?.eq(payerIntendedQuantity ?? 0) ??
+      payerIntendedQuantity === null) &&
+    active.daysSupply === fill.daysSupply &&
+    active.billedNdcSnapshot === billedNdc &&
+    JSON.stringify(active.sourceSummarySnapshot) ===
+      JSON.stringify(sourceSummarySnapshot)
+  ) {
+    return { label: active, printJob: active.printJobs[0] ?? null };
+  }
+
+  const last = await db.prescriptionLabel.findFirst({
+    where: { fillId: fill.id },
+    select: { version: true },
+    orderBy: { version: "desc" },
+  });
+
+  if (active) {
+    await db.$transaction(async (tx) => {
+      await tx.prescriptionLabel.update({
+        where: { id: active.id },
+        data: {
+          status: "VOID",
+          voidedAt: new Date(),
+          voidReason:
+            "Dispensing details changed after label generation; replacement label required.",
+        },
+      });
+      await tx.labelPrintJob.updateMany({
+        where: { labelId: active.id, status: "QUEUED" },
+        data: { status: "CANCELLED" },
+      });
+      await writeAuditEvent(tx, {
+        siteId: context.siteId,
+        actorId: context.actorId,
+        action: "PRESCRIPTION_LABEL_VOIDED_FOR_REPLACEMENT",
+        entityType: "PrescriptionLabel",
+        entityId: active.id,
+        requestId: context.requestId,
+        metadata: {
+          fillId: fill.id,
+          priorVersion: active.version,
+          priorPhysicalQuantity: active.physicalQuantity.toString(),
+          nextPhysicalQuantity: physicalQuantity?.toString() ?? null,
+        },
+      });
+    });
+  }
+
+  if (!physicalQuantity || physicalQuantity.lte(0)) {
+    throw new ClaimError(
+      409,
+      "FILL_QUANTITY_REQUIRED",
+      "A positive physical dispense quantity is required before label generation.",
+    );
+  }
 
   return db.$transaction(async (tx) => {
     const label = await tx.prescriptionLabel.create({
@@ -254,7 +297,7 @@ async function createOrReuseLabel(
         payerIntendedQuantity,
         daysSupply: fill.daysSupply,
         billedNdcSnapshot: billedNdc,
-        sourceSummarySnapshot: jsonSnapshot(sourceSummary),
+        sourceSummarySnapshot,
       },
     });
 
