@@ -181,7 +181,14 @@
 - [x] Cycle-count rejection without inventory mutation
 - [x] Cycle-count workstation embedded in F9 Inventory
 - [ ] Inventory transfers between pharmacy sites
-- [ ] Damaged/expired/quarantined stock disposition
+- [x] Damaged/expired/quarantined stock disposition
+- [x] Quarantined quantity excluded from Product Fill availability
+- [x] Staff quarantine action with reason code and optional note
+- [x] Pharmacist/admin-only release back to usable inventory
+- [x] Pharmacist/admin-only destroy/vendor/reverse-distributor disposition
+- [x] Immutable quarantine/release/disposition ledger deltas and audit events
+- [x] Cycle-count snapshots and stale checks include quarantined quantity
+- [x] F9 quarantine hold queue with active and resolved history
 - [ ] Recall workflow linking affected on-hand stock and dispensed fills
 - [ ] Purchase orders and wholesaler receiving reconciliation
 
