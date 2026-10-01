@@ -7,6 +7,7 @@ import type { DevUser, InventoryBalance } from "../types";
 import { canCorrectInventory } from "../workflow";
 import { CycleCounts } from "./CycleCounts";
 import { InventoryHolds } from "./InventoryHolds";
+import { InventoryRecalls } from "./InventoryRecalls";
 
 function quantity(value: string | number) {
   return Number(value).toLocaleString(undefined, {
@@ -264,6 +265,14 @@ export function Inventory({
           </div>
         </div>
       )}
+      <InventoryRecalls
+        devUser={devUser}
+        user={user}
+        balances={balances}
+        onError={onError}
+        onInventoryChanged={refresh}
+      />
+
       <InventoryHolds
         devUser={devUser}
         user={user}
