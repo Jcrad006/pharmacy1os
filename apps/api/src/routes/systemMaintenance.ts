@@ -38,22 +38,24 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
       const actor = await resolveDevelopmentActor(request, "system:backup");
       const backup = await createBackupSet();
 
-      await db.$transaction((tx) =>\n        writeAuditEvent(tx, {
-        siteId: actor.siteId,
-        actorId: actor.id,
-        action: "SYSTEM_BACKUP_CREATED",
-        entityType: "BackupSet",
-        entityId: backup.backupId,
-        requestId: request.id,
-        metadata: {
-          scope: "GLOBAL_DATABASE_AND_DOCUMENT_VAULT",
-          documentCount: backup.documentCount,
-          databaseBytes: backup.databaseBytes,
-          documentBytes: backup.documentBytes,
-          integrityStatus: backup.integrityStatus,
-          integrityReportId: backup.integrityReportId,
-        },
-        }),\n      );
+      await db.$transaction((tx) =>
+        writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "SYSTEM_BACKUP_CREATED",
+          entityType: "BackupSet",
+          entityId: backup.backupId,
+          requestId: request.id,
+          metadata: {
+            scope: "GLOBAL_DATABASE_AND_DOCUMENT_VAULT",
+            documentCount: backup.documentCount,
+            databaseBytes: backup.databaseBytes,
+            documentBytes: backup.documentBytes,
+            integrityStatus: backup.integrityStatus,
+            integrityReportId: backup.integrityReportId,
+          },
+        }),
+      );
 
       return reply.code(201).send({ backup });
     } catch (error) {
@@ -67,19 +69,21 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
       const backupId = (request.params as { id: string }).id;
       const verification = await verifyBackupSet(backupId);
 
-      await db.$transaction((tx) =>\n        writeAuditEvent(tx, {
-        siteId: actor.siteId,
-        actorId: actor.id,
-        action: "SYSTEM_BACKUP_VERIFIED",
-        entityType: "BackupSet",
-        entityId: backupId,
-        requestId: request.id,
-        metadata: {
-          scope: "GLOBAL_DATABASE_AND_DOCUMENT_VAULT",
-          status: verification.status,
-          findingCount: verification.findings.length,
-        },
-        }),\n      );
+      await db.$transaction((tx) =>
+        writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "SYSTEM_BACKUP_VERIFIED",
+          entityType: "BackupSet",
+          entityId: backupId,
+          requestId: request.id,
+          metadata: {
+            scope: "GLOBAL_DATABASE_AND_DOCUMENT_VAULT",
+            status: verification.status,
+            findingCount: verification.findings.length,
+          },
+        }),
+      );
 
       return { verification };
     } catch (error) {
@@ -92,22 +96,24 @@ export async function systemMaintenanceRoutes(app: FastifyInstance) {
       const actor = await resolveDevelopmentActor(request, "system:backup");
       const report = await scanDocumentVaultIntegrity();
 
-      await db.$transaction((tx) =>\n        writeAuditEvent(tx, {
-        siteId: actor.siteId,
-        actorId: actor.id,
-        action: "DOCUMENT_VAULT_INTEGRITY_SCANNED",
-        entityType: "DocumentVault",
-        entityId: report.reportId,
-        requestId: request.id,
-        metadata: {
-          scope: "GLOBAL_DOCUMENT_VAULT",
-          status: report.status,
-          documentCount: report.documentCount,
-          checkedFileCount: report.checkedFileCount,
-          orphanFileCount: report.orphanFileCount,
-          findingCount: report.findings.length,
-        },
-        }),\n      );
+      await db.$transaction((tx) =>
+        writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "DOCUMENT_VAULT_INTEGRITY_SCANNED",
+          entityType: "DocumentVault",
+          entityId: report.reportId,
+          requestId: request.id,
+          metadata: {
+            scope: "GLOBAL_DOCUMENT_VAULT",
+            status: report.status,
+            documentCount: report.documentCount,
+            checkedFileCount: report.checkedFileCount,
+            orphanFileCount: report.orphanFileCount,
+            findingCount: report.findings.length,
+          },
+        }),
+      );
 
       return { report };
     } catch (error) {
