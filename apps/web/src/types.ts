@@ -218,7 +218,10 @@ export type InventoryTransactionType =
   | "RELEASE"
   | "DISPENSE"
   | "RETURN_TO_STOCK"
-  | "ADJUSTMENT";
+  | "ADJUSTMENT"
+  | "QUARANTINE"
+  | "RELEASE_QUARANTINE"
+  | "DISPOSE";
 
 export type InventoryTransaction = {
   id: string;
@@ -229,6 +232,8 @@ export type InventoryTransaction = {
   type: InventoryTransactionType;
   onHandDelta: string | number;
   reservedDelta: string | number;
+  quarantinedDelta: string | number;
+  inventoryHoldId: string | null;
   reason: string | null;
   source: string | null;
   reference: string | null;
@@ -251,6 +256,7 @@ export type CycleCountLine = {
   inventoryBalanceId: string;
   expectedOnHand: string | null;
   expectedReserved: string | null;
+  expectedQuarantined: string | null;
   countedQuantity: string | null;
   discrepancy: string | null;
   countedById: string | null;
@@ -297,6 +303,51 @@ export type CycleCountSession = {
   lines: CycleCountLine[];
 };
 
+export type InventoryHoldStatus = "ACTIVE" | "RELEASED" | "DISPOSED";
+
+export type InventoryHoldReason =
+  | "DAMAGED"
+  | "EXPIRED"
+  | "RECALL"
+  | "SUSPECT_PRODUCT"
+  | "TEMPERATURE_EXCURSION"
+  | "OTHER";
+
+export type InventoryDispositionType =
+  | "DESTROY"
+  | "RETURN_TO_VENDOR"
+  | "REVERSE_DISTRIBUTOR"
+  | "OTHER";
+
+export type InventoryHold = {
+  id: string;
+  siteId: string;
+  inventoryBalanceId: string;
+  quantity: string | number;
+  reasonCode: InventoryHoldReason;
+  note: string | null;
+  status: InventoryHoldStatus;
+  createdById: string;
+  createdBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  resolvedById: string | null;
+  resolvedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  resolutionNote: string | null;
+  dispositionType: InventoryDispositionType | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  updatedAt: string;
+  inventoryBalance: InventoryBalance;
+  transactions: InventoryTransaction[];
+};
+
 export type InventoryBalance = {
   id: string;
   siteId: string;
@@ -305,6 +356,7 @@ export type InventoryBalance = {
   productExpirationId: string;
   onHandQuantity: string | number;
   reservedQuantity: string | number;
+  quarantinedQuantity: string | number;
   availableQuantity: string | number;
   createdAt: string;
   updatedAt: string;

@@ -1,4 +1,8 @@
-import { Prisma } from "@prisma/client";
+import {
+  Prisma,
+  type InventoryDispositionType,
+  type InventoryHoldReason,
+} from "@prisma/client";
 
 export class InventoryError extends Error {
   constructor(
@@ -253,7 +257,9 @@ export async function reserveInventoryForFill(
   }
 
   const locked = await lockBalance(tx, balance.id);
-  const available = locked.onHandQuantity.minus(locked.reservedQuantity);
+  const available = locked.onHandQuantity
+    .minus(locked.reservedQuantity)
+    .minus(locked.quarantinedQuantity);
 
   if (available.lt(quantity)) {
     throw new InventoryError(
@@ -483,14 +489,16 @@ export async function adjustInventoryBalance(
   }
 
   const newOnHand = balance.onHandQuantity.plus(delta);
-  if (newOnHand.lt(0) || newOnHand.lt(balance.reservedQuantity)) {
+  const allocated = balance.reservedQuantity.plus(balance.quarantinedQuantity);
+  if (newOnHand.lt(0) || newOnHand.lt(allocated)) {
     throw new InventoryError(
       409,
       "INVENTORY_ADJUSTMENT_CONFLICT",
-      "The adjustment would make on-hand inventory negative or lower than reserved inventory.",
+      "The adjustment would make on-hand inventory negative or lower than reserved plus quarantined inventory.",
       {
         onHandQuantity: balance.onHandQuantity.toString(),
         reservedQuantity: balance.reservedQuantity.toString(),
+        quarantinedQuantity: balance.quarantinedQuantity.toString(),
         adjustment: delta.toString(),
       },
     );
@@ -516,4 +524,257 @@ export async function adjustInventoryBalance(
   });
 
   return { balance: updated, transaction };
+}
+
+
+export async function quarantineInventory(
+  tx: Prisma.TransactionClient,
+  input: {
+    balanceId: string;
+    siteId: string;
+    actorId: string;
+    quantity: number | string | Prisma.Decimal;
+    reasonCode: InventoryHoldReason;
+    note?: string | null;
+  },
+) {
+  const quantity = positiveQuantity(input.quantity);
+  const balance = await lockBalance(tx, input.balanceId);
+
+  if (balance.siteId !== input.siteId) {
+    throw new InventoryError(
+      404,
+      "INVENTORY_NOT_FOUND",
+      "Inventory balance not found.",
+    );
+  }
+
+  const available = balance.onHandQuantity
+    .minus(balance.reservedQuantity)
+    .minus(balance.quarantinedQuantity);
+
+  if (available.lt(quantity)) {
+    throw new InventoryError(
+      409,
+      "INSUFFICIENT_AVAILABLE_INVENTORY",
+      "Only currently available inventory can be quarantined.",
+      {
+        balanceId: balance.id,
+        availableQuantity: available.toString(),
+        requestedQuantity: quantity.toString(),
+        reservedQuantity: balance.reservedQuantity.toString(),
+        quarantinedQuantity: balance.quarantinedQuantity.toString(),
+      },
+    );
+  }
+
+  const hold = await tx.inventoryHold.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: balance.id,
+      quantity,
+      reasonCode: input.reasonCode,
+      note: input.note?.trim() || null,
+      createdById: input.actorId,
+    },
+  });
+
+  const updated = await tx.inventoryBalance.update({
+    where: { id: balance.id },
+    data: {
+      quarantinedQuantity: balance.quarantinedQuantity.plus(quantity),
+    },
+  });
+
+  const transaction = await tx.inventoryTransaction.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: balance.id,
+      inventoryHoldId: hold.id,
+      actorId: input.actorId,
+      type: "QUARANTINE",
+      onHandDelta: 0,
+      reservedDelta: 0,
+      quarantinedDelta: quantity,
+      reason: input.note?.trim() || input.reasonCode.replaceAll("_", " "),
+      source: "INVENTORY_HOLD",
+      reference: hold.id,
+    },
+  });
+
+  return { balance: updated, hold, transaction };
+}
+
+export async function releaseInventoryHold(
+  tx: Prisma.TransactionClient,
+  input: {
+    holdId: string;
+    siteId: string;
+    actorId: string;
+    resolutionNote: string;
+  },
+) {
+  const hold = await tx.inventoryHold.findFirst({
+    where: {
+      id: input.holdId,
+      siteId: input.siteId,
+    },
+  });
+
+  if (!hold) {
+    throw new InventoryError(
+      404,
+      "INVENTORY_HOLD_NOT_FOUND",
+      "Inventory hold not found.",
+    );
+  }
+
+  if (hold.status !== "ACTIVE") {
+    throw new InventoryError(
+      409,
+      "INVENTORY_HOLD_CLOSED",
+      "Only an active inventory hold can be released.",
+      { status: hold.status },
+    );
+  }
+
+  const balance = await lockBalance(tx, hold.inventoryBalanceId);
+
+  if (balance.quarantinedQuantity.lt(hold.quantity)) {
+    throw new InventoryError(
+      409,
+      "QUARANTINE_BALANCE_INCONSISTENT",
+      "The quarantined balance is smaller than this active hold.",
+      {
+        quarantinedQuantity: balance.quarantinedQuantity.toString(),
+        holdQuantity: hold.quantity.toString(),
+      },
+    );
+  }
+
+  const updated = await tx.inventoryBalance.update({
+    where: { id: balance.id },
+    data: {
+      quarantinedQuantity: balance.quarantinedQuantity.minus(hold.quantity),
+    },
+  });
+
+  const transaction = await tx.inventoryTransaction.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: balance.id,
+      inventoryHoldId: hold.id,
+      actorId: input.actorId,
+      type: "RELEASE_QUARANTINE",
+      onHandDelta: 0,
+      reservedDelta: 0,
+      quarantinedDelta: hold.quantity.negated(),
+      reason: input.resolutionNote.trim(),
+      source: "INVENTORY_HOLD",
+      reference: hold.id,
+    },
+  });
+
+  const resolved = await tx.inventoryHold.update({
+    where: { id: hold.id },
+    data: {
+      status: "RELEASED",
+      resolvedById: input.actorId,
+      resolvedAt: new Date(),
+      resolutionNote: input.resolutionNote.trim(),
+      dispositionType: null,
+    },
+  });
+
+  return { balance: updated, hold: resolved, transaction };
+}
+
+export async function disposeInventoryHold(
+  tx: Prisma.TransactionClient,
+  input: {
+    holdId: string;
+    siteId: string;
+    actorId: string;
+    dispositionType: InventoryDispositionType;
+    resolutionNote: string;
+  },
+) {
+  const hold = await tx.inventoryHold.findFirst({
+    where: {
+      id: input.holdId,
+      siteId: input.siteId,
+    },
+  });
+
+  if (!hold) {
+    throw new InventoryError(
+      404,
+      "INVENTORY_HOLD_NOT_FOUND",
+      "Inventory hold not found.",
+    );
+  }
+
+  if (hold.status !== "ACTIVE") {
+    throw new InventoryError(
+      409,
+      "INVENTORY_HOLD_CLOSED",
+      "Only an active inventory hold can be disposed.",
+      { status: hold.status },
+    );
+  }
+
+  const balance = await lockBalance(tx, hold.inventoryBalanceId);
+
+  if (
+    balance.quarantinedQuantity.lt(hold.quantity) ||
+    balance.onHandQuantity.lt(hold.quantity)
+  ) {
+    throw new InventoryError(
+      409,
+      "QUARANTINE_BALANCE_INCONSISTENT",
+      "The physical/quarantined balance cannot satisfy this disposition.",
+      {
+        onHandQuantity: balance.onHandQuantity.toString(),
+        quarantinedQuantity: balance.quarantinedQuantity.toString(),
+        holdQuantity: hold.quantity.toString(),
+      },
+    );
+  }
+
+  const updated = await tx.inventoryBalance.update({
+    where: { id: balance.id },
+    data: {
+      onHandQuantity: balance.onHandQuantity.minus(hold.quantity),
+      quarantinedQuantity: balance.quarantinedQuantity.minus(hold.quantity),
+    },
+  });
+
+  const transaction = await tx.inventoryTransaction.create({
+    data: {
+      siteId: input.siteId,
+      inventoryBalanceId: balance.id,
+      inventoryHoldId: hold.id,
+      actorId: input.actorId,
+      type: "DISPOSE",
+      onHandDelta: hold.quantity.negated(),
+      reservedDelta: 0,
+      quarantinedDelta: hold.quantity.negated(),
+      reason: input.resolutionNote.trim(),
+      source: input.dispositionType,
+      reference: hold.id,
+    },
+  });
+
+  const resolved = await tx.inventoryHold.update({
+    where: { id: hold.id },
+    data: {
+      status: "DISPOSED",
+      resolvedById: input.actorId,
+      resolvedAt: new Date(),
+      resolutionNote: input.resolutionNote.trim(),
+      dispositionType: input.dispositionType,
+    },
+  });
+
+  return { balance: updated, hold: resolved, transaction };
 }

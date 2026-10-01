@@ -80,6 +80,31 @@ enum InventoryTransactionType {
   DISPENSE
   RETURN_TO_STOCK
   ADJUSTMENT
+  QUARANTINE
+  RELEASE_QUARANTINE
+  DISPOSE
+}
+
+enum InventoryHoldStatus {
+  ACTIVE
+  RELEASED
+  DISPOSED
+}
+
+enum InventoryHoldReason {
+  DAMAGED
+  EXPIRED
+  RECALL
+  SUSPECT_PRODUCT
+  TEMPERATURE_EXCURSION
+  OTHER
+}
+
+enum InventoryDispositionType {
+  DESTROY
+  RETURN_TO_VENDOR
+  REVERSE_DISTRIBUTOR
+  OTHER
 }
 
 enum CycleCountStatus {
@@ -106,6 +131,7 @@ model PharmacySite {
   inventoryBalances     InventoryBalance[]
   inventoryTransactions InventoryTransaction[]
   cycleCountSessions    CycleCountSession[]
+  inventoryHolds        InventoryHold[]
   auditEvents            AuditEvent[]
 }
 
@@ -127,6 +153,8 @@ model User {
   submittedCycleCounts   CycleCountSession[]     @relation("CycleCountSubmittedBy")
   reviewedCycleCounts    CycleCountSession[]     @relation("CycleCountReviewedBy")
   countedCycleCountLines CycleCountLine[]        @relation("CycleCountCountedBy")
+  createdInventoryHolds  InventoryHold[]          @relation("InventoryHoldCreatedBy")
+  resolvedInventoryHolds InventoryHold[]          @relation("InventoryHoldResolvedBy")
 
   @@index([siteId, role])
 }
@@ -424,11 +452,13 @@ model InventoryBalance {
   productExpiration   ProductExpiration  @relation(fields: [productExpirationId], references: [id], onDelete: Restrict)
   onHandQuantity      Decimal            @default(0) @db.Decimal(14, 3)
   reservedQuantity    Decimal            @default(0) @db.Decimal(14, 3)
+  quarantinedQuantity Decimal            @default(0) @db.Decimal(14, 3)
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
   fills               PrescriptionFill[]
   transactions        InventoryTransaction[]
   cycleCountLines      CycleCountLine[]
+  holds                InventoryHold[]
 
   @@unique([siteId, productId, productLotId, productExpirationId])
   @@index([siteId, productId])
@@ -468,6 +498,7 @@ model CycleCountLine {
   inventoryBalance      InventoryBalance  @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
   expectedOnHand        Decimal?          @db.Decimal(14, 3)
   expectedReserved      Decimal?          @db.Decimal(14, 3)
+  expectedQuarantined   Decimal?          @db.Decimal(14, 3)
   countedQuantity       Decimal?          @db.Decimal(14, 3)
   discrepancy           Decimal?          @db.Decimal(14, 3)
   countedById           String?
@@ -483,6 +514,34 @@ model CycleCountLine {
   @@index([countedById, countedAt])
 }
 
+model InventoryHold {
+  id                 String                   @id @default(uuid())
+  siteId             String
+  site               PharmacySite             @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  inventoryBalanceId String
+  inventoryBalance   InventoryBalance         @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  quantity           Decimal                  @db.Decimal(14, 3)
+  reasonCode         InventoryHoldReason
+  note               String?
+  status             InventoryHoldStatus      @default(ACTIVE)
+  createdById        String
+  createdBy          User                     @relation("InventoryHoldCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  resolvedById       String?
+  resolvedBy         User?                    @relation("InventoryHoldResolvedBy", fields: [resolvedById], references: [id], onDelete: Restrict)
+  resolutionNote     String?
+  dispositionType    InventoryDispositionType?
+  createdAt          DateTime                 @default(now())
+  resolvedAt         DateTime?
+  updatedAt          DateTime                 @updatedAt
+  transactions       InventoryTransaction[]
+
+  @@index([siteId, status, createdAt])
+  @@index([inventoryBalanceId, status])
+  @@index([reasonCode, status])
+  @@index([createdById, createdAt])
+  @@index([resolvedById, resolvedAt])
+}
+
 model InventoryTransaction {
   id                 String                   @id @default(uuid())
   siteId             String
@@ -496,6 +555,9 @@ model InventoryTransaction {
   type               InventoryTransactionType
   onHandDelta        Decimal                  @default(0) @db.Decimal(14, 3)
   reservedDelta      Decimal                  @default(0) @db.Decimal(14, 3)
+  quarantinedDelta   Decimal                  @default(0) @db.Decimal(14, 3)
+  inventoryHoldId    String?
+  inventoryHold      InventoryHold?           @relation(fields: [inventoryHoldId], references: [id], onDelete: Restrict)
   reason             String?
   source             String?
   reference          String?
@@ -506,6 +568,7 @@ model InventoryTransaction {
   @@index([inventoryBalanceId, occurredAt])
   @@index([fillId, occurredAt])
   @@index([actorId, occurredAt])
+  @@index([inventoryHoldId, occurredAt])
 }
 
 model DurIssue {

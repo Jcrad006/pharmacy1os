@@ -1,9 +1,16 @@
-import { Prisma } from "@prisma/client";
+import {
+  Prisma,
+  type InventoryDispositionType,
+  type InventoryHoldReason,
+} from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { db } from "../db.js";
 import {
   adjustInventoryBalance,
+  disposeInventoryHold,
   InventoryError,
+  quarantineInventory,
+  releaseInventoryHold,
 } from "../inventory.js";
 import { writeAuditEvent } from "../audit.js";
 import { AccessError, resolveDevelopmentActor } from "../security/devIdentity.js";
@@ -12,6 +19,33 @@ type AdjustBody = {
   delta?: number;
   reason?: string;
 };
+
+type QuarantineBody = {
+  quantity?: number;
+  reasonCode?: InventoryHoldReason;
+  note?: string;
+};
+
+type ResolveHoldBody = {
+  resolutionNote?: string;
+  dispositionType?: InventoryDispositionType;
+};
+
+const validHoldReasons = new Set<InventoryHoldReason>([
+  "DAMAGED",
+  "EXPIRED",
+  "RECALL",
+  "SUSPECT_PRODUCT",
+  "TEMPERATURE_EXCURSION",
+  "OTHER",
+]);
+
+const validDispositionTypes = new Set<InventoryDispositionType>([
+  "DESTROY",
+  "RETURN_TO_VENDOR",
+  "REVERSE_DISTRIBUTOR",
+  "OTHER",
+]);
 
 type CreateCycleCountBody = {
   balanceIds?: string[];
@@ -26,6 +60,42 @@ type ReviewCycleCountBody = {
   decision?: "APPROVE" | "REJECT";
   reviewNote?: string;
 };
+
+const holdInclude = {
+  createdBy: {
+    select: {
+      id: true,
+      displayName: true,
+      role: true,
+    },
+  },
+  resolvedBy: {
+    select: {
+      id: true,
+      displayName: true,
+      role: true,
+    },
+  },
+  inventoryBalance: {
+    include: {
+      product: {
+        include: {
+          medication: true,
+          manufacturer: true,
+        },
+      },
+      productLot: true,
+      productExpiration: true,
+    },
+  },
+  transactions: {
+    orderBy: { occurredAt: "asc" as const },
+  },
+};
+
+type InventoryHoldWithDetails = Prisma.InventoryHoldGetPayload<{
+  include: typeof holdInclude;
+}>;
 
 const cycleCountInclude = {
   createdBy: {
@@ -83,14 +153,17 @@ type CycleCountWithLines = Prisma.CycleCountSessionGetPayload<{
 function presentBalance<T extends {
   onHandQuantity: { toString(): string };
   reservedQuantity: { toString(): string };
+  quarantinedQuantity: { toString(): string };
 }>(balance: T) {
   const onHand = Number(balance.onHandQuantity.toString());
   const reserved = Number(balance.reservedQuantity.toString());
+  const quarantined = Number(balance.quarantinedQuantity.toString());
   return {
     ...balance,
     onHandQuantity: balance.onHandQuantity.toString(),
     reservedQuantity: balance.reservedQuantity.toString(),
-    availableQuantity: (onHand - reserved).toFixed(3),
+    quarantinedQuantity: balance.quarantinedQuantity.toString(),
+    availableQuantity: (onHand - reserved - quarantined).toFixed(3),
   };
 }
 
@@ -101,9 +174,24 @@ function presentCycleCount(session: CycleCountWithLines) {
       ...line,
       expectedOnHand: line.expectedOnHand?.toString() ?? null,
       expectedReserved: line.expectedReserved?.toString() ?? null,
+      expectedQuarantined: line.expectedQuarantined?.toString() ?? null,
       countedQuantity: line.countedQuantity?.toString() ?? null,
       discrepancy: line.discrepancy?.toString() ?? null,
       inventoryBalance: presentBalance(line.inventoryBalance),
+    })),
+  };
+}
+
+function presentHold(hold: InventoryHoldWithDetails) {
+  return {
+    ...hold,
+    quantity: hold.quantity.toString(),
+    inventoryBalance: presentBalance(hold.inventoryBalance),
+    transactions: hold.transactions.map((transaction) => ({
+      ...transaction,
+      onHandDelta: transaction.onHandDelta.toString(),
+      reservedDelta: transaction.reservedDelta.toString(),
+      quarantinedDelta: transaction.quarantinedDelta.toString(),
     })),
   };
 }
@@ -202,6 +290,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
             reason,
             resultingOnHand: adjusted.balance.onHandQuantity.toString(),
             resultingReserved: adjusted.balance.reservedQuantity.toString(),
+            resultingQuarantined:
+              adjusted.balance.quarantinedQuantity.toString(),
           },
         });
 
@@ -209,6 +299,239 @@ export async function inventoryRoutes(app: FastifyInstance) {
       });
 
       return {
+        balance: presentBalance(result.balance),
+        transaction: result.transaction,
+      };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/inventory/holds", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:read");
+      const holds = await db.inventoryHold.findMany({
+        where: { siteId: actor.siteId },
+        include: holdInclude,
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      });
+
+      return { holds: holds.map(presentHold) };
+    } catch (error) {
+      if (error instanceof AccessError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/inventory/balances/:id/quarantine", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:write");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as QuarantineBody;
+      const quantity = body.quantity;
+      const reasonCode = body.reasonCode;
+
+      if (
+        typeof quantity !== "number" ||
+        !Number.isFinite(quantity) ||
+        quantity <= 0 ||
+        !reasonCode ||
+        !validHoldReasons.has(reasonCode)
+      ) {
+        return reply.code(400).send({
+          error:
+            "A positive quarantine quantity and valid reason code are required.",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const quarantined = await quarantineInventory(tx, {
+          balanceId: id,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          quantity,
+          reasonCode,
+          note: body.note,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "INVENTORY_QUARANTINED",
+          entityType: "InventoryHold",
+          entityId: quarantined.hold.id,
+          requestId: request.id,
+          metadata: {
+            inventoryBalanceId: id,
+            quantity,
+            reasonCode,
+            note: quarantined.hold.note,
+            inventoryTransactionId: quarantined.transaction.id,
+            resultingOnHand: quarantined.balance.onHandQuantity.toString(),
+            resultingReserved: quarantined.balance.reservedQuantity.toString(),
+            resultingQuarantined:
+              quarantined.balance.quarantinedQuantity.toString(),
+          },
+        });
+
+        return quarantined;
+      });
+
+      const hold = await db.inventoryHold.findUniqueOrThrow({
+        where: { id: result.hold.id },
+        include: holdInclude,
+      });
+
+      return reply.code(201).send({
+        hold: presentHold(hold),
+        balance: presentBalance(result.balance),
+        transaction: result.transaction,
+      });
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/inventory/holds/:id/release", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:correct");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as ResolveHoldBody;
+      const resolutionNote = body.resolutionNote?.trim();
+
+      if (!resolutionNote) {
+        return reply.code(400).send({
+          error: "A pharmacist/admin resolution note is required.",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const released = await releaseInventoryHold(tx, {
+          holdId: id,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          resolutionNote,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "INVENTORY_QUARANTINE_RELEASED",
+          entityType: "InventoryHold",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            inventoryBalanceId: released.hold.inventoryBalanceId,
+            quantity: released.hold.quantity.toString(),
+            reasonCode: released.hold.reasonCode,
+            resolutionNote,
+            inventoryTransactionId: released.transaction.id,
+          },
+        });
+
+        return released;
+      });
+
+      const hold = await db.inventoryHold.findUniqueOrThrow({
+        where: { id },
+        include: holdInclude,
+      });
+
+      return {
+        hold: presentHold(hold),
+        balance: presentBalance(result.balance),
+        transaction: result.transaction,
+      };
+    } catch (error) {
+      if (error instanceof AccessError || error instanceof InventoryError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          ...(error instanceof InventoryError
+            ? { code: error.code, details: error.details }
+            : {}),
+        });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/inventory/holds/:id/dispose", async (request, reply) => {
+    try {
+      const actor = await resolveDevelopmentActor(request, "inventory:correct");
+      const id = (request.params as { id: string }).id;
+      const body = (request.body ?? {}) as ResolveHoldBody;
+      const resolutionNote = body.resolutionNote?.trim();
+      const dispositionType = body.dispositionType;
+
+      if (
+        !resolutionNote ||
+        !dispositionType ||
+        !validDispositionTypes.has(dispositionType)
+      ) {
+        return reply.code(400).send({
+          error:
+            "A valid disposition type and pharmacist/admin resolution note are required.",
+        });
+      }
+
+      const result = await db.$transaction(async (tx) => {
+        const disposed = await disposeInventoryHold(tx, {
+          holdId: id,
+          siteId: actor.siteId,
+          actorId: actor.id,
+          dispositionType,
+          resolutionNote,
+        });
+
+        await writeAuditEvent(tx, {
+          siteId: actor.siteId,
+          actorId: actor.id,
+          action: "INVENTORY_QUARANTINE_DISPOSED",
+          entityType: "InventoryHold",
+          entityId: id,
+          requestId: request.id,
+          metadata: {
+            inventoryBalanceId: disposed.hold.inventoryBalanceId,
+            quantity: disposed.hold.quantity.toString(),
+            reasonCode: disposed.hold.reasonCode,
+            dispositionType,
+            resolutionNote,
+            inventoryTransactionId: disposed.transaction.id,
+            resultingOnHand: disposed.balance.onHandQuantity.toString(),
+            resultingQuarantined:
+              disposed.balance.quarantinedQuantity.toString(),
+          },
+        });
+
+        return disposed;
+      });
+
+      const hold = await db.inventoryHold.findUniqueOrThrow({
+        where: { id },
+        include: holdInclude,
+      });
+
+      return {
+        hold: presentHold(hold),
         balance: presentBalance(result.balance),
         transaction: result.transaction,
       };
@@ -429,6 +752,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
             data: {
               expectedOnHand: balance.onHandQuantity,
               expectedReserved: balance.reservedQuantity,
+              expectedQuarantined: balance.quarantinedQuantity,
               countedQuantity: counted,
               discrepancy: counted.minus(balance.onHandQuantity),
               countedById: actor.id,
@@ -449,6 +773,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
               inventoryBalanceId: line.inventoryBalanceId,
               expectedOnHand: balance.onHandQuantity.toString(),
               expectedReserved: balance.reservedQuantity.toString(),
+              expectedQuarantined: balance.quarantinedQuantity.toString(),
               countedQuantity: counted.toString(),
               discrepancy: counted.minus(balance.onHandQuantity).toString(),
             },
@@ -463,6 +788,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
             ...updated,
             expectedOnHand: updated.expectedOnHand?.toString() ?? null,
             expectedReserved: updated.expectedReserved?.toString() ?? null,
+            expectedQuarantined:
+              updated.expectedQuarantined?.toString() ?? null,
             countedQuantity: updated.countedQuantity?.toString() ?? null,
             discrepancy: updated.discrepancy?.toString() ?? null,
           },
@@ -632,6 +959,7 @@ export async function inventoryRoutes(app: FastifyInstance) {
             line.countedQuantity === null ||
             line.expectedOnHand === null ||
             line.expectedReserved === null ||
+            line.expectedQuarantined === null ||
             line.countedAt === null
           ) {
             throw new InventoryError(
@@ -661,7 +989,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
           if (
             laterMovement ||
             !balance.onHandQuantity.eq(line.expectedOnHand) ||
-            !balance.reservedQuantity.eq(line.expectedReserved)
+            !balance.reservedQuantity.eq(line.expectedReserved) ||
+            !balance.quarantinedQuantity.eq(line.expectedQuarantined)
           ) {
             throw new InventoryError(
               409,
@@ -675,6 +1004,8 @@ export async function inventoryRoutes(app: FastifyInstance) {
                 expectedOnHand: line.expectedOnHand.toString(),
                 currentReserved: balance.reservedQuantity.toString(),
                 expectedReserved: line.expectedReserved.toString(),
+                currentQuarantined: balance.quarantinedQuantity.toString(),
+                expectedQuarantined: line.expectedQuarantined.toString(),
                 laterMovementId: laterMovement?.id ?? null,
               },
             );

@@ -226,7 +226,8 @@ export function CycleCounts({
       <p className="catalog-help">
         Physical counts do not change inventory immediately. Staff submit the
         completed count, then a pharmacist/admin reviews discrepancies before
-        any ledger adjustment is posted.
+        any ledger adjustment is posted. Physical counts should include all
+        units physically present, including segregated/quarantined stock.
       </p>
 
       <div className="cycle-count-layout">
@@ -302,6 +303,7 @@ export function CycleCounts({
                     <th>Lot / Exp</th>
                     <th>System on hand</th>
                     <th>Reserved</th>
+                    <th>Quarantined</th>
                     <th>Physical count</th>
                     <th>Discrepancy</th>
                     <th></th>
@@ -331,6 +333,7 @@ export function CycleCounts({
                       </td>
                       <td>{qty(line.expectedOnHand)}</td>
                       <td>{qty(line.expectedReserved)}</td>
+                      <td>{qty(line.expectedQuarantined)}</td>
                       <td>
                         {selected.status === "OPEN" && writable ? (
                           <input
@@ -387,9 +390,9 @@ export function CycleCounts({
             {selected.status === "OPEN" && writable && (
               <div className="cycle-count-actions">
                 <p className="catalog-help">
-                  Saving a count snapshots the system quantity at that moment.
-                  Any later inventory movement will require that line to be
-                  recounted before approval.
+                  Saving a count snapshots on-hand, reserved, and quarantined
+                  quantities at that moment. Any later inventory movement will
+                  require that line to be recounted before approval.
                 </p>
                 <button
                   type="button"

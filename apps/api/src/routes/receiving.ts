@@ -288,6 +288,7 @@ export async function receivingRoutes(app: FastifyInstance) {
           ...result.balance,
           availableQuantity: result.balance.onHandQuantity
             .minus(result.balance.reservedQuantity)
+            .minus(result.balance.quarantinedQuantity)
             .toString(),
         },
         transaction: result.transaction,
