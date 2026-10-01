@@ -849,9 +849,16 @@ async function copyBackupVaultToRestoreStaging(
 
 export async function restoreBackupSet(
   backupId: string,
-  options?: { tooling?: BackupTooling },
+  options?: { tooling?: BackupTooling; offlineConfirmed?: boolean },
 ) {
   validateBackupId(backupId);
+  if (!options?.offlineConfirmed) {
+    throw new DocumentVaultError(
+      409,
+      "RESTORE_OFFLINE_CONFIRMATION_REQUIRED",
+      "Restore is an offline operator action. Stop the Pharmacy1OS API/workstation service and rerun with explicit offline confirmation.",
+    );
+  }
   const backupDirectory = safeBackupPath(backupId);
   const verification = await verifyBackupDirectory(backupDirectory);
   if (verification.status !== "PASS" || !verification.manifest) {
