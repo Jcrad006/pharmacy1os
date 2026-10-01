@@ -228,6 +228,18 @@ describe("barcode registry, receiving, and Product Fill", () => {
     expect(wrongAssignment.statusCode).toBe(201);
     const barcodeId = wrongAssignment.json().barcode.id as string;
 
+    const wrongStockReceipt = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: technicianHeaders,
+      payload: {
+        rawBarcode,
+        quantity: 100,
+        source: "Synthetic test shipment",
+      },
+    });
+    expect(wrongStockReceipt.statusCode).toBe(201);
+
     const atorvastatinRx = await app.inject({
       method: "POST",
       url: "/api/prescriptions",
@@ -321,6 +333,21 @@ describe("barcode registry, receiving, and Product Fill", () => {
     expect(
       recognizedAfterCorrection.json().product.medication.genericName,
     ).toBe("Lisinopril");
+
+    const correctedStockReceipt = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: technicianHeaders,
+      payload: {
+        rawBarcode,
+        quantity: 100,
+        source: "Synthetic corrected shipment",
+      },
+    });
+    expect(correctedStockReceipt.statusCode).toBe(201);
+    expect(correctedStockReceipt.json().product.id).toBe(
+      "product-demo-lisinopril-a",
+    );
 
     const oldDrugRescan = await app.inject({
       method: "POST",

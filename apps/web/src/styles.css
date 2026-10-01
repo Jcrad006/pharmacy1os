@@ -1141,3 +1141,64 @@ kbd {
 .receiving-correction textarea {
   resize: vertical;
 }
+
+
+.receiving-stock-entry,
+.inventory-adjustment-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #dfe8e3;
+}
+
+.receiving-stock-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.receiving-stock-grid label,
+.inventory-adjustment-panel label {
+  display: grid;
+  gap: 6px;
+  color: #42544c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.receiving-stock-grid input,
+.inventory-adjustment-panel input,
+.inventory-adjustment-panel textarea {
+  width: 100%;
+  border: 1px solid #cfdad4;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: white;
+  color: #1c2924;
+  font: inherit;
+}
+
+.inventory-ledger-help {
+  margin-bottom: 14px;
+}
+
+.inventory-table strong,
+.inventory-table .cell-subtext {
+  display: block;
+}
+
+.inventory-adjustment-panel {
+  margin-top: 20px;
+  border-top: 2px solid #e4c4c4;
+}
+
+.inventory-adjustment-panel textarea {
+  resize: vertical;
+}
+
+@media (max-width: 850px) {
+  .receiving-stock-grid {
+    grid-template-columns: 1fr;
+  }
+}

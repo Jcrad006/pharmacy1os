@@ -99,6 +99,11 @@ export type PrescriptionFill = {
   scannedLotNumber: string | null;
   scannedExpiration: string | null;
   productVerifiedAt: string | null;
+  inventoryBalanceId: string | null;
+  inventoryReservedAt: string | null;
+  inventoryCommittedAt: string | null;
+  inventoryReturnedAt: string | null;
+  inventoryBalance: InventoryBalance | null;
   product: Product | null;
   productLot: ProductLot | null;
   productExpiration: ProductExpiration | null;
@@ -205,6 +210,53 @@ export type ExceptionSummary = {
   scheduled: number;
 };
 
+
+
+export type InventoryTransactionType =
+  | "RECEIVE"
+  | "RESERVE"
+  | "RELEASE"
+  | "DISPENSE"
+  | "RETURN_TO_STOCK"
+  | "ADJUSTMENT";
+
+export type InventoryTransaction = {
+  id: string;
+  siteId: string;
+  inventoryBalanceId: string;
+  fillId: string | null;
+  actorId: string | null;
+  type: InventoryTransactionType;
+  onHandDelta: string | number;
+  reservedDelta: string | number;
+  reason: string | null;
+  source: string | null;
+  reference: string | null;
+  occurredAt: string;
+  actor?: {
+    displayName: string;
+    role: UserRole;
+  } | null;
+};
+
+export type InventoryBalance = {
+  id: string;
+  siteId: string;
+  productId: string;
+  productLotId: string;
+  productExpirationId: string;
+  onHandQuantity: string | number;
+  reservedQuantity: string | number;
+  availableQuantity: string | number;
+  createdAt: string;
+  updatedAt: string;
+  product?: Product & {
+    medication: Medication;
+  };
+  productLot?: ProductLot;
+  productExpiration?: ProductExpiration;
+  transactions?: InventoryTransaction[];
+};
 
 export type ProductLot = {
   id: string;

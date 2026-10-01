@@ -33,6 +33,7 @@ vi.mock("./api", async (importOriginal) => {
     getPatients: vi.fn(async () => []),
     getPrescribers: vi.fn(async () => []),
     getMedications: vi.fn(async () => []),
+    getInventoryBalances: vi.fn(async () => []),
   };
 });
 
@@ -74,6 +75,7 @@ describe("primary workstation buttons", () => {
       ["Providers", "Providers"],
       ["Drug / Product", "Drug / Product Catalog"],
       ["Receiving", "Inventory Receiving"],
+      ["Inventory", "Inventory Ledger"],
       ["Dashboard", "Dispensing Dashboard"],
     ] as const;
 

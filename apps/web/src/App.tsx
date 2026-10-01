@@ -16,6 +16,7 @@ import { Exceptions } from "./screens/Exceptions";
 import { WillCall } from "./screens/WillCall";
 import { DrugCatalog } from "./screens/DrugCatalog";
 import { Receiving } from "./screens/Receiving";
+import { Inventory } from "./screens/Inventory";
 import type { DevUser, ExceptionSummary, Patient, Prescriber, PrescriptionQueueItem } from "./types";
 import { roleLabel } from "./workflow";
 
@@ -28,6 +29,7 @@ type View =
   | "prescribers"
   | "catalog"
   | "receiving"
+  | "inventory"
   | "detail";
 
 const viewTitles: Record<View, string> = {
@@ -39,6 +41,7 @@ const viewTitles: Record<View, string> = {
   prescribers: "Providers",
   catalog: "Drug / Product Catalog",
   receiving: "Inventory Receiving",
+  inventory: "Inventory Ledger",
   detail: "Prescription Detail",
 };
 
@@ -152,6 +155,7 @@ export function App() {
         F6: "prescribers",
         F7: "catalog",
         F8: "receiving",
+        F9: "inventory",
       };
 
       const destination = functionKeyMap[event.key];
@@ -227,7 +231,7 @@ export function App() {
           <button className={view === "prescribers" ? "nav-item active" : "nav-item"} onClick={() => navigate("prescribers")}><span>Providers</span><kbd>F6</kbd></button>
           <button className={view === "catalog" ? "nav-item active" : "nav-item"} onClick={() => navigate("catalog")}><span>Drug / Product</span><kbd>F7</kbd></button>
           <button className={view === "receiving" ? "nav-item active" : "nav-item"} onClick={() => navigate("receiving")}><span>Receiving</span><kbd>F8</kbd></button>
-          <button className="nav-item" disabled>Inventory</button>
+          <button className={view === "inventory" ? "nav-item active" : "nav-item"} onClick={() => navigate("inventory")}><span>Inventory</span><kbd>F9</kbd></button>
           <button className="nav-item" disabled>Reports</button>
         </nav>
 
@@ -250,6 +254,7 @@ export function App() {
             <span><kbd>F6</kbd> Providers</span>
             <span><kbd>F7</kbd> Drug / Product</span>
             <span><kbd>F8</kbd> Receiving</span>
+            <span><kbd>F9</kbd> Inventory</span>
           </div>
         </div>
       </aside>
@@ -363,6 +368,14 @@ export function App() {
             user={selectedUser}
             onError={setMessage}
             onOpenCatalog={() => navigate("catalog")}
+          />
+        )}
+
+        {view === "inventory" && (
+          <Inventory
+            devUser={selectedExternalId}
+            user={selectedUser}
+            onError={setMessage}
           />
         )}
 

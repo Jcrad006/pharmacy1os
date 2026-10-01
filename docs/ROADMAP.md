@@ -102,6 +102,25 @@
 - Structured security logging
 - Secrets-management strategy
 
+## Phase 2B — Staff roles and permission administration
+- Define operational roles separately from individual users
+- Pharmacy owner / system administrator role
+- Pharmacist-in-charge / supervising pharmacist role
+- Staff pharmacist role
+- Pharmacy intern role with configurable pharmacist supervision
+- Certified / registered pharmacy technician roles
+- Cashier / pickup-only role
+- Inventory / receiving role
+- Auditor / read-only compliance role
+- Granular permission matrix for prescription entry, editing, processing, verification, sale, clinical documentation, inventory, reports, users, configuration, and audit access
+- Site-specific role assignments for multi-location organizations
+- Optional per-user permission overrides with explicit audit trail
+- Pharmacist-only controls for final verification and designated clinical actions
+- Dual-control / second-user authorization for selected high-risk administrative actions
+- Temporary role elevation with reason, expiration, and audit logging
+- User activation, suspension, termination, and credential lifecycle
+- Role/permission change history and administrative audit reports
+
 ## Phase 3A — Drug / product / lot master
 - [x] Drug concept records
 - [x] Multiple manufacturer/NDC products per drug
@@ -139,11 +158,32 @@
 - [ ] Third-party claim billing/adjudication during Product Fill
 - [ ] Prescription label generation/printing after successful adjudication
 
+## Phase 3H — Inventory ledger and dispensing integration
+- [x] Inventory balance by site + NDC + lot + expiration
+- [x] Immutable inventory transaction ledger with on-hand and reserved deltas
+- [x] Quantity-bearing inventory receiving from scanned stock
+- [x] Track optional receiving source/vendor and invoice/reference
+- [x] Product Fill reserves the exact fill quantity from the scanned lot/expiration
+- [x] Prevent reservation when available inventory is insufficient
+- [x] Pharmacist verification commits reserved inventory as dispensed
+- [x] Ready-fill return-to-stock creates a reversing inventory transaction
+- [x] Cancellation releases uncommitted reservations or returns committed stock
+- [x] Prevent negative on-hand inventory and on-hand below reserved quantity
+- [x] Pharmacist/admin-only audited manual inventory adjustment
+- [x] Inventory ledger workstation showing on-hand, reserved, and available quantities
+- [x] Seeded synthetic inventory balances for development/testing
+- [x] Database-backed end-to-end inventory ledger tests
+- [ ] Cycle-count workflow with count sessions and discrepancy review
+- [ ] Inventory transfers between pharmacy sites
+- [ ] Damaged/expired/quarantined stock disposition
+- [ ] Recall workflow linking affected on-hand stock and dispensed fills
+- [ ] Purchase orders and wholesaler receiving reconciliation
+
 ## Phase 3 — Pharmacy utilities
-- Inventory
-- Barcode scanning
+- [x] Core inventory ledger
+- [x] Barcode scanning
 - Label generation and printing
-- Return-to-stock inventory effects
+- [x] Return-to-stock inventory effects
 - Will-call inventory/location management
 - Reports and dashboards
 
