@@ -102,9 +102,11 @@ async function moveToSoldWithoutCatalog(
 
 describe("Phase 3I dispensing continuity", () => {
   it("creates a technician-entered partial fill and prompts a linked completion without consuming another refill", async () => {
+    const rawBarcode =
+      "(01)00999990001015(17)270630(10)LIS-A1001";
     const prescriptionId = await createPrescription({
       quantity: 90,
-      medicationName: "Synthetic Partial Drug",
+      medicationId: "medication-demo-lisinopril-10",
     });
     await moveToDur(prescriptionId);
 
@@ -168,6 +170,14 @@ describe("Phase 3I dispensing continuity", () => {
         ),
     ).toBe(true);
 
+    const scannedPartial = await app.inject({
+      method: "POST",
+      url: `/api/fills/${fillId}/scan-barcode`,
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(scannedPartial.statusCode).toBe(200);
+
     const soldPartial = await moveToSoldWithoutCatalog(prescriptionId);
     expect(soldPartial.refillsUsed).toBe(0);
 
@@ -200,6 +210,14 @@ describe("Phase 3I dispensing continuity", () => {
     expect(start.statusCode).toBe(200);
     expect(start.json().fill.status).toBe("IN_PROGRESS");
     expect(start.json().prescription.status).toBe("PRODUCT_FILL");
+
+    const scannedCompletion = await app.inject({
+      method: "POST",
+      url: `/api/fills/${completion.id}/scan-barcode`,
+      headers: technicianHeaders,
+      payload: { rawBarcode },
+    });
+    expect(scannedCompletion.statusCode).toBe(200);
 
     const soldCompletion = await moveToSoldWithoutCatalog(prescriptionId);
     expect(soldCompletion.refillsUsed).toBe(0);
