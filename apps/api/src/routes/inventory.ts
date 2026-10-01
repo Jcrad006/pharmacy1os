@@ -219,6 +219,37 @@ export async function inventoryRoutes(app: FastifyInstance) {
           },
           productLot: true,
           productExpiration: true,
+          stockPositions: {
+            where: { quantity: { gt: 0 } },
+            include: {
+              location: true,
+            },
+            orderBy: [
+              { state: "asc" },
+              { location: { code: "asc" } },
+            ],
+          },
+          allocations: {
+            where: { status: "ACTIVE" },
+            include: {
+              fill: {
+                include: {
+                  prescription: {
+                    select: {
+                      id: true,
+                      rxNumber: true,
+                      medicationName: true,
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+          demands: {
+            where: { status: { in: ["OPEN", "READY"] } },
+            orderBy: { neededBy: "asc" },
+          },
           transactions: {
             orderBy: { occurredAt: "desc" },
             take: 25,
