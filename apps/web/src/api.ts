@@ -1126,11 +1126,14 @@ export async function putInventoryPolicy(
     productId?: string | null;
     reorderPoint?: number | null;
     parLevel?: number | null;
+    maxStockLevel?: number | null;
     minShelfLifeDays?: number | null;
     expirationWarningDays?: number;
     fefoEnabled?: boolean;
     preferredSupplierName?: string | null;
     adjustmentApprovalThreshold?: number | null;
+    allowTechnicianAdjustments?: boolean;
+    requiredLocationType?: InventoryLocationType | null;
     requireTransferSecondCheck?: boolean;
     staleReservationHours?: number;
   },
