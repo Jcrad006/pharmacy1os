@@ -22,10 +22,17 @@ import {
 import {
   commitInventoryForFill,
   InventoryError,
+  getFillSourceReservationSummary,
   releaseInventoryReservation,
+  removeInventorySourceForFill,
   reserveInventoryForFill,
+  reserveInventorySourceForFill,
+  resizeInventoryReservationForFill,
   returnInventoryForFill,
 } from "../inventory.js";
+import {
+  validateFillProductSourceCompliance,
+} from "../productFillCompliance.js";
 import {
   cancelDemandForFill,
   createOrUpdateFillDemand,
@@ -93,10 +100,12 @@ type ScanProductBody = {
   ndc?: string;
   lotNumber?: string;
   expirationDate?: string;
+  sourceQuantity?: number;
 };
 
 type ScanBarcodeBody = {
   rawBarcode?: string;
+  sourceQuantity?: number;
 };
 
 const fillInterruptionReasons = new Set<FillInterruptionReason>([
@@ -149,6 +158,17 @@ const prescriptionInclude = {
       productLot: true,
       productExpiration: true,
       inventoryBalance: true,
+      productSources: {
+        include: {
+          product: { include: { manufacturer: true, medication: true } },
+          manufacturer: true,
+          productLot: true,
+          productExpiration: true,
+          inventoryBalance: true,
+        },
+        orderBy: { sequence: "asc" as const },
+      },
+      biologicCommunicationTask: true,
     },
     orderBy: [
       { fillNumber: "desc" as const },
