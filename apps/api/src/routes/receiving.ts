@@ -502,7 +502,13 @@ export async function receivingRoutes(app: FastifyInstance) {
       const historicalUseEvents = await db.auditEvent.findMany({
         where: {
           siteId: actor.siteId,
-          action: "FILL_BARCODE_SCAN_VERIFIED",
+          action: {
+            in: [
+              "FILL_BARCODE_SCAN_VERIFIED",
+              "FILL_PRODUCT_SOURCE_ADDED",
+              "FILL_PRODUCT_SOURCES_COMPLETE",
+            ],
+          },
         },
         select: { metadata: true },
       });
