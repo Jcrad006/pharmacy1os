@@ -246,10 +246,6 @@ export async function inventoryRoutes(app: FastifyInstance) {
             },
             orderBy: { createdAt: "asc" },
           },
-          demands: {
-            where: { status: { in: ["OPEN", "READY"] } },
-            orderBy: { neededBy: "asc" },
-          },
           transactions: {
             orderBy: { occurredAt: "desc" },
             take: 25,
