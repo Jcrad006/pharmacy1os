@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   Prisma,
   type PaymentMethod,
+  type PickupIdentityMethod,
+  type PickupSignatureMethod,
   type PosPriceBasis,
 } from "@prisma/client";
 import { db } from "../db.js";
@@ -30,11 +32,39 @@ export type PosTenderInput = {
   reference?: string | null;
 };
 
+export type PickupVerificationInput = {
+  recipientName: string;
+  relationship?: string | null;
+  identityMethod: PickupIdentityMethod;
+  signatureMethod: PickupSignatureMethod;
+  signatureName?: string | null;
+  signatureReference?: string | null;
+};
+
+export type PickupPackageInput = {
+  fillId: string;
+  bagBarcode: string;
+};
+
 const paymentMethods = new Set<PaymentMethod>([
   "CASH",
   "CARD",
   "CHECK",
   "OTHER",
+]);
+
+const pickupIdentityMethods = new Set<PickupIdentityMethod>([
+  "DATE_OF_BIRTH",
+  "ADDRESS",
+  "GOVERNMENT_ID",
+  "KNOWN_PATIENT",
+  "OTHER",
+]);
+
+const pickupSignatureMethods = new Set<PickupSignatureMethod>([
+  "ELECTRONIC_TYPED",
+  "EXTERNAL_DEVICE",
+  "PAPER",
 ]);
 
 const MAX_CHECKOUT_FILLS = 20;
@@ -114,6 +144,12 @@ type CheckoutQuoteLine = {
   cashUnitPriceSnapshot: Prisma.Decimal | null;
   cashPricingSnapshot: Prisma.InputJsonValue;
   amountDue: Prisma.Decimal;
+  willCallPackageId: string;
+  bagBarcode: string;
+  willCallLocationId: string;
+  willCallLocationCode: string;
+  willCallLocationName: string;
+  willCallLocationBarcode: string | null;
 };
 
 async function quoteFill(
@@ -154,6 +190,9 @@ async function quoteFill(
           id: true,
           transactionId: true,
         },
+      },
+      willCallPackage: {
+        include: { location: true },
       },
     },
   });
@@ -199,6 +238,23 @@ async function quoteFill(
     );
   }
 
+  if (!fill.willCallPackage || fill.willCallPackage.status !== "STAGED") {
+    throw new PosError(
+      409,
+      "WILL_CALL_STAGING_REQUIRED",
+      "The ready fill must be staged in a Will Call location before checkout.",
+    );
+  }
+
+  const packageSnapshot = {
+    willCallPackageId: fill.willCallPackage.id,
+    bagBarcode: fill.willCallPackage.bagBarcode,
+    willCallLocationId: fill.willCallPackage.locationId,
+    willCallLocationCode: fill.willCallPackage.location.code,
+    willCallLocationName: fill.willCallPackage.location.name,
+    willCallLocationBarcode: fill.willCallPackage.location.barcode,
+  };
+
   const activeCoverages = fill.prescription.patient.coverages.filter((coverage) =>
     activeOnDate(coverage, at),
   );
@@ -228,6 +284,7 @@ async function quoteFill(
         note: "No additional patient charge: primary logical fill was already adjudicated.",
       },
       amountDue: money(0),
+      ...packageSnapshot,
     };
   }
 
@@ -265,6 +322,7 @@ async function quoteFill(
       cashUnitPriceSnapshot: null,
       cashPricingSnapshot: {},
       amountDue: responsibility,
+      ...packageSnapshot,
     };
   }
 
@@ -335,6 +393,7 @@ async function quoteFill(
     cashUnitPriceSnapshot: singleUnitPrice,
     cashPricingSnapshot: priceSnapshots,
     amountDue,
+    ...packageSnapshot,
   };
 }
 
