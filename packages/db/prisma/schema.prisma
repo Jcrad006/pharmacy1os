@@ -578,7 +578,7 @@ model InventoryRecall {
   holds           InventoryHold[]
   affectedFills   InventoryRecallAffectedFill[]
 
-  @@unique([siteId, productLotId, status])
+  @@index([siteId, productLotId, status])
   @@index([siteId, status, initiatedAt])
   @@index([productId, productLotId])
   @@index([referenceNumber])
