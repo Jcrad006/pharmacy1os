@@ -239,6 +239,64 @@ export type InventoryTransaction = {
   } | null;
 };
 
+export type CycleCountStatus =
+  | "OPEN"
+  | "SUBMITTED"
+  | "APPROVED"
+  | "REJECTED";
+
+export type CycleCountLine = {
+  id: string;
+  cycleCountSessionId: string;
+  inventoryBalanceId: string;
+  expectedOnHand: string | null;
+  expectedReserved: string | null;
+  countedQuantity: string | null;
+  discrepancy: string | null;
+  countedById: string | null;
+  countedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  countedAt: string | null;
+  reconciledTransactionId: string | null;
+  reconciledTransaction?: InventoryTransaction | null;
+  createdAt: string;
+  updatedAt: string;
+  inventoryBalance: InventoryBalance;
+};
+
+export type CycleCountSession = {
+  id: string;
+  siteId: string;
+  status: CycleCountStatus;
+  createdById: string;
+  createdBy: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  };
+  submittedById: string | null;
+  submittedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  reviewedById: string | null;
+  reviewedBy?: {
+    id: string;
+    displayName: string;
+    role: UserRole;
+  } | null;
+  note: string | null;
+  reviewNote: string | null;
+  createdAt: string;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  lines: CycleCountLine[];
+};
+
 export type InventoryBalance = {
   id: string;
   siteId: string;

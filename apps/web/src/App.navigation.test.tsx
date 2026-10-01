@@ -34,6 +34,7 @@ vi.mock("./api", async (importOriginal) => {
     getPrescribers: vi.fn(async () => []),
     getMedications: vi.fn(async () => []),
     getInventoryBalances: vi.fn(async () => []),
+    getCycleCounts: vi.fn(async () => []),
   };
 });
 

@@ -173,7 +173,13 @@
 - [x] Inventory ledger workstation showing on-hand, reserved, and available quantities
 - [x] Seeded synthetic inventory balances for development/testing
 - [x] Database-backed end-to-end inventory ledger tests
-- [ ] Cycle-count workflow with count sessions and discrepancy review
+- [x] Cycle-count workflow with count sessions and discrepancy review
+- [x] Technician/intern physical count entry without immediate stock mutation
+- [x] Required submission before pharmacist/admin reconciliation
+- [x] Stale-count detection when inventory moves after a recorded count
+- [x] All-or-nothing pharmacist/admin approval with audited ledger adjustments
+- [x] Cycle-count rejection without inventory mutation
+- [x] Cycle-count workstation embedded in F9 Inventory
 - [ ] Inventory transfers between pharmacy sites
 - [ ] Damaged/expired/quarantined stock disposition
 - [ ] Recall workflow linking affected on-hand stock and dispensed fills

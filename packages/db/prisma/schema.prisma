@@ -82,6 +82,13 @@ enum InventoryTransactionType {
   ADJUSTMENT
 }
 
+enum CycleCountStatus {
+  OPEN
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
 model PharmacySite {
   id            String         @id @default(uuid())
   name          String
@@ -98,7 +105,8 @@ model PharmacySite {
   productExpirations    ProductExpiration[]
   inventoryBalances     InventoryBalance[]
   inventoryTransactions InventoryTransaction[]
-  auditEvents           AuditEvent[]
+  cycleCountSessions    CycleCountSession[]
+  auditEvents            AuditEvent[]
 }
 
 model User {
@@ -115,6 +123,10 @@ model User {
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
   interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
   inventoryTransactions InventoryTransaction[] @relation("InventoryTransactionActors")
+  createdCycleCounts     CycleCountSession[]     @relation("CycleCountCreatedBy")
+  submittedCycleCounts   CycleCountSession[]     @relation("CycleCountSubmittedBy")
+  reviewedCycleCounts    CycleCountSession[]     @relation("CycleCountReviewedBy")
+  countedCycleCountLines CycleCountLine[]        @relation("CycleCountCountedBy")
 
   @@index([siteId, role])
 }
@@ -416,11 +428,59 @@ model InventoryBalance {
   updatedAt           DateTime           @updatedAt
   fills               PrescriptionFill[]
   transactions        InventoryTransaction[]
+  cycleCountLines      CycleCountLine[]
 
   @@unique([siteId, productId, productLotId, productExpirationId])
   @@index([siteId, productId])
   @@index([productLotId])
   @@index([productExpirationId])
+}
+
+model CycleCountSession {
+  id            String           @id @default(uuid())
+  siteId        String
+  site          PharmacySite     @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  status        CycleCountStatus @default(OPEN)
+  createdById   String
+  createdBy     User             @relation("CycleCountCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  submittedById String?
+  submittedBy   User?            @relation("CycleCountSubmittedBy", fields: [submittedById], references: [id], onDelete: Restrict)
+  reviewedById  String?
+  reviewedBy    User?            @relation("CycleCountReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
+  note          String?
+  reviewNote    String?
+  createdAt     DateTime         @default(now())
+  submittedAt   DateTime?
+  reviewedAt    DateTime?
+  lines         CycleCountLine[]
+
+  @@index([siteId, status, createdAt])
+  @@index([createdById, createdAt])
+  @@index([submittedById, submittedAt])
+  @@index([reviewedById, reviewedAt])
+}
+
+model CycleCountLine {
+  id                    String            @id @default(uuid())
+  cycleCountSessionId   String
+  cycleCountSession     CycleCountSession @relation(fields: [cycleCountSessionId], references: [id], onDelete: Cascade)
+  inventoryBalanceId    String
+  inventoryBalance      InventoryBalance  @relation(fields: [inventoryBalanceId], references: [id], onDelete: Restrict)
+  expectedOnHand        Decimal?          @db.Decimal(14, 3)
+  expectedReserved      Decimal?          @db.Decimal(14, 3)
+  countedQuantity       Decimal?          @db.Decimal(14, 3)
+  discrepancy           Decimal?          @db.Decimal(14, 3)
+  countedById           String?
+  countedBy             User?             @relation("CycleCountCountedBy", fields: [countedById], references: [id], onDelete: Restrict)
+  countedAt             DateTime?
+  reconciledTransactionId String?             @unique
+  reconciledTransaction   InventoryTransaction? @relation("CycleCountReconciliation", fields: [reconciledTransactionId], references: [id], onDelete: Restrict)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@unique([cycleCountSessionId, inventoryBalanceId])
+  @@index([inventoryBalanceId, createdAt])
+  @@index([countedById, countedAt])
 }
 
 model InventoryTransaction {
@@ -440,6 +500,7 @@ model InventoryTransaction {
   source             String?
   reference          String?
   occurredAt         DateTime                 @default(now())
+  cycleCountLine     CycleCountLine?          @relation("CycleCountReconciliation")
 
   @@index([siteId, occurredAt])
   @@index([inventoryBalanceId, occurredAt])

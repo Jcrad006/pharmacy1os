@@ -18,6 +18,7 @@ import type {
   ParsedBarcode,
   InventoryBalance,
   InventoryTransaction,
+  CycleCountSession,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -673,4 +674,70 @@ export async function adjustInventoryBalance(
     devUser,
     body: JSON.stringify(input),
   });
+}
+
+export async function getCycleCounts(devUser: string) {
+  const result = await request<{ sessions: CycleCountSession[] }>(
+    "/api/inventory/cycle-counts",
+    { devUser },
+  );
+  return result.sessions;
+}
+
+export async function createCycleCount(
+  devUser: string,
+  input: { balanceIds?: string[]; note?: string },
+) {
+  return request<{ session: CycleCountSession }>(
+    "/api/inventory/cycle-counts",
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function countCycleCountLine(
+  devUser: string,
+  cycleCountId: string,
+  lineId: string,
+  countedQuantity: number,
+) {
+  return request<{ session: CycleCountSession }>(
+    `/api/inventory/cycle-counts/${cycleCountId}/lines/${lineId}`,
+    {
+      method: "PATCH",
+      devUser,
+      body: JSON.stringify({ countedQuantity }),
+    },
+  );
+}
+
+export async function submitCycleCount(
+  devUser: string,
+  cycleCountId: string,
+) {
+  return request<{ session: CycleCountSession }>(
+    `/api/inventory/cycle-counts/${cycleCountId}/submit`,
+    {
+      method: "POST",
+      devUser,
+    },
+  );
+}
+
+export async function reviewCycleCount(
+  devUser: string,
+  cycleCountId: string,
+  input: { decision: "APPROVE" | "REJECT"; reviewNote: string },
+) {
+  return request<{ session: CycleCountSession }>(
+    `/api/inventory/cycle-counts/${cycleCountId}/review`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify(input),
+    },
+  );
 }
