@@ -99,6 +99,14 @@ type ScanBarcodeBody = {
   rawBarcode?: string;
 };
 
+const fillInterruptionReasons = new Set<FillInterruptionReason>([
+  "INSUFFICIENT_PHYSICAL_STOCK",
+  "DAMAGED_PRODUCT",
+  "EXPIRED_PRODUCT",
+  "STOCK_DISCREPANCY",
+  "OTHER",
+]);
+
 const validStatuses = new Set<PrescriptionStatus>([
   "RECEIVED",
   "DATA_ENTRY",
