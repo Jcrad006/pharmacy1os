@@ -22,6 +22,7 @@ import type {
   InventoryHold,
   InventoryHoldReason,
   InventoryDispositionType,
+  InventoryRecall,
   PrescriptionFill,
   PrescriptionQueueItem,
   PrescriptionStatus,
@@ -807,4 +808,44 @@ export async function disposeInventoryHold(
     devUser,
     body: JSON.stringify(input),
   });
+}
+
+
+export async function getInventoryRecalls(devUser: string) {
+  const result = await request<{ recalls: InventoryRecall[] }>(
+    "/api/inventory/recalls",
+    { devUser },
+  );
+  return result.recalls;
+}
+
+export async function createInventoryRecall(
+  devUser: string,
+  input: {
+    productLotId: string;
+    source?: string;
+    referenceNumber?: string;
+    reason: string;
+  },
+) {
+  return request<{ recall: InventoryRecall }>("/api/inventory/recalls", {
+    method: "POST",
+    devUser,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function closeInventoryRecall(
+  devUser: string,
+  recallId: string,
+  closureNote: string,
+) {
+  return request<{ recall: InventoryRecall }>(
+    `/api/inventory/recalls/${recallId}/close`,
+    {
+      method: "POST",
+      devUser,
+      body: JSON.stringify({ closureNote }),
+    },
+  );
 }
