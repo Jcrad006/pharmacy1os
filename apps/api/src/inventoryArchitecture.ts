@@ -618,6 +618,17 @@ export async function refreshInventoryExceptions(
       (sum, balance) => sum.plus(availableQuantity(balance)),
       new Prisma.Decimal(0),
     );
+    const medicationId = productBalances[0]?.product.medicationId;
+    const existingReorderDemand = await tx.inventoryDemand.findFirst({
+      where: {
+        siteId,
+        productId,
+        source: "REORDER",
+        status: { in: ["OPEN", "READY"] },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
     if (available.lt(policy.reorderPoint)) {
       detected.push({
         fingerprint: `reorder:${productId}`,
@@ -627,6 +638,48 @@ export async function refreshInventoryExceptions(
         entityId: productId,
         title: "Inventory below reorder point",
         detail: `Available quantity ${available.toString()} is below reorder point ${policy.reorderPoint.toString()}.`,
+      });
+
+      if (medicationId && policy.targetStockLevel) {
+        const required = Prisma.Decimal.max(
+          policy.targetStockLevel.minus(available),
+          new Prisma.Decimal(0),
+        );
+        if (required.gt(0)) {
+          if (existingReorderDemand) {
+            await tx.inventoryDemand.update({
+              where: { id: existingReorderDemand.id },
+              data: {
+                requiredQuantity: required,
+                availableQuantity: available,
+                status: "OPEN",
+                note: `Automatic reorder demand to restore target stock ${policy.targetStockLevel.toString()}.`,
+              },
+            });
+          } else {
+            await tx.inventoryDemand.create({
+              data: {
+                siteId,
+                medicationId,
+                productId,
+                source: "REORDER",
+                requiredQuantity: required,
+                availableQuantity: available,
+                status: "OPEN",
+                note: `Automatic reorder demand to restore target stock ${policy.targetStockLevel.toString()}.`,
+              },
+            });
+          }
+        }
+      }
+    } else if (existingReorderDemand) {
+      await tx.inventoryDemand.update({
+        where: { id: existingReorderDemand.id },
+        data: {
+          status: "CANCELLED",
+          availableQuantity: available,
+          note: "Automatic reorder demand closed because stock recovered above the reorder point.",
+        },
       });
     }
   }
