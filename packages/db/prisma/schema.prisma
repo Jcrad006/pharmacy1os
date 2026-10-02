@@ -213,6 +213,22 @@ enum ClaimOutcome {
   REVERSED
 }
 
+enum ExternalClaimOperationStatus {
+  PENDING
+  IN_FLIGHT
+  SUCCEEDED
+  FAILED
+  AMBIGUOUS
+}
+
+enum ControlledSubstanceSchedule {
+  NONE
+  II
+  III
+  IV
+  V
+}
+
 enum PrescriptionLabelStatus {
   ACTIVE
   VOID
@@ -389,6 +405,7 @@ model PharmacySite {
   patientCoverages      PatientCoverage[]
   biologicCommunicationTasks BiologicCommunicationTask[]
   claimTransactions     ClaimTransaction[]
+  externalClaimOperations ExternalClaimOperation[]
   prescriptionLabels    PrescriptionLabel[]
   labelPrintJobs        LabelPrintJob[]
   posTransactions       PointOfSaleTransaction[]
@@ -449,6 +466,7 @@ model User {
   createdDocuments Document[] @relation("DocumentCreatedBy")
   prescriptionAnnotations PrescriptionAnnotation[] @relation("PrescriptionAnnotationCreatedBy")
   prescriptionChangeRecords PrescriptionChangeRecord[] @relation("PrescriptionChangeRecordChangedBy")
+  reviewedPrescriptionChangeRecords PrescriptionChangeRecord[] @relation("PrescriptionChangeRecordReviewedBy")
 
   @@index([siteId, role])
 }
@@ -558,6 +576,8 @@ model Medication {
   ncNarrowTherapeuticIndex Boolean @default(false)
   isBiological Boolean @default(false)
   hasFdaInterchangeableBiologicAlternative Boolean @default(false)
+  controlledSubstanceSchedule ControlledSubstanceSchedule @default(NONE)
+  requiresColdChain Boolean @default(false)
   active        Boolean   @default(true)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -768,6 +788,7 @@ model Prescription {
   electronicRawMessage     String?
   heldFromStatus           PrescriptionStatus?
   doNotFillBefore          DateTime?
+  version                  Int                 @default(0)
   createdAt                DateTime            @default(now())
   updatedAt                DateTime            @updatedAt
   fills                    PrescriptionFill[]
@@ -850,6 +871,8 @@ model PrescriptionFill {
   posSaleLine          PointOfSaleLine?
   willCallPackage       WillCallPackage?
   inventoryDemand     InventoryDemand?
+  externalClaimOperations ExternalClaimOperation[]
+  version             Int                @default(0)
   filledAt            DateTime?
   soldAt              DateTime?
   createdAt           DateTime           @default(now())
@@ -945,6 +968,14 @@ model PrescriptionChangeRecord {
   changedById         String
   changedBy           User                                  @relation("PrescriptionChangeRecordChangedBy", fields: [changedById], references: [id], onDelete: Restrict)
   changedAt           DateTime                              @default(now())
+  requiresStructuredApply Boolean                            @default(true)
+  appliedField         String?
+  beforeValue          Json?
+  afterValue           Json?
+  appliedAt            DateTime?
+  reviewedById         String?
+  reviewedBy           User?                                 @relation("PrescriptionChangeRecordReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
+  reviewedAt           DateTime?
   supersedesChangeRecordId String?                           @unique
   supersedesChangeRecord   PrescriptionChangeRecord?         @relation("PrescriptionChangeRecordRevision", fields: [supersedesChangeRecordId], references: [id], onDelete: Restrict)
   supersededBy             PrescriptionChangeRecord?         @relation("PrescriptionChangeRecordRevision")
@@ -1068,6 +1099,30 @@ model ClaimTransaction {
   @@index([originalTransactionId])
 }
 
+model ExternalClaimOperation {
+  id                    String                       @id @default(uuid())
+  siteId                String
+  site                  PharmacySite                 @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  fillId                String
+  fill                  PrescriptionFill             @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  coveragePosition      Int
+  operation             ClaimOperation
+  originalTransactionId String?
+  operationKey          String                       @unique
+  requestFingerprint    String
+  requestSnapshot       Json
+  status                ExternalClaimOperationStatus @default(PENDING)
+  attemptCount          Int                          @default(0)
+  transactionReference  String?
+  responseSnapshot      Json?
+  lastError             String?
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+
+  @@index([siteId, status, updatedAt])
+  @@index([fillId, coveragePosition, operation, updatedAt])
+}
+
 model PrescriptionLabel {
   id                    String                  @id @default(uuid())
   siteId                String
@@ -1138,6 +1193,7 @@ model PointOfSaleTransaction {
   totalTendered   Decimal              @db.Decimal(12, 2)
   changeDue       Decimal              @default(0) @db.Decimal(12, 2)
   idempotencyKey  String               @unique
+  requestFingerprint String
   pickupFulfillmentMode PickupFulfillmentMode @default(WILL_CALL)
   pickupRecipientName String
   pickupRelationship String?
@@ -1464,6 +1520,7 @@ model InventoryTransaction {
   source             String?
   reference          String?
   idempotencyKey     String?                  @unique
+  idempotencyFingerprint String?
   unitCost           Decimal?                 @db.Decimal(12, 6)
   extendedCost       Decimal?                 @db.Decimal(14, 4)
   occurredAt         DateTime                 @default(now())
@@ -1613,6 +1670,7 @@ model PurchaseOrderReceipt {
   unitCost               Decimal?             @db.Decimal(12, 6)
   extendedCost           Decimal?             @db.Decimal(14, 4)
   idempotencyKey         String?               @unique
+  idempotencyFingerprint String?
   receivedAt             DateTime             @default(now())
   discrepancies          ReceivingDiscrepancy[]
 
@@ -1656,6 +1714,7 @@ model InventoryStockPosition {
   quantity           Decimal              @default(0) @db.Decimal(14, 3)
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
+  allocations        InventoryAllocation[]
 
   @@unique([inventoryBalanceId, locationId, state])
   @@index([locationId, state])
@@ -1674,6 +1733,8 @@ model InventoryAllocation {
   fillProductSource   FillProductSource?         @relation(fields: [fillProductSourceId], references: [id], onDelete: SetNull)
   actorId            String?
   actor              User?                     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  inventoryStockPositionId String?
+  inventoryStockPosition InventoryStockPosition? @relation(fields: [inventoryStockPositionId], references: [id], onDelete: Restrict)
   quantity           Decimal                   @db.Decimal(14, 3)
   status             InventoryAllocationStatus @default(ACTIVE)
   createdAt          DateTime                  @default(now())
@@ -1682,6 +1743,7 @@ model InventoryAllocation {
   @@index([siteId, status, createdAt])
   @@index([fillId, status])
   @@index([inventoryBalanceId, status])
+  @@index([inventoryStockPositionId, status])
   @@index([fillProductSourceId, status])
 }
 
