@@ -626,8 +626,9 @@ export async function supersedePrescriptionAnnotation(
 
 
 function structuredChangeValue(value: unknown): Prisma.InputJsonValue {
-  if (value === undefined) return null;
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  return JSON.parse(
+    JSON.stringify(value === undefined ? null : value),
+  ) as Prisma.InputJsonValue;
 }
 
 export async function applyPrescriptionChangeRecord(
