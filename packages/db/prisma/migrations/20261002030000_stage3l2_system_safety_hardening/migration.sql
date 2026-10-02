@@ -22,6 +22,10 @@ ALTER TABLE "PrescriptionChangeRecord"
   ADD COLUMN "reviewedById" TEXT,
   ADD COLUMN "reviewedAt" TIMESTAMP(3);
 
+UPDATE "PrescriptionChangeRecord"
+SET "requiresStructuredApply" = false
+WHERE "changeType" = 'OTHER';
+
 ALTER TABLE "PrescriptionChangeRecord"
   ADD CONSTRAINT "PrescriptionChangeRecord_reviewedById_fkey"
   FOREIGN KEY ("reviewedById") REFERENCES "User"("id")
