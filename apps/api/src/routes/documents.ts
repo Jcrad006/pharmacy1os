@@ -10,6 +10,7 @@ import {
   readImmutableDocument,
 } from "../documentVault.js";
 import {
+  applyPrescriptionChangeRecord,
   createElectronicPrescriptionRender,
   createPrescriptionAnnotation,
   createPrescriptionSourceDocument,
@@ -40,6 +41,7 @@ type AnnotationBody = {
     contactedParty?: string | null;
     authorizingPrescriber?: string | null;
     note?: string | null;
+    structuredValue?: unknown;
   };
 };
 
@@ -166,6 +168,29 @@ export async function documentRoutes(app: FastifyInstance) {
       return handleError(error, reply);
     }
   });
+
+  app.post(
+    "/prescription-changes/:id/apply",
+    async (request, reply) => {
+      try {
+        const actor = await resolveDevelopmentActor(request, "prescription:edit");
+        const changeRecordId = (request.params as { id: string }).id;
+        const body = (request.body ?? {}) as { structuredValue?: unknown };
+        const result = await applyPrescriptionChangeRecord(
+          changeRecordId,
+          body.structuredValue,
+          {
+            siteId: actor.siteId,
+            actorId: actor.id,
+            requestId: request.id,
+          },
+        );
+        return result;
+      } catch (error) {
+        return handleError(error, reply);
+      }
+    },
+  );
 
   app.post("/annotations/:id/supersede", async (request, reply) => {
     try {
