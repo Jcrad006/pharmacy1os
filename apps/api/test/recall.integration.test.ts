@@ -10,6 +10,20 @@ const app = buildApp();
 const tech = { "x-dev-user": "dev-technician" };
 const pharmacist = { "x-dev-user": "dev-pharmacist" };
 
+function gs1WithCheckDigit(body: string) {
+  if (!/^\d{13}$/.test(body)) {
+    throw new Error("GTIN-14 body must contain exactly 13 digits.");
+  }
+  const digits = body.split("").map(Number);
+  let sum = 0;
+  let multiplyByThree = true;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    sum += digits[index]! * (multiplyByThree ? 3 : 1);
+    multiplyByThree = !multiplyByThree;
+  }
+  return body + String((10 - (sum % 10)) % 10);
+}
+
 beforeAll(async () => {
   await app.ready();
 });
@@ -64,7 +78,7 @@ describe("Phase 3H recall workflow", () => {
     const suffix = Math.floor(Math.random() * 1_000_000)
       .toString()
       .padStart(6, "0");
-    const gtin = `0022222${suffix}0`;
+    const gtin = gs1WithCheckDigit(`0022222${suffix}`);
     const lotNumber = `RCL-${suffix}`;
     const rawBarcode = `(01)${gtin}(17)291231(10)${lotNumber}`;
 
