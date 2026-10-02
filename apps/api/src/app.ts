@@ -62,6 +62,24 @@ export function buildApp(options: BuildAppOptions = {}) {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
   });
 
+  app.addHook("onSend", async (request, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header(
+      "Permissions-Policy",
+      "camera=(), microphone=(), geolocation=(), payment=()",
+    );
+    reply.header(
+      "Content-Security-Policy",
+      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
+    );
+    if (request.url === "/api" || request.url.startsWith("/api/")) {
+      reply.header("Cache-Control", "private, no-store");
+    }
+    return payload;
+  });
+
   app.register(healthRoutes);
   app.register(developmentRoutes, { prefix: "/api" });
   app.register(patientRoutes, { prefix: "/api" });

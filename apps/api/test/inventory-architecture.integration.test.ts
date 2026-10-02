@@ -2,12 +2,27 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { db } from "../src/db.js";
+import { reconcileDemandAvailability } from "../src/inventoryArchitecture.js";
 
 process.env.ALLOW_DEV_IDENTITY = "true";
 
 const app = buildApp();
 const tech = { "x-dev-user": "dev-technician" };
 const pharmacist = { "x-dev-user": "dev-pharmacist" };
+
+function gs1WithCheckDigit(body: string) {
+  if (!/^\d{13}$/.test(body)) {
+    throw new Error("GTIN-14 body must contain exactly 13 digits.");
+  }
+  const digits = body.split("").map(Number);
+  let sum = 0;
+  let multiplyByThree = true;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    sum += digits[index]! * (multiplyByThree ? 3 : 1);
+    multiplyByThree = !multiplyByThree;
+  }
+  return body + String((10 - (sum % 10)) % 10);
+}
 
 beforeAll(async () => {
   await app.ready();
@@ -26,7 +41,7 @@ describe("Phase 3H inventory architecture hardening", () => {
     const medicationId = `med-arch-${randomUUID()}`;
     const productId = `product-arch-${randomUUID()}`;
     const ndcSearch = `8${suffix}0001`.padEnd(11, "0").slice(0, 11);
-    const gtin = `0088888${suffix}0`;
+    const gtin = gs1WithCheckDigit(`0088888${suffix}`);
 
     await db.medication.create({
       data: {
@@ -85,6 +100,22 @@ describe("Phase 3H inventory architecture hardening", () => {
       },
     });
     expect(firstReceipt.statusCode).toBe(201);
+
+    const conflictingReplay = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: tech,
+      payload: {
+        rawBarcode: rawEarly,
+        quantity: 11,
+        source: "Architecture Test Supplier",
+        reference: `EARLY-CONFLICT-${suffix}`,
+        unitCost: 0.2,
+        idempotencyKey: `arch-early-${suffix}`,
+      },
+    });
+    expect(conflictingReplay.statusCode).toBe(409);
+    expect(conflictingReplay.json().code).toBe("IDEMPOTENCY_KEY_CONFLICT");
 
     const secondReceipt = await app.inject({
       method: "POST",
@@ -213,5 +244,105 @@ describe("Phase 3H inventory architecture hardening", () => {
             policy.productId === productId,
         ),
     ).toBe(true);
+  });
+
+  it("does not double count the same available stock across competing patient demands", async () => {
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
+    const medicationId = `med-demand-${suffix}`;
+    const productId = `product-demand-${suffix}`;
+    await db.medication.create({
+      data: {
+        id: medicationId,
+        genericName: `Demand Test Drug ${suffix}`,
+        strength: "1 mg",
+        dosageForm: "tablet",
+      },
+    });
+    await db.product.create({
+      data: {
+        id: productId,
+        medicationId,
+        manufacturerId: "manufacturer-demo-generics",
+        ndc: `70000-${suffix.slice(0, 4)}-01`,
+        ndcSearch: `70000${suffix.slice(0, 4)}01`,
+        descriptor: "Demand contention test",
+        packageType: "bottle",
+        unitsPerPackage: 10,
+        dispensingUnit: "EACH",
+      },
+    });
+    const lot = await db.productLot.create({
+      data: {
+        siteId: "site-demo-001",
+        productId,
+        lotNumber: `DEM-${suffix}`,
+        lotNumberSearch: `DEM${suffix}`.toUpperCase(),
+      },
+    });
+    const expiration = await db.productExpiration.create({
+      data: {
+        siteId: "site-demo-001",
+        productId,
+        expirationDate: new Date("2029-12-31T00:00:00.000Z"),
+      },
+    });
+    const balance = await db.inventoryBalance.create({
+      data: {
+        siteId: "site-demo-001",
+        productId,
+        productLotId: lot.id,
+        productExpirationId: expiration.id,
+        onHandQuantity: 10,
+      },
+    });
+    const location = await db.inventoryLocation.findFirstOrThrow({
+      where: {
+        siteId: "site-demo-001",
+        isDefaultDispensing: true,
+        active: true,
+      },
+    });
+    await db.inventoryStockPosition.create({
+      data: {
+        inventoryBalanceId: balance.id,
+        locationId: location.id,
+        state: "AVAILABLE",
+        quantity: 10,
+      },
+    });
+
+    const first = await db.inventoryDemand.create({
+      data: {
+        siteId: "site-demo-001",
+        medicationId,
+        productId,
+        source: "MANUAL",
+        requiredQuantity: 10,
+        neededBy: new Date("2027-01-01T10:00:00.000Z"),
+      },
+    });
+    const second = await db.inventoryDemand.create({
+      data: {
+        siteId: "site-demo-001",
+        medicationId,
+        productId,
+        source: "MANUAL",
+        requiredQuantity: 10,
+        neededBy: new Date("2027-01-01T11:00:00.000Z"),
+      },
+    });
+
+    await db.$transaction((tx) =>
+      reconcileDemandAvailability(tx, "site-demo-001", medicationId),
+    );
+
+    const [firstAfter, secondAfter] = await Promise.all([
+      db.inventoryDemand.findUniqueOrThrow({ where: { id: first.id } }),
+      db.inventoryDemand.findUniqueOrThrow({ where: { id: second.id } }),
+    ]);
+    expect(firstAfter.status).toBe("READY");
+    expect(firstAfter.availableQuantity.toNumber()).toBe(10);
+    expect(secondAfter.status).toBe("OPEN");
+    expect(secondAfter.availableQuantity.toNumber()).toBe(0);
   });
 });

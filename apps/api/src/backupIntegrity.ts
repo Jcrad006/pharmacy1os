@@ -1,4 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import {
@@ -11,7 +16,14 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+  sep,
+} from "node:path";
 import { db } from "./db.js";
 import {
   decodeStoredDocumentPayload,
@@ -21,7 +33,10 @@ import {
   readImmutableDocument,
   readStoredDocumentPayload,
 } from "./documentVault.js";
-import { withExclusiveDocumentVaultLock } from "./vaultCoordination.js";
+import {
+  markDocumentVaultRecoveryRequired,
+  withExclusiveDocumentVaultLock,
+} from "./vaultCoordination.js";
 
 export type VaultIntegrityFindingType =
   | "MISSING_FILE"
@@ -92,6 +107,8 @@ export type BackupManifest = {
 export type BackupVerificationFinding = {
   type:
     | "MANIFEST_HASH_MISMATCH"
+    | "MANIFEST_SIGNATURE_MISMATCH"
+    | "MANIFEST_PATH_INVALID"
     | "DATABASE_DUMP_MISSING"
     | "DATABASE_DUMP_HASH_MISMATCH"
     | "DATABASE_DUMP_SIZE_MISMATCH"
@@ -148,6 +165,68 @@ function safeBackupPath(...parts: string[]) {
     );
   }
   return candidate;
+}
+
+
+function safeManifestChildPath(
+  root: string,
+  relativePath: string,
+  label: string,
+) {
+  if (
+    !relativePath ||
+    relativePath.includes("\0") ||
+    isAbsolute(relativePath)
+  ) {
+    throw new DocumentVaultError(
+      409,
+      "BACKUP_MANIFEST_PATH_INVALID",
+      `${label} contains an unsafe backup-relative path.`,
+      { relativePath },
+    );
+  }
+  const candidate = resolve(root, relativePath);
+  if (candidate === root || !candidate.startsWith(`${root}${sep}`)) {
+    throw new DocumentVaultError(
+      409,
+      "BACKUP_MANIFEST_PATH_INVALID",
+      `${label} escaped the selected backup directory.`,
+      { relativePath },
+    );
+  }
+  return candidate;
+}
+
+function backupSigningKey() {
+  const raw = process.env.BACKUP_SIGNING_KEY?.trim();
+  if (!raw) return null;
+  const key = Buffer.from(raw, "utf8");
+  if (key.length < 32) {
+    throw new DocumentVaultError(
+      503,
+      "BACKUP_SIGNING_KEY_WEAK",
+      "BACKUP_SIGNING_KEY must contain at least 32 bytes of secret material.",
+    );
+  }
+  return key;
+}
+
+function requireSignedBackups() {
+  return process.env.REQUIRE_SIGNED_BACKUPS === "true";
+}
+
+function signManifest(bytes: Buffer, key: Buffer) {
+  return createHmac("sha256", key).update(bytes).digest("hex");
+}
+
+function constantTimeHexEqual(expected: string, actual: string) {
+  if (!/^[a-f0-9]{64}$/i.test(expected) || !/^[a-f0-9]{64}$/i.test(actual)) {
+    return false;
+  }
+  return timingSafeEqual(
+    Buffer.from(expected, "hex"),
+    Buffer.from(actual, "hex"),
+  );
 }
 
 function validateBackupId(backupId: string) {
@@ -486,19 +565,15 @@ async function defaultRestoreDatabase(source: string) {
 }
 
 async function migrationSnapshot() {
-  try {
-    const rows = await db.$queryRawUnsafe<
-      Array<{ migration_name: string; finished_at: Date | null }>
-    >(
-      'SELECT "migration_name", "finished_at" FROM "_prisma_migrations" WHERE "rolled_back_at" IS NULL ORDER BY "started_at" ASC',
-    );
-    return rows.map((row) => ({
-      migrationName: row.migration_name,
-      finishedAt: row.finished_at?.toISOString() ?? null,
-    }));
-  } catch {
-    return [];
-  }
+  const rows = await db.$queryRawUnsafe<
+    Array<{ migration_name: string; finished_at: Date | null }>
+  >(
+    'SELECT "migration_name", "finished_at" FROM "_prisma_migrations" WHERE "rolled_back_at" IS NULL ORDER BY "started_at" ASC',
+  );
+  return rows.map((row) => ({
+    migrationName: row.migration_name,
+    finishedAt: row.finished_at?.toISOString() ?? null,
+  }));
 }
 
 function newBackupId() {
@@ -525,7 +600,7 @@ async function verifyBackupDirectory(
       manifest.format !== "PHARMACY1OS_BACKUP" ||
       manifest.formatVersion !== 1 ||
       !manifest.backupId ||
-      !manifest.database?.file ||
+      manifest.database?.file !== "database.sql" ||
       !Array.isArray(manifest.documentVault?.documents)
     ) {
       throw new Error("Unsupported or malformed backup manifest.");
@@ -553,6 +628,44 @@ async function verifyBackupDirectory(
         detail: `Manifest checksum is unavailable: ${errorMessage(error)}`,
       });
     }
+
+    const signaturePath = join(directory, "manifest.hmac-sha256");
+    const signatureExists = await pathExists(signaturePath);
+    if (signatureExists || requireSignedBackups()) {
+      const signingKey = backupSigningKey();
+      if (!signingKey) {
+        findings.push({
+          type: "MANIFEST_SIGNATURE_MISMATCH",
+          detail:
+            "Backup manifest signature verification is required, but BACKUP_SIGNING_KEY is unavailable.",
+        });
+      } else if (!signatureExists) {
+        findings.push({
+          type: "MANIFEST_SIGNATURE_MISMATCH",
+          detail:
+            "This backup is unsigned, but signed backup verification is required.",
+        });
+      } else {
+        try {
+          const expectedSignature = (
+            await readFile(signaturePath, "utf8")
+          ).trim();
+          const actualSignature = signManifest(manifestBytes, signingKey);
+          if (!constantTimeHexEqual(expectedSignature, actualSignature)) {
+            findings.push({
+              type: "MANIFEST_SIGNATURE_MISMATCH",
+              detail:
+                "manifest.json failed HMAC-SHA-256 authenticity verification.",
+            });
+          }
+        } catch (error) {
+          findings.push({
+            type: "MANIFEST_SIGNATURE_MISMATCH",
+            detail: `Manifest signature could not be verified: ${errorMessage(error)}`,
+          });
+        }
+      }
+    }
   }
 
   if (manifest) {
@@ -568,8 +681,22 @@ async function verifyBackupDirectory(
       });
     }
 
-    const databasePath = join(directory, manifest.database.file);
+    let databasePath: string | null = null;
     try {
+      databasePath = safeManifestChildPath(
+        directory,
+        manifest.database.file,
+        "Database dump",
+      );
+    } catch (error) {
+      findings.push({
+        type: "MANIFEST_PATH_INVALID",
+        detail: errorMessage(error),
+      });
+    }
+
+    try {
+      if (!databasePath) throw new Error("Unsafe database dump path.");
       const databaseHash = await hashFile(databasePath);
       if (databaseHash.sha256 !== manifest.database.sha256) {
         findings.push({
@@ -592,9 +719,38 @@ async function verifyBackupDirectory(
 
     const expectedPayloadFiles = new Set<string>();
     for (const document of manifest.documentVault.documents) {
-      const payloadRelative = join("documents", document.storageKey);
+      const normalizedStorageKey = document.storageKey.split("\\").join("/");
+      if (
+        !normalizedStorageKey.startsWith("originals/") ||
+        normalizedStorageKey.includes("../") ||
+        normalizedStorageKey.startsWith("/")
+      ) {
+        findings.push({
+          type: "MANIFEST_PATH_INVALID",
+          storageKey: document.storageKey,
+          detail:
+            "Document storageKey is not a safe originals/ path inside the backup.",
+        });
+        continue;
+      }
+
+      const payloadRelative = join("documents", normalizedStorageKey);
       expectedPayloadFiles.add(payloadRelative.split(sep).join("/"));
-      const payloadPath = join(directory, payloadRelative);
+      let payloadPath: string;
+      try {
+        payloadPath = safeManifestChildPath(
+          directory,
+          payloadRelative,
+          "Document payload",
+        );
+      } catch (error) {
+        findings.push({
+          type: "MANIFEST_PATH_INVALID",
+          storageKey: document.storageKey,
+          detail: errorMessage(error),
+        });
+        continue;
+      }
       try {
         const payload = await readFile(payloadPath);
         const payloadSha256 = await hashBuffer(payload);
@@ -776,6 +932,22 @@ export async function createBackupSet(options?: {
         { flag: "wx" },
       );
 
+      const signingKey = backupSigningKey();
+      if (requireSignedBackups() && !signingKey) {
+        throw new DocumentVaultError(
+          503,
+          "BACKUP_SIGNING_KEY_REQUIRED",
+          "Signed backups are required, but BACKUP_SIGNING_KEY is not configured.",
+        );
+      }
+      if (signingKey) {
+        await writeFile(
+          join(stagingDirectory, "manifest.hmac-sha256"),
+          signManifest(manifestBytes, signingKey) + "\n",
+          { flag: "wx" },
+        );
+      }
+
       const verification = await verifyBackupDirectory(stagingDirectory);
       if (verification.status !== "PASS") {
         throw new DocumentVaultError(
@@ -922,8 +1094,13 @@ export async function restoreBackupSet(
 
       await db.$disconnect();
       try {
+        const restoreDatabasePath = safeManifestChildPath(
+          backupDirectory,
+          manifest.database.file,
+          "Database dump",
+        );
         await (options?.tooling?.restoreDatabase ?? defaultRestoreDatabase)(
-          join(backupDirectory, manifest.database.file),
+          restoreDatabasePath,
         );
       } catch (error) {
         await rm(currentOriginals, { recursive: true, force: true });
@@ -962,10 +1139,17 @@ export async function restoreBackupSet(
             integrityReportId: postcheck.reportId,
           }, null, 2) + "\n",
         );
+        await markDocumentVaultRecoveryRequired({
+          restoreId,
+          backupId,
+          reason:
+            "Post-restore document-vault integrity verification failed.",
+          integrityReportId: postcheck.reportId,
+        });
         throw new DocumentVaultError(
           500,
           "RESTORE_POSTCHECK_FAILED",
-          "Database and vault restore completed, but the post-restore integrity scan failed. The rollback vault copy was preserved.",
+          "Database and vault restore completed, but the post-restore integrity scan failed. Pharmacy1OS document writes remain locked until restore recovery is explicitly resolved.",
           { integrityReportId: postcheck.reportId, restoreId },
         );
       }

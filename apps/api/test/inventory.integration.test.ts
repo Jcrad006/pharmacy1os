@@ -59,12 +59,26 @@ async function createLisinoprilFill(quantity: number, suffix: string) {
   };
 }
 
+function gs1WithCheckDigit(body: string) {
+  if (!/^\d{13}$/.test(body)) {
+    throw new Error("GTIN-14 body must contain exactly 13 digits.");
+  }
+  const digits = body.split("").map(Number);
+  let sum = 0;
+  let multiplyByThree = true;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    sum += digits[index]! * (multiplyByThree ? 3 : 1);
+    multiplyByThree = !multiplyByThree;
+  }
+  return body + String((10 - (sum % 10)) % 10);
+}
+
 describe("Phase 3H inventory ledger", () => {
   it("receives, reserves, dispenses, returns, and adjusts isolated stock", async () => {
     const suffix = Math.floor(Math.random() * 1_000_000)
       .toString()
       .padStart(6, "0");
-    const gtin = `0066666${suffix}0`;
+    const gtin = gs1WithCheckDigit(`0066666${suffix}`);
     const lotNumber = `INV-${suffix}`;
     const rawBarcode = `(01)${gtin}(17)291231(10)${lotNumber}`;
 

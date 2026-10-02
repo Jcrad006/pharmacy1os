@@ -467,6 +467,7 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
               created.reservedAffectedQuantity.toString(),
             invalidatedReservedFillCount:
               created.invalidatedReservedFillCount,
+            affectedReadyFillCount: created.affectedReadyFillCount,
             affectedSoldFillCount: created.affectedSoldFillCount,
           },
         });
@@ -488,6 +489,7 @@ export async function inventoryOperationsRoutes(app: FastifyInstance) {
             result.reservedAffectedQuantity.toString(),
           invalidatedReservedFillCount:
             result.invalidatedReservedFillCount,
+          affectedReadyFillCount: result.affectedReadyFillCount,
           affectedSoldFillCount: result.affectedSoldFillCount,
         },
       });

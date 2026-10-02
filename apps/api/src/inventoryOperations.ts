@@ -9,6 +9,7 @@ import {
   adjustStockPosition,
   reconcileDemandAvailability,
 } from "./inventoryArchitecture.js";
+import { requestFingerprint } from "./idempotency.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -175,12 +176,39 @@ export async function createInventoryTransfer(
     );
   }
 
+  const quantity = positive(input.quantity);
+  const idempotencyFingerprint = input.idempotencyKey
+    ? requestFingerprint("inventory-transfer-create", {
+        sourceSiteId: input.sourceSiteId,
+        destinationSiteId: input.destinationSiteId,
+        sourceInventoryBalanceId: input.sourceInventoryBalanceId,
+        quantity: quantity.toString(),
+        note: input.note?.trim() || null,
+        carrier: input.carrier?.trim() || null,
+        trackingNumber: input.trackingNumber?.trim() || null,
+        sealIdentifier: input.sealIdentifier?.trim() || null,
+        custodyReference: input.custodyReference?.trim() || null,
+      })
+    : null;
+
   if (input.idempotencyKey) {
     const existing = await tx.inventoryTransaction.findUnique({
       where: { idempotencyKey: input.idempotencyKey },
       include: { inventoryTransfer: true },
     });
     if (existing?.inventoryTransfer) {
+      if (
+        existing.siteId !== input.sourceSiteId ||
+        !existing.idempotencyFingerprint ||
+        existing.idempotencyFingerprint !== idempotencyFingerprint
+      ) {
+        throw new InventoryError(
+          409,
+          "IDEMPOTENCY_KEY_CONFLICT",
+          "This idempotency key was already used for a different transfer request.",
+          { transactionId: existing.id },
+        );
+      }
       return {
         transfer: existing.inventoryTransfer,
         sourceBalance: await tx.inventoryBalance.findUniqueOrThrow({
@@ -211,7 +239,6 @@ export async function createInventoryTransfer(
     );
   }
 
-  const quantity = positive(input.quantity);
   const balance = await lockBalance(tx, input.sourceInventoryBalanceId);
 
   if (balance.siteId !== input.sourceSiteId) {
@@ -220,6 +247,32 @@ export async function createInventoryTransfer(
       "INVENTORY_NOT_FOUND",
       "Source inventory balance not found at this pharmacy site.",
     );
+  }
+
+  if (input.idempotencyKey) {
+    const replayAfterLock = await tx.inventoryTransaction.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+      include: { inventoryTransfer: true },
+    });
+    if (replayAfterLock?.inventoryTransfer) {
+      if (
+        replayAfterLock.siteId !== input.sourceSiteId ||
+        replayAfterLock.idempotencyFingerprint !== idempotencyFingerprint
+      ) {
+        throw new InventoryError(
+          409,
+          "IDEMPOTENCY_KEY_CONFLICT",
+          "This idempotency key was already used for a different transfer request.",
+          { transactionId: replayAfterLock.id },
+        );
+      }
+      return {
+        transfer: replayAfterLock.inventoryTransfer,
+        sourceBalance: balance,
+        transaction: replayAfterLock,
+        replayed: true,
+      };
+    }
   }
 
   const available = balance.onHandQuantity
@@ -284,6 +337,7 @@ export async function createInventoryTransfer(
       source: "SITE_TRANSFER",
       reference: transfer.id,
       idempotencyKey: input.idempotencyKey?.trim() || null,
+      idempotencyFingerprint,
     },
   });
 
@@ -644,6 +698,52 @@ export async function createRecallCase(
     }
   }
 
+  // READY fills have already committed inventory, so they are no longer
+  // represented by an active reservation and would otherwise fall between
+  // "in progress" and "sold" recall handling. Mark them as affected so the
+  // workstation can surface them, while the POS handoff gate independently
+  // blocks sale until the recall is resolved.
+  const readySourceRows = await tx.fillProductSource.findMany({
+    where: {
+      productId: input.productId,
+      returnedAt: null,
+      fill: {
+        status: "READY",
+        prescription: { siteId: input.siteId },
+      },
+      ...(lotNumberSearch
+        ? { productLot: { lotNumberSearch } }
+        : {}),
+    },
+    select: { fillId: true },
+  });
+  const legacyReadyFills = await tx.prescriptionFill.findMany({
+    where: {
+      prescription: { siteId: input.siteId },
+      productId: input.productId,
+      status: "READY",
+      ...(lotNumberSearch
+        ? { productLot: { lotNumberSearch } }
+        : {}),
+    },
+    select: { id: true },
+  });
+  const affectedReadyFillIds = [
+    ...new Set([
+      ...readySourceRows.map((source) => source.fillId),
+      ...legacyReadyFills.map((fill) => fill.id),
+    ]),
+  ];
+  if (affectedReadyFillIds.length > 0) {
+    await tx.recallAffectedFill.createMany({
+      data: affectedReadyFillIds.map((fillId) => ({
+        recallCaseId: recall.id,
+        fillId,
+      })),
+      skipDuplicates: true,
+    });
+  }
+
   // Sold split-source fills must be matched through immutable source history,
   // not only the legacy first-source compatibility fields on PrescriptionFill.
   const soldSourceRows = await tx.fillProductSource.findMany({
@@ -700,6 +800,7 @@ export async function createRecallCase(
     quarantinedHoldCount: holds.length,
     reservedAffectedQuantity: reservedAffected,
     invalidatedReservedFillCount: affectedReservedFillIds.length,
+    affectedReadyFillCount: affectedReadyFillIds.length,
     affectedSoldFillCount: affectedSoldFillIds.length,
   };
 }
@@ -853,30 +954,81 @@ export async function receivePurchaseOrderLine(
     idempotencyKey?: string | null;
   },
 ) {
-  if (input.idempotencyKey) {
-    const existingReceipt = await tx.purchaseOrderReceipt.findUnique({
-      where: { idempotencyKey: input.idempotencyKey },
-      include: {
-        inventoryBalance: true,
-        purchaseOrderLine: { include: { purchaseOrder: true } },
-        inventoryTransaction: true,
-      },
-    });
-    if (existingReceipt) {
-      return {
-        purchaseOrder: existingReceipt.purchaseOrderLine.purchaseOrder,
-        receipt: existingReceipt,
-        balance: existingReceipt.inventoryBalance,
-        transaction: existingReceipt.inventoryTransaction,
-        traceability: null,
-        replayed: true,
-      };
+  const quantity = positive(input.quantity);
+  const idempotencyFingerprint = input.idempotencyKey
+    ? requestFingerprint("purchase-order-receipt", {
+        purchaseOrderId: input.purchaseOrderId,
+        lineId: input.lineId,
+        siteId: input.siteId,
+        quantity: quantity.toString(),
+        lotNumber: input.lotNumber.trim(),
+        expirationDate: input.expirationDate.toISOString(),
+        invoiceReference: input.invoiceReference?.trim() || null,
+        locationId: input.locationId ?? null,
+      })
+    : null;
+
+  const findIdempotentReceipt = async () =>
+    input.idempotencyKey
+      ? tx.purchaseOrderReceipt.findUnique({
+          where: { idempotencyKey: input.idempotencyKey },
+          include: {
+            inventoryBalance: true,
+            purchaseOrderLine: { include: { purchaseOrder: true } },
+            inventoryTransaction: true,
+          },
+        })
+      : null;
+
+  const initialReceipt = await findIdempotentReceipt();
+  if (initialReceipt) {
+    if (
+      initialReceipt.purchaseOrderLine.purchaseOrder.siteId !== input.siteId ||
+      initialReceipt.idempotencyFingerprint !== idempotencyFingerprint
+    ) {
+      throw new InventoryError(
+        409,
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "This idempotency key was already used for a different purchase-order receipt.",
+        { receiptId: initialReceipt.id },
+      );
     }
+    return {
+      purchaseOrder: initialReceipt.purchaseOrderLine.purchaseOrder,
+      receipt: initialReceipt,
+      balance: initialReceipt.inventoryBalance,
+      transaction: initialReceipt.inventoryTransaction,
+      traceability: null,
+      replayed: true,
+    };
   }
 
   await tx.$queryRaw(
     Prisma.sql`SELECT "id" FROM "PurchaseOrderLine" WHERE "id" = ${input.lineId} FOR UPDATE`,
   );
+
+  const replayAfterLineLock = await findIdempotentReceipt();
+  if (replayAfterLineLock) {
+    if (
+      replayAfterLineLock.purchaseOrderLine.purchaseOrder.siteId !== input.siteId ||
+      replayAfterLineLock.idempotencyFingerprint !== idempotencyFingerprint
+    ) {
+      throw new InventoryError(
+        409,
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "This idempotency key was already used for a different purchase-order receipt.",
+        { receiptId: replayAfterLineLock.id },
+      );
+    }
+    return {
+      purchaseOrder: replayAfterLineLock.purchaseOrderLine.purchaseOrder,
+      receipt: replayAfterLineLock,
+      balance: replayAfterLineLock.inventoryBalance,
+      transaction: replayAfterLineLock.inventoryTransaction,
+      traceability: null,
+      replayed: true,
+    };
+  }
 
   const line = await tx.purchaseOrderLine.findFirst({
     where: {
@@ -906,7 +1058,6 @@ export async function receivePurchaseOrderLine(
     );
   }
 
-  const quantity = positive(input.quantity);
   const remaining = line.quantityOrdered.minus(line.quantityReceived);
   if (quantity.gt(remaining)) {
     throw new InventoryError(
@@ -965,6 +1116,7 @@ export async function receivePurchaseOrderLine(
       unitCost: line.unitCost,
       extendedCost: line.unitCost ? line.unitCost.mul(quantity) : null,
       idempotencyKey: input.idempotencyKey?.trim() || null,
+      idempotencyFingerprint,
     },
   });
 

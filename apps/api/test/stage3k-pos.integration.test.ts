@@ -434,6 +434,20 @@ describe("Stage 3K Will Call / POS hardening", () => {
     expect(replay.json().replayed).toBe(true);
     expect(replay.json().transaction.id).toBe(checkout.json().transaction.id);
 
+    const conflictingReplay = await app.inject({
+      method: "POST",
+      url: "/api/pos/checkout",
+      headers: technicianHeaders,
+      payload: {
+        fillIds: [fillId],
+        tenders: [{ method: "CASH", amount: 9 }],
+        ...pickup(fillId, staged.bagBarcode),
+        idempotencyKey: key,
+      },
+    });
+    expect(conflictingReplay.statusCode).toBe(409);
+    expect(conflictingReplay.json().code).toBe("IDEMPOTENCY_KEY_CONFLICT");
+
     const duplicate = await app.inject({
       method: "POST",
       url: "/api/pos/checkout",
@@ -679,6 +693,15 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const scanned = await scan(fillId, 20);
     expect(scanned.json().adjudication.state).toBe("PAID_LABEL_READY");
     await makeReady(prescriptionId);
+
+    const coverageDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/patients/${patient.id}/coverages/1`,
+      headers: pharmacistHeaders,
+    });
+    expect(coverageDelete.statusCode).toBe(409);
+    expect(coverageDelete.json().code).toBe("PAID_CLAIM_REVERSAL_REQUIRED");
+
     const staged = await stage(fillId);
 
     const claim = await db.claimTransaction.findFirstOrThrow({

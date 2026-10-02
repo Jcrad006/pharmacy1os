@@ -27,6 +27,10 @@ function writersRoot() {
   return join(coordinationRoot(), "writers");
 }
 
+function recoveryMarkerPath() {
+  return join(coordinationRoot(), "restore-recovery-required.json");
+}
+
 async function pathExists(path: string) {
   try {
     await stat(path);
@@ -99,7 +103,81 @@ async function reclaimStaleWriterMarkers() {
   }
 }
 
+export async function getDocumentVaultRecoveryState() {
+  const marker = recoveryMarkerPath();
+  if (!(await pathExists(marker))) return null;
+  try {
+    return JSON.parse(await readFile(marker, "utf8")) as {
+      restoreId?: string;
+      backupId?: string;
+      createdAt?: string;
+      reason?: string;
+      integrityReportId?: string;
+    };
+  } catch {
+    return {
+      createdAt: null,
+      reason:
+        "A restore recovery marker exists but could not be parsed. Keep the system offline until it is investigated.",
+    };
+  }
+}
+
+export async function markDocumentVaultRecoveryRequired(input: {
+  restoreId: string;
+  backupId: string;
+  reason: string;
+  integrityReportId?: string | null;
+}) {
+  await mkdir(coordinationRoot(), { recursive: true });
+  const marker = recoveryMarkerPath();
+  await writeFile(
+    marker,
+    JSON.stringify(
+      {
+        restoreId: input.restoreId,
+        backupId: input.backupId,
+        createdAt: new Date().toISOString(),
+        reason: input.reason,
+        integrityReportId: input.integrityReportId ?? null,
+      },
+      null,
+      2,
+    ) + "\n",
+    { flag: "wx" },
+  ).catch(async (error) => {
+    const code =
+      typeof error === "object" && error && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    if (code !== "EEXIST") throw error;
+  });
+}
+
+export async function clearDocumentVaultRecoveryRequired() {
+  await unlink(recoveryMarkerPath()).catch((error) => {
+    const code =
+      typeof error === "object" && error && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    if (code !== "ENOENT") throw error;
+  });
+}
+
+async function assertNoRecoveryRequired() {
+  const recovery = await getDocumentVaultRecoveryState();
+  if (recovery) {
+    throw new DocumentVaultError(
+      503,
+      "DOCUMENT_VAULT_RESTORE_RECOVERY_REQUIRED",
+      "The document vault is locked because a restore did not finish with a clean integrity state. Keep Pharmacy1OS offline and resolve the restore journal before clearing recovery state.",
+      recovery as Record<string, unknown>,
+    );
+  }
+}
+
 async function assertNoExclusiveLock() {
+  await assertNoRecoveryRequired();
   const lockPath = backupLockPath();
   await reclaimStaleFile(lockPath);
   if (await pathExists(lockPath)) {
@@ -196,6 +274,9 @@ export async function withExclusiveDocumentVaultLock<T>(
 ): Promise<T> {
   const writerRoot = writersRoot();
   await mkdir(writerRoot, { recursive: true });
+  if (purpose === "BACKUP") {
+    await assertNoRecoveryRequired();
+  }
   const lockPath = await createExclusiveLock(purpose);
 
   try {

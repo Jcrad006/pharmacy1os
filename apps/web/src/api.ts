@@ -336,6 +336,7 @@ export type PrescriptionAnnotationInput = {
     contactedParty?: string | null;
     authorizingPrescriber?: string | null;
     note?: string | null;
+    structuredValue?: unknown;
   };
 };
 
@@ -367,6 +368,21 @@ export async function supersedePrescriptionVisualAnnotation(
       body: JSON.stringify(input),
     },
   );
+}
+
+export async function applyPrescriptionDocumentedChange(
+  devUser: string,
+  changeRecordId: string,
+  structuredValue: unknown,
+) {
+  return request<{
+    changeRecord: import("./types").PrescriptionChangeRecord;
+    prescription: PrescriptionQueueItem;
+  }>(`/api/prescription-changes/${changeRecordId}/apply`, {
+    method: "POST",
+    devUser,
+    body: JSON.stringify({ structuredValue }),
+  });
 }
 
 export async function getPrescriptionAudit(devUser: string, id: string) {

@@ -6,6 +6,7 @@ import {
   type PointerEvent,
 } from "react";
 import {
+  applyPrescriptionDocumentedChange,
   createPrescriptionVisualAnnotation,
   ensureElectronicPrescriptionRender,
   getPrescriptionDocumentBlob,
@@ -18,6 +19,7 @@ import type {
   DevUser,
   PrescriptionAnnotation,
   PrescriptionChangeCommunicationMethod,
+  PrescriptionChangeRecord,
   PrescriptionChangeType,
   PrescriptionDocument,
   PrescriptionQueueItem,
@@ -40,6 +42,7 @@ type ChangeForm = {
   contactedParty: string;
   authorizingPrescriber: string;
   note: string;
+  structuredValue: string;
 };
 
 const emptyChangeForm: ChangeForm = {
@@ -51,6 +54,7 @@ const emptyChangeForm: ChangeForm = {
   contactedParty: "",
   authorizingPrescriber: "",
   note: "",
+  structuredValue: "",
 };
 
 function fileToBase64(file: File) {
@@ -75,6 +79,36 @@ function humanChangeType(type: PrescriptionChangeType) {
   return type.replaceAll("_", " ");
 }
 
+function parseStructuredValue(
+  type: PrescriptionChangeType,
+  raw: string,
+): unknown {
+  const value = raw.trim();
+  if (type === "QUANTITY" || type === "REFILLS") {
+    return Number(value);
+  }
+  return value;
+}
+
+function structuredValueText(value: unknown) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function structuredValueHint(type: PrescriptionChangeType) {
+  if (type === "DRUG") return "Enter the new Medication catalog ID.";
+  if (type === "PRESCRIBER") return "Enter the new Prescriber record ID.";
+  if (type === "DAW") {
+    return "Use UNSPECIFIED, SELECTION_PERMITTED, or DISPENSE_AS_WRITTEN.";
+  }
+  if (type === "WRITTEN_DATE") return "Enter an ISO date, e.g. 2026-10-01.";
+  if (type === "QUANTITY" || type === "REFILLS") return "Enter the new numeric value.";
+  return "Enter the exact new structured prescription value.";
+}
+
 function annotationInput(
   rect: Rect,
   form: ChangeForm,
@@ -90,6 +124,13 @@ function annotationInput(
       contactedParty: form.contactedParty.trim() || null,
       authorizingPrescriber: form.authorizingPrescriber.trim() || null,
       note: form.note.trim() || null,
+      structuredValue:
+        form.changeType === "OTHER"
+          ? undefined
+          : parseStructuredValue(
+              form.changeType,
+              form.structuredValue,
+            ),
     },
   };
 }
@@ -118,6 +159,7 @@ export function PrescriptionDocumentPanel({
   const [draftForm, setDraftForm] = useState<ChangeForm>(emptyChangeForm);
   const [revisionOf, setRevisionOf] =
     useState<PrescriptionAnnotation | null>(null);
+  const [applyValues, setApplyValues] = useState<Record<string, string>>({});
   const viewerRef = useRef<HTMLDivElement>(null);
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
 
@@ -294,6 +336,9 @@ export function PrescriptionDocumentPanel({
       authorizingPrescriber:
         annotation.changeRecord?.authorizingPrescriber ?? "",
       note: annotation.changeRecord?.note ?? "",
+      structuredValue: structuredValueText(
+        annotation.changeRecord?.afterValue,
+      ),
     });
     setDrawMode(false);
   }
@@ -303,10 +348,12 @@ export function PrescriptionDocumentPanel({
     if (
       !draftForm.text.trim() ||
       !draftForm.whatChanged.trim() ||
-      !draftForm.reason.trim()
+      !draftForm.reason.trim() ||
+      (draftForm.changeType !== "OTHER" &&
+        !draftForm.structuredValue.trim())
     ) {
       onError(
-        "Visual note, what changed, and why the change was made are required.",
+        "Visual note, what changed, why, and the new structured Rx value are required for a clinical change.",
       );
       return;
     }
@@ -343,6 +390,44 @@ export function PrescriptionDocumentPanel({
         error instanceof Error
           ? error.message
           : "Unable to save prescription annotation.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyChange(record: PrescriptionChangeRecord) {
+    const raw =
+      applyValues[record.id] ?? structuredValueText(record.afterValue);
+    if (!raw.trim()) {
+      onError(
+        "Enter the exact new structured Rx value before applying this documented change.",
+      );
+      return;
+    }
+
+    setBusy(true);
+    onError(null);
+    try {
+      await applyPrescriptionDocumentedChange(
+        devUser,
+        record.id,
+        parseStructuredValue(record.changeType, raw),
+      );
+      setApplyValues((current) => {
+        const next = { ...current };
+        delete next[record.id];
+        return next;
+      });
+      await loadDocuments();
+      await onMutated(
+        `${humanChangeType(record.changeType)} change applied to structured prescription data. Pharmacist review will see the documented amendment.`,
+      );
+    } catch (error) {
+      onError(
+        error instanceof Error
+          ? error.message
+          : "Unable to apply documented change to the prescription.",
       );
     } finally {
       setBusy(false);
@@ -608,6 +693,7 @@ export function PrescriptionDocumentPanel({
                         changeType:
                           event.target
                             .value as PrescriptionChangeType,
+                        structuredValue: "",
                       }))
                     }
                   >
@@ -716,6 +802,29 @@ export function PrescriptionDocumentPanel({
                   />
                 </label>
 
+                {draftForm.changeType !== "OTHER" && (
+                  <label>
+                    New structured Rx value
+                    <input
+                      value={draftForm.structuredValue}
+                      onChange={(event) =>
+                        setDraftForm((current) => ({
+                          ...current,
+                          structuredValue: event.target.value,
+                        }))
+                      }
+                      placeholder={structuredValueHint(
+                        draftForm.changeType,
+                      )}
+                    />
+                    <small>
+                      This value is stored with the documentation and can be
+                      applied to the actual prescription record. The visual
+                      text box alone never changes dispensing data.
+                    </small>
+                  </label>
+                )}
+
                 <label>
                   Additional note
                   <textarea
@@ -737,7 +846,9 @@ export function PrescriptionDocumentPanel({
                     busy ||
                     !draftForm.text.trim() ||
                     !draftForm.whatChanged.trim() ||
-                    !draftForm.reason.trim()
+                    !draftForm.reason.trim() ||
+                    (draftForm.changeType !== "OTHER" &&
+                      !draftForm.structuredValue.trim())
                   }
                   onClick={() => void saveAnnotation()}
                 >
@@ -840,6 +951,71 @@ export function PrescriptionDocumentPanel({
                                 </dd>
                               </div>
                             </dl>
+                            {annotation.changeRecord.requiresStructuredApply && (
+                              <div className="document-structured-change">
+                                <strong>
+                                  {annotation.changeRecord.appliedAt
+                                    ? `Applied to Rx data: ${annotation.changeRecord.appliedField ?? "structured field"}`
+                                    : "Structured Rx update required"}
+                                </strong>
+                                {annotation.changeRecord.appliedAt ? (
+                                  <span>
+                                    Applied{" "}
+                                    {new Date(
+                                      annotation.changeRecord.appliedAt,
+                                    ).toLocaleString()}
+                                    {annotation.changeRecord.reviewedAt
+                                      ? ` · pharmacist acknowledged ${new Date(
+                                          annotation.changeRecord.reviewedAt,
+                                        ).toLocaleString()}`
+                                      : ""}
+                                  </span>
+                                ) : (
+                                  <>
+                                    <input
+                                      value={
+                                        applyValues[
+                                          annotation.changeRecord.id
+                                        ] ??
+                                        structuredValueText(
+                                          annotation.changeRecord.afterValue,
+                                        )
+                                      }
+                                      placeholder={structuredValueHint(
+                                        annotation.changeRecord.changeType,
+                                      )}
+                                      onChange={(event) =>
+                                        setApplyValues((current) => ({
+                                          ...current,
+                                          [annotation.changeRecord!.id]:
+                                            event.target.value,
+                                        }))
+                                      }
+                                    />
+                                    <small>
+                                      {structuredValueHint(
+                                        annotation.changeRecord.changeType,
+                                      )}
+                                    </small>
+                                    {annotation.status === "ACTIVE" &&
+                                      canManage && (
+                                        <button
+                                          type="button"
+                                          className="primary-button"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            void applyChange(
+                                              annotation.changeRecord!,
+                                            )
+                                          }
+                                        >
+                                          Apply to Rx Data
+                                        </button>
+                                      )}
+                                  </>
+                                )}
+                              </div>
+                            )}
                           </>
                         )}
                         {annotation.status === "ACTIVE" &&

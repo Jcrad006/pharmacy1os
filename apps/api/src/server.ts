@@ -1,4 +1,7 @@
 import { buildApp } from "./app.js";
+import { assertRuntimeSafetyConfiguration } from "./security/runtimeSafety.js";
+
+assertRuntimeSafetyConfiguration();
 
 const app = buildApp({
   serveWeb: process.env.SERVE_WEB === "true",

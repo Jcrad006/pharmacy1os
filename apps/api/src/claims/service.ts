@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   Prisma,
   type BillingNdcStrategy,
@@ -7,6 +6,7 @@ import {
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
+import { requestFingerprint, stableOperationKey } from "../idempotency.js";
 import {
   type CanonicalClaimRequest,
   type CanonicalCobPriorPayer,
@@ -49,6 +49,127 @@ function decimal(value: Prisma.Decimal | number | string | null | undefined) {
 
 function jsonSnapshot(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+
+async function acquireExternalClaimOperation(input: {
+  siteId: string;
+  fillId: string;
+  coveragePosition: number;
+  operation: "SUBMIT" | "REVERSAL";
+  originalTransactionId?: string | null;
+  operationKey: string;
+  fingerprint: string;
+  request: CanonicalClaimRequest;
+}) {
+  const operation = await db.externalClaimOperation.upsert({
+    where: { operationKey: input.operationKey },
+    create: {
+      siteId: input.siteId,
+      fillId: input.fillId,
+      coveragePosition: input.coveragePosition,
+      operation: input.operation,
+      originalTransactionId: input.originalTransactionId ?? null,
+      operationKey: input.operationKey,
+      requestFingerprint: input.fingerprint,
+      requestSnapshot: jsonSnapshot(input.request),
+      status: "PENDING",
+    },
+    update: {},
+  });
+
+  if (
+    operation.siteId !== input.siteId ||
+    operation.fillId !== input.fillId ||
+    operation.coveragePosition !== input.coveragePosition ||
+    operation.operation !== input.operation ||
+    operation.requestFingerprint !== input.fingerprint
+  ) {
+    throw new ClaimError(
+      409,
+      "CLAIM_OPERATION_KEY_CONFLICT",
+      "A stable external claim-operation key was reused for different claim semantics.",
+      { operationKey: input.operationKey },
+    );
+  }
+
+  const priorTransaction = await db.claimTransaction.findUnique({
+    where: { idempotencyKey: input.operationKey },
+  });
+  if (priorTransaction) {
+    return { operation, replayTransaction: priorTransaction };
+  }
+
+  const acquired = await db.externalClaimOperation.updateMany({
+    where: {
+      id: operation.id,
+      status: { in: ["PENDING", "FAILED", "AMBIGUOUS"] },
+    },
+    data: {
+      status: "IN_FLIGHT",
+      attemptCount: { increment: 1 },
+      lastError: null,
+    },
+  });
+
+  if (acquired.count !== 1) {
+    const latest = await db.externalClaimOperation.findUniqueOrThrow({
+      where: { id: operation.id },
+    });
+    if (latest.status === "SUCCEEDED") {
+      const replayTransaction = await db.claimTransaction.findUnique({
+        where: { idempotencyKey: input.operationKey },
+      });
+      if (replayTransaction) {
+        return { operation: latest, replayTransaction };
+      }
+    }
+    throw new ClaimError(
+      409,
+      "CLAIM_OPERATION_IN_PROGRESS",
+      "An equivalent payer operation is already in progress. Retry using the same request after its result is known.",
+      {
+        operationKey: input.operationKey,
+        status: latest.status,
+        attemptCount: latest.attemptCount,
+      },
+    );
+  }
+
+  return {
+    operation: await db.externalClaimOperation.findUniqueOrThrow({
+      where: { id: operation.id },
+    }),
+    replayTransaction: null,
+  };
+}
+
+async function markExternalClaimOperationSucceeded(
+  operationKey: string,
+  response: PersistableResponse,
+) {
+  await db.externalClaimOperation.update({
+    where: { operationKey },
+    data: {
+      status: "SUCCEEDED",
+      transactionReference: response.transactionReference ?? null,
+      responseSnapshot: jsonSnapshot(response),
+      lastError: null,
+    },
+  });
+}
+
+async function markExternalClaimOperationAmbiguous(
+  operationKey: string,
+  error: unknown,
+) {
+  await db.externalClaimOperation.update({
+    where: { operationKey },
+    data: {
+      status: "AMBIGUOUS",
+      lastError: error instanceof Error ? error.message : String(error),
+    },
+  }).catch(() => undefined);
 }
 
 function activeOnDate(
@@ -601,6 +722,11 @@ async function persistClaimTransaction(input: {
       },
     });
 
+    await tx.prescriptionFill.update({
+      where: { id: input.fill.id },
+      data: { version: { increment: 1 } },
+    });
+
     return transaction;
   });
 }
@@ -807,9 +933,7 @@ export async function adjudicateFillClaims(
       )
       .map(priorFromTransaction);
 
-    const claimIdempotencyKey = `claim-${fill.id}-p${coverage.position}-${randomUUID()}`;
-    const claimRequest: CanonicalClaimRequest = {
-      claimIdempotencyKey,
+    const claimRequestCore = {
       siteId: context.siteId,
       prescriptionId: fill.prescriptionId,
       fillId: fill.id,
@@ -825,11 +949,40 @@ export async function adjudicateFillClaims(
       daysSupply: fill.daysSupply!,
       priorPayers,
     };
+    const claimFingerprint = requestFingerprint(
+      "third-party-claim-submit",
+      claimRequestCore,
+    );
+    const claimIdempotencyKey = stableOperationKey(
+      "claim",
+      claimFingerprint,
+    );
+    const claimRequest: CanonicalClaimRequest = {
+      claimIdempotencyKey,
+      ...claimRequestCore,
+    };
+
+    const lease = await acquireExternalClaimOperation({
+      siteId: context.siteId,
+      fillId: fill.id,
+      coveragePosition: coverage.position,
+      operation: "SUBMIT",
+      operationKey: claimIdempotencyKey,
+      fingerprint: claimFingerprint,
+      request: claimRequest,
+    });
+    if (lease.replayTransaction) {
+      chain.push(lease.replayTransaction);
+      upstreamChanged = true;
+      if (lease.replayTransaction.outcome === "ERROR") break;
+      continue;
+    }
 
     let adapter;
     try {
       adapter = getClaimAdapter(coverage.payer.claimStandard);
     } catch (error) {
+      await markExternalClaimOperationAmbiguous(claimIdempotencyKey, error);
       throw new ClaimError(
         503,
         "CLAIM_ADAPTER_NOT_CONFIGURED",
@@ -839,25 +992,37 @@ export async function adjudicateFillClaims(
       );
     }
 
-    const response = await adapter.submit(claimRequest, {
-      standard: coverage.payer.claimStandard,
-      billingNdcStrategy: billingProfile.billingNdcStrategy,
-    });
+    try {
+      const response = await adapter.submit(claimRequest, {
+        standard: coverage.payer.claimStandard,
+        billingNdcStrategy: billingProfile.billingNdcStrategy,
+      });
 
-    const transaction = await persistClaimTransaction({
-      fill,
-      coverage,
-      context,
-      operation: "SUBMIT",
-      request: claimRequest,
-      response,
-      adapterName: adapter.name,
-      adapterVersion: adapter.version,
-    });
-    chain.push(transaction);
-    upstreamChanged = true;
+      const transaction = await persistClaimTransaction({
+        fill,
+        coverage,
+        context,
+        operation: "SUBMIT",
+        request: claimRequest,
+        response,
+        adapterName: adapter.name,
+        adapterVersion: adapter.version,
+      });
+      await markExternalClaimOperationSucceeded(
+        claimIdempotencyKey,
+        response,
+      );
+      chain.push(transaction);
+      upstreamChanged = true;
 
-    if (response.status === "ERROR") break;
+      if (response.status === "ERROR") break;
+    } catch (error) {
+      await markExternalClaimOperationAmbiguous(
+        claimIdempotencyKey,
+        error,
+      );
+      throw error;
+    }
   }
 
   const hasPaid = chain.some((transaction) => transaction.outcome === "PAID");
@@ -1024,49 +1189,140 @@ export async function reverseClaimTransaction(
     return { transaction: priorReversal, replayed: true };
   }
 
-  const fill = await loadFillForClaims(original.fillId, context.siteId);
-  const coverage = fill.prescription.patient.coverages.find(
-    (item) => item.id === original.coverageIdSnapshot,
-  );
-  if (!coverage) {
+  const payer = await db.payer.findFirst({
+    where: { id: original.payerId, siteId: context.siteId },
+    include: { billingProfile: true },
+  });
+  if (!payer) {
     throw new ClaimError(
       409,
-      "COVERAGE_SNAPSHOT_UNAVAILABLE",
-      "The original coverage is no longer available for reversal.",
+      "PAYER_SNAPSHOT_UNAVAILABLE",
+      "The payer referenced by the original claim is no longer available for reversal.",
     );
   }
 
-  const adapter = getClaimAdapter(original.claimStandard);
-  const nextIdempotencyKey = `reverse-${original.id}-${randomUUID()}`;
+  const reversalFingerprint = requestFingerprint(
+    "third-party-claim-reversal",
+    {
+      originalTransactionId: original.id,
+      originalTransactionReference: original.transactionReference,
+      originalRequestSnapshot: original.requestSnapshot,
+    },
+  );
+  const nextIdempotencyKey = stableOperationKey(
+    "reverse",
+    reversalFingerprint,
+  );
   const request = claimRequestFromSnapshot(
     original.requestSnapshot,
     nextIdempotencyKey,
   );
-  const response = await adapter.reverse(
-    {
-      ...request,
-      originalTransactionReference: original.transactionReference,
-    },
-    {
-      standard: original.claimStandard,
-      billingNdcStrategy: billingStrategyFromSnapshot(
-        original.billingProfileSnapshot,
-        effectiveBillingProfile(coverage.payer).billingNdcStrategy,
-      ),
-    },
-  );
 
-  const transaction = await persistClaimTransaction({
-    fill,
-    coverage,
-    context,
+  const lease = await acquireExternalClaimOperation({
+    siteId: context.siteId,
+    fillId: original.fillId,
+    coveragePosition: original.coveragePosition,
     operation: "REVERSAL",
     originalTransactionId: original.id,
+    operationKey: nextIdempotencyKey,
+    fingerprint: reversalFingerprint,
     request,
-    response,
-    adapterName: adapter.name,
-    adapterVersion: adapter.version,
   });
+  if (lease.replayTransaction) {
+    return { transaction: lease.replayTransaction, replayed: true };
+  }
+
+  const adapter = getClaimAdapter(original.claimStandard);
+  let response: PersistableResponse;
+  let transaction;
+  try {
+    response = await adapter.reverse(
+      {
+        ...request,
+        originalTransactionReference: original.transactionReference,
+      },
+      {
+        standard: original.claimStandard,
+        billingNdcStrategy: billingStrategyFromSnapshot(
+          original.billingProfileSnapshot,
+          effectiveBillingProfile(payer).billingNdcStrategy,
+        ),
+      },
+    );
+
+    transaction = await db.$transaction(async (tx) => {
+      const adjudicatedAt = new Date();
+      const created = await tx.claimTransaction.create({
+        data: {
+          siteId: context.siteId,
+          fillId: original.fillId,
+          payerId: original.payerId,
+          coverageIdSnapshot: original.coverageIdSnapshot,
+          coveragePosition: original.coveragePosition,
+          operation: "REVERSAL",
+          outcome: response.status,
+          idempotencyKey: request.claimIdempotencyKey,
+          originalTransactionId: original.id,
+          claimStandard: original.claimStandard,
+          adapterName: adapter.name,
+          adapterVersion: adapter.version,
+          billedProductId: original.billedProductId,
+          billedNdc: original.billedNdc,
+          memberIdSnapshot: original.memberIdSnapshot,
+          personCodeSnapshot: original.personCodeSnapshot,
+          groupIdSnapshot: original.groupIdSnapshot,
+          payerIntendedQuantity: original.payerIntendedQuantity,
+          physicalPartQuantity: original.physicalPartQuantity,
+          daysSupply: original.daysSupply,
+          billingProfileVersion: original.billingProfileVersion,
+          billingProfileSnapshot: original.billingProfileSnapshot ?? undefined,
+          requestSnapshot: jsonSnapshot(request),
+          responseSnapshot: jsonSnapshot(response),
+          transactionReference: response.transactionReference ?? null,
+          authorizationNumber: response.authorizationNumber ?? null,
+          amountPaid: decimal(response.amountPaid),
+          patientResponsibility: decimal(response.patientResponsibility),
+          rejectCodes: jsonSnapshot(response.rejectCodes),
+          messages: jsonSnapshot(response.messages),
+          createdById: context.actorId,
+          adjudicatedAt,
+        },
+      });
+
+      await writeAuditEvent(tx, {
+        siteId: context.siteId,
+        actorId: context.actorId,
+        action: "THIRD_PARTY_CLAIM_REVERSED",
+        entityType: "ClaimTransaction",
+        entityId: created.id,
+        requestId: context.requestId,
+        metadata: {
+          fillId: original.fillId,
+          payerId: original.payerId,
+          coveragePosition: original.coveragePosition,
+          originalTransactionId: original.id,
+          outcome: response.status,
+          transactionReference: response.transactionReference ?? null,
+          stableOperationKey: request.claimIdempotencyKey,
+        },
+      });
+      await tx.prescriptionFill.update({
+        where: { id: original.fillId },
+        data: { version: { increment: 1 } },
+      });
+      return created;
+    });
+    await markExternalClaimOperationSucceeded(
+      nextIdempotencyKey,
+      response,
+    );
+  } catch (error) {
+    await markExternalClaimOperationAmbiguous(
+      nextIdempotencyKey,
+      error,
+    );
+    throw error;
+  }
 
   if (response.status === "REVERSED") {
     await db.$transaction(async (tx) => {
@@ -1242,7 +1498,7 @@ export async function assertNoActivePaidClaimsForPatientCoverageMutation(
       operation: "SUBMIT",
       outcome: "PAID",
       fill: {
-        status: "IN_PROGRESS",
+        status: { in: ["IN_PROGRESS", "READY"] },
         prescription: { patientId, siteId },
       },
     },
@@ -1270,7 +1526,7 @@ export async function assertNoActivePaidClaimsForPatientCoverageMutation(
     throw new ClaimError(
       409,
       "PAID_CLAIM_REVERSAL_REQUIRED",
-      "Reverse the active paid claim before changing this patient's coverage while the fill is still in progress.",
+      "Reverse the active paid claim before changing this patient's coverage while an adjudicated fill is still in progress or Ready.",
       {
         claimTransactionId: activePaid.id,
         fillId: activePaid.fillId,

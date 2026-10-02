@@ -9,6 +9,8 @@ import {
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
+import { requestFingerprint } from "../idempotency.js";
+import { assertFillPhysicalSourcesDispensable } from "../inventory.js";
 
 export class PosError extends Error {
   constructor(
@@ -272,7 +274,9 @@ export async function stageWillCallPackage(
         prescription: { siteId: context.siteId },
       },
       include: {
-        prescription: true,
+        prescription: {
+          include: { medication: true },
+        },
         prescriptionLabels: {
           where: { status: "ACTIVE" },
           select: { id: true },
@@ -314,6 +318,23 @@ export async function stageWillCallPackage(
     const location = await resolveWillCallLocation(tx, context, input, {
       allowDefault: true,
     });
+    if (
+      fill.prescription.medication?.requiresColdChain &&
+      (location.temperatureMinC === null ||
+        location.temperatureMaxC === null)
+    ) {
+      throw new PosError(
+        409,
+        "COLD_CHAIN_WILL_CALL_REQUIRED",
+        "This medication requires cold-chain storage. Stage it only in a Will Call location with configured temperature limits.",
+        {
+          fillId: fill.id,
+          medicationId: fill.prescription.medicationId,
+          locationId: location.id,
+          locationCode: location.code,
+        },
+      );
+    }
     const bagBarcode =
       input.bagBarcode?.trim().toUpperCase() ||
       `WC-BAG-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
@@ -567,6 +588,7 @@ type CheckoutQuoteLine = {
   medicationName: string;
   fillNumber: number;
   partNumber: number;
+  fillVersion: number;
   quantity: Prisma.Decimal;
   priceBasis: PosPriceBasis;
   claimTransactionId: string | null;
@@ -740,6 +762,7 @@ async function quoteFill(
       medicationName: fill.prescription.medicationName,
       fillNumber: fill.fillNumber,
       partNumber: fill.partNumber,
+      fillVersion: fill.version,
       quantity: new Prisma.Decimal(fill.quantity),
       priceBasis: "COMPLETION_ALREADY_BILLED",
       claimTransactionId: paidClaim.id,
@@ -782,6 +805,7 @@ async function quoteFill(
       medicationName: fill.prescription.medicationName,
       fillNumber: fill.fillNumber,
       partNumber: fill.partNumber,
+      fillVersion: fill.version,
       quantity: new Prisma.Decimal(fill.quantity),
       priceBasis: "THIRD_PARTY",
       claimTransactionId: paidClaim.id,
@@ -854,6 +878,7 @@ async function quoteFill(
     medicationName: fill.prescription.medicationName,
     fillNumber: fill.fillNumber,
     partNumber: fill.partNumber,
+    fillVersion: fill.version,
     quantity: new Prisma.Decimal(fill.quantity),
     priceBasis: "CASH",
     claimTransactionId: null,
@@ -1184,6 +1209,41 @@ export async function checkoutFills(
     );
   }
 
+  const fingerprint = requestFingerprint("pos-checkout", {
+    siteId: context.siteId,
+    fillIds: [...input.fillIds].sort(),
+    pickupFulfillmentMode: input.pickupFulfillmentMode ?? "WILL_CALL",
+    pickupPackages: [...input.pickupPackages]
+      .map((item) => ({
+        fillId: item.fillId,
+        bagBarcode: item.bagBarcode?.trim().toUpperCase() ?? "",
+      }))
+      .sort((a, b) => a.fillId.localeCompare(b.fillId)),
+    pickup: {
+      recipientName: input.pickup.recipientName?.trim() ?? "",
+      relationship: input.pickup.relationship?.trim() || null,
+      identityMethod: input.pickup.identityMethod,
+      identityValue: input.pickup.identityValue?.trim() || null,
+      signatureMethod: input.pickup.signatureMethod,
+      signatureName: input.pickup.signatureName?.trim() || null,
+      signatureReference: input.pickup.signatureReference?.trim() || null,
+    },
+    tenders: [...(input.tenders ?? [])]
+      .map((tender) => ({
+        method: tender.method,
+        amount:
+          tender.amount instanceof Prisma.Decimal
+            ? tender.amount.toString()
+            : String(tender.amount),
+        reference: tender.reference?.trim() || null,
+      }))
+      .sort((a, b) =>
+        `${a.method}:${a.amount}:${a.reference ?? ""}`.localeCompare(
+          `${b.method}:${b.amount}:${b.reference ?? ""}`,
+        ),
+      ),
+  });
+
   const existing = await db.pointOfSaleTransaction.findUnique({
     where: { idempotencyKey: key },
     include: {
@@ -1196,11 +1256,18 @@ export async function checkoutFills(
     },
   });
   if (existing) {
-    if (existing.siteId !== context.siteId) {
+    if (
+      existing.siteId !== context.siteId ||
+      existing.requestFingerprint !== fingerprint
+    ) {
       throw new PosError(
         409,
         "IDEMPOTENCY_KEY_CONFLICT",
-        "That idempotency key belongs to another pharmacy site.",
+        "That idempotency key was already used for a different checkout request.",
+        {
+          existingTransactionId: existing.id,
+          existingSiteId: existing.siteId,
+        },
       );
     }
     return { transaction: existing, replayed: true };
@@ -1219,7 +1286,20 @@ export async function checkoutFills(
           },
         },
       });
-      if (replay) return replay;
+      if (replay) {
+        if (
+          replay.siteId !== context.siteId ||
+          replay.requestFingerprint !== fingerprint
+        ) {
+          throw new PosError(
+            409,
+            "IDEMPOTENCY_KEY_CONFLICT",
+            "That idempotency key was already used for a different checkout request.",
+            { existingTransactionId: replay.id },
+          );
+        }
+        return replay;
+      }
 
       const quote = await quoteFillsInTransaction(
         tx,
@@ -1254,6 +1334,7 @@ export async function checkoutFills(
           totalTendered: payment.totalTendered,
           changeDue: payment.changeDue,
           idempotencyKey: key,
+          requestFingerprint: fingerprint,
           pickupFulfillmentMode: quote.pickupFulfillmentMode,
           pickupRecipientName: pickup.recipientName,
           pickupRelationship: pickup.relationship,
@@ -1317,6 +1398,12 @@ export async function checkoutFills(
           );
         }
 
+        await assertFillPhysicalSourcesDispensable(tx, {
+          fillId: current.id,
+          siteId: context.siteId,
+          at: soldAt,
+        });
+
         if (quote.pickupFulfillmentMode === "WILL_CALL") {
           if (
             !current.willCallPackage ||
@@ -1342,15 +1429,32 @@ export async function checkoutFills(
           );
         }
 
-        await tx.prescriptionFill.update({
-          where: { id: current.id },
+        const sold = await tx.prescriptionFill.updateMany({
+          where: {
+            id: current.id,
+            status: "READY",
+            version: line.fillVersion,
+          },
           data: {
             status: "SOLD",
             soldAt,
             physicalDispensedQuantity:
               current.quantity ?? new Prisma.Decimal(0),
+            version: { increment: 1 },
           },
         });
+        if (sold.count !== 1) {
+          throw new PosError(
+            409,
+            "FILL_STATE_CHANGED",
+            "The fill or its adjudication changed while checkout was being completed. Refresh and quote the prescription again.",
+            {
+              fillId: current.id,
+              quotedVersion: line.fillVersion,
+              observedVersion: current.version,
+            },
+          );
+        }
 
         if (quote.pickupFulfillmentMode === "WILL_CALL" && current.willCallPackage) {
           await tx.willCallPackage.update({
@@ -1483,7 +1587,11 @@ export async function checkoutFills(
           },
         },
       });
-      if (replay && replay.siteId === context.siteId) {
+      if (
+        replay &&
+        replay.siteId === context.siteId &&
+        replay.requestFingerprint === fingerprint
+      ) {
         return { transaction: replay, replayed: true };
       }
       throw new PosError(

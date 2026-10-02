@@ -17,6 +17,7 @@ process.env.DOCUMENT_STORAGE_ROOT = resolve(
 const app = buildApp();
 const technicianHeaders = { "x-dev-user": "dev-technician" };
 const internHeaders = { "x-dev-user": "dev-intern" };
+const pharmacistHeaders = { "x-dev-user": "dev-pharmacist" };
 const cashierExternalAuthId = "stage3l-cashier-" + randomUUID();
 const cashierHeaders = { "x-dev-user": cashierExternalAuthId };
 const siteId = "site-demo-001";
@@ -250,6 +251,182 @@ describe("Stage 3L local document vault and prescription annotation workflow", (
     });
     expect(unchanged.sha256).toBe(expectedHash);
     expect(unchanged.immutable).toBe(true);
+  });
+
+  it("applies a documented visual clarification to structured Rx data and records pharmacist acknowledgement", async () => {
+    const patient = await createPatient();
+    const rx = await createRx(patient.id, "PAPER");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${rx.id}/documents/original`,
+      headers: technicianHeaders,
+      payload: {
+        sourceType: "SCAN",
+        mimeType: "image/png",
+        originalFilename: "clarification-rx.png",
+        base64Data: Buffer.from("clarification-" + randomUUID()).toString("base64"),
+      },
+    });
+    expect(upload.statusCode).toBe(201);
+    const documentId = upload.json().document.id as string;
+
+    const annotation = await app.inject({
+      method: "POST",
+      url: `/api/documents/${documentId}/annotations`,
+      headers: technicianHeaders,
+      payload: {
+        text: "PER MD: 1 TAB PO BID",
+        x: 0.1,
+        y: 0.2,
+        width: 0.5,
+        height: 0.12,
+        change: {
+          changeType: "SIG",
+          whatChanged:
+            '"Take one tablet once daily" -> "Take one tablet twice daily"',
+          reason: "Prescriber clarified directions",
+          communicationMethod: "PHONE",
+          contactedParty: "Prescriber office",
+          authorizingPrescriber: "Demo Prescriber",
+          structuredValue: "Take one tablet twice daily",
+        },
+      },
+    });
+    expect(annotation.statusCode).toBe(201);
+    const changeRecordId =
+      annotation.json().annotation.changeRecord.id as string;
+
+    const applied = await app.inject({
+      method: "POST",
+      url: `/api/prescription-changes/${changeRecordId}/apply`,
+      headers: technicianHeaders,
+      payload: { structuredValue: "Take one tablet twice daily" },
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json().prescription.sig).toBe(
+      "Take one tablet twice daily",
+    );
+
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${rx.id}/status`,
+          headers: technicianHeaders,
+          payload: { status: "DUR_REVIEW" },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const fill = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${rx.id}/fills`,
+      headers: technicianHeaders,
+      payload: { quantity: 30, daysSupply: 15 },
+    });
+    expect(fill.statusCode).toBe(201);
+
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${rx.id}/status`,
+          headers: technicianHeaders,
+          payload: { status: "PHARMACIST_REVIEW" },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const ready = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${rx.id}/status`,
+      headers: pharmacistHeaders,
+      payload: { status: "READY" },
+    });
+    expect(ready.statusCode).toBe(200);
+
+    const savedChange = await db.prescriptionChangeRecord.findUniqueOrThrow({
+      where: { id: changeRecordId },
+    });
+    expect(savedChange.appliedAt).not.toBeNull();
+    expect(savedChange.appliedField).toBe("sig");
+    expect(savedChange.reviewedAt).not.toBeNull();
+    expect(savedChange.reviewedById).not.toBeNull();
+  });
+
+  it("blocks final verification while a documented structured change is unapplied", async () => {
+    const patient = await createPatient();
+    const rx = await createRx(patient.id, "PAPER");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${rx.id}/documents/original`,
+      headers: technicianHeaders,
+      payload: {
+        sourceType: "SCAN",
+        mimeType: "image/png",
+        originalFilename: "unapplied-change-rx.png",
+        base64Data: Buffer.from("unapplied-" + randomUUID()).toString("base64"),
+      },
+    });
+    const documentId = upload.json().document.id as string;
+
+    const annotation = await app.inject({
+      method: "POST",
+      url: `/api/documents/${documentId}/annotations`,
+      headers: technicianHeaders,
+      payload: {
+        text: "PER MD: BID",
+        x: 0.1,
+        y: 0.2,
+        width: 0.4,
+        height: 0.1,
+        change: {
+          changeType: "SIG",
+          whatChanged: "Directions clarified to twice daily",
+          reason: "Prescriber clarification",
+          communicationMethod: "PHONE",
+          structuredValue: "Take one tablet twice daily",
+        },
+      },
+    });
+    expect(annotation.statusCode).toBe(201);
+
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${rx.id}/status`,
+          headers: technicianHeaders,
+          payload: { status: "DUR_REVIEW" },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const fill = await app.inject({
+      method: "POST",
+      url: `/api/prescriptions/${rx.id}/fills`,
+      headers: technicianHeaders,
+      payload: { quantity: 30, daysSupply: 30 },
+    });
+    expect(fill.statusCode).toBe(201);
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${rx.id}/status`,
+          headers: technicianHeaders,
+          payload: { status: "PHARMACIST_REVIEW" },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const blocked = await app.inject({
+      method: "PATCH",
+      url: `/api/prescriptions/${rx.id}/status`,
+      headers: pharmacistHeaders,
+      payload: { status: "READY" },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().code).toBe("UNAPPLIED_PRESCRIPTION_CHANGE");
   });
 
   it("renders electronic prescription data into an immutable human-readable visual", async () => {

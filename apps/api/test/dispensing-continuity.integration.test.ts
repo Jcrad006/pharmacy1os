@@ -101,6 +101,20 @@ async function moveToSoldWithoutCatalog(
   return sold.json().prescription;
 }
 
+function gs1WithCheckDigit(body: string) {
+  if (!/^\d{13}$/.test(body)) {
+    throw new Error("GTIN-14 body must contain exactly 13 digits.");
+  }
+  const digits = body.split("").map(Number);
+  let sum = 0;
+  let multiplyByThree = true;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    sum += digits[index]! * (multiplyByThree ? 3 : 1);
+    multiplyByThree = !multiplyByThree;
+  }
+  return body + String((10 - (sum % 10)) % 10);
+}
+
 describe("Phase 3I dispensing continuity", () => {
   it("creates a technician-entered partial fill and prompts a linked completion without consuming another refill", async () => {
     const rawBarcode =
@@ -257,7 +271,7 @@ describe("Phase 3I dispensing continuity", () => {
 
   it("interrupts a scanned 90-unit fill to 3 physical units while preserving the 90-unit payer intent", async () => {
     const suffix = numericSuffix();
-    const gtin = "0066666" + suffix + "0";
+    const gtin = gs1WithCheckDigit(`0066666${suffix}`);
     const lotNumber = "PARTIAL-" + suffix;
     const rawBarcode =
       "(01)" + gtin + "(17)270630(10)" + lotNumber;
@@ -492,7 +506,7 @@ describe("Phase 3I dispensing continuity", () => {
 
   it("restricts emergency supply authorization to pharmacists and keeps it outside refill accounting", async () => {
     const suffix = numericSuffix();
-    const gtin = `0077777${suffix}0`;
+    const gtin = gs1WithCheckDigit(`0077777${suffix}`);
     const lotNumber = `EMERG-${suffix}`;
     const rawBarcode = `(01)${gtin}(17)270630(10)${lotNumber}`;
 
