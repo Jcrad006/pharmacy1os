@@ -342,6 +342,43 @@
 - [ ] Replication to a separately secured off-server/off-site backup target
 - [ ] Formal disaster-recovery restore drill and recovery-time/recovery-point validation
 
+## Phase 3L.2 — System safety hardening
+**Feature-expansion gate:** scanner/fax/live claims/eRx integrations remain frozen until the implemented safety gates are green and the intentionally deferred production controls are explicitly accepted as blockers.
+
+- [x] READY-fill recall detection and final POS recall/expiration revalidation
+- [x] Return-to-stock rechecks recall/expiration and quarantines unsafe returned product
+- [x] Physical fill allocations bind to exact inventory stock positions and commit/return against those locations
+- [x] Inventory demand readiness no longer double-counts the same available stock across patient demands
+- [x] POS, direct receiving, site-transfer, and PO-receipt idempotency keys are bound to canonical request fingerprints
+- [x] Stable deterministic claim submission/reversal operation keys
+- [x] Durable external claim-operation lease/state model for concurrency and ambiguous outcomes
+- [x] Claim reversal reconstructs from immutable claim snapshots rather than requiring mutable coverage rows
+- [x] Coverage mutation protection includes active paid READY fills
+- [x] Prescription workflow transition row locking and version counters
+- [x] Documented prescription changes can be atomically applied to structured Rx fields
+- [x] Final verification blocks unapplied structured prescription changes and records pharmacist acknowledgement
+- [x] Controlled-substance schedule is modeled and ordinary/emergency controlled dispensing fails closed pending the dedicated workflow
+- [x] Medication cold-chain flag and temperature-qualified Will Call staging gate
+- [x] GS1 serial-number capture and GTIN/UPC/EAN check-digit validation
+- [x] DSCSA serialized-package / transaction-trace schema scaffold
+- [x] HMAC-authenticated backup manifests when configured
+- [x] Strict manifest path containment and non-silent migration snapshot failures
+- [x] Persistent restore-recovery lock after failed post-restore integrity verification
+- [x] Production startup rejects synthetic development identity, unencrypted document storage, unsigned backups, and non-HTTPS web origin
+- [x] Health endpoint checks PostgreSQL and persistent restore-recovery state
+- [x] Security response headers and no-store API responses
+- [x] CI no longer allows an empty frontend test suite and includes a critical dependency-vulnerability audit
+- [ ] Production authentication/session/MFA/workstation-lock implementation (production runtime remains intentionally fail-closed until this exists)
+- [ ] Database/backup-set encryption and managed encryption/signing-key rotation
+- [ ] Off-server immutable backup replication, automated retention, and full PostgreSQL destruction/restore drill
+- [ ] Live clearinghouse durable transport reconciliation for ambiguous network outcomes
+- [ ] Full controlled-substance jurisdiction engine, CSRS/PDMP integration, DEA-compliant EPCS application controls, and required external audit/certification
+- [ ] DSCSA interoperable EPCIS/trading-partner verification, suspect/illegitimate-product workflows, and production validation
+- [ ] Comprehensive DUR/clinical data model and external drug-knowledge integration
+- [ ] Post-sale POS refund/void/card-terminal integration
+- [ ] Real-time workstation conflict notifications and broader optimistic-concurrency coverage
+- [ ] Deterministic committed pnpm lockfile, browser E2E, fuzz/property tests, and broader SAST/SBOM gates
+
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
 - [x] Barcode scanning
