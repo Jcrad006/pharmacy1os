@@ -229,6 +229,17 @@ enum ControlledSubstanceSchedule {
   V
 }
 
+enum SerializedPackageStatus {
+  RECEIVED
+  AVAILABLE
+  QUARANTINED
+  DISPENSED
+  TRANSFERRED
+  RETURNED
+  SUSPECT
+  ILLEGITIMATE
+}
+
 enum PrescriptionLabelStatus {
   ACTIVE
   VOID
@@ -406,6 +417,8 @@ model PharmacySite {
   biologicCommunicationTasks BiologicCommunicationTask[]
   claimTransactions     ClaimTransaction[]
   externalClaimOperations ExternalClaimOperation[]
+  supplyChainTraceRecords SupplyChainTraceRecord[]
+  serializedPackages SerializedPackage[]
   prescriptionLabels    PrescriptionLabel[]
   labelPrintJobs        LabelPrintJob[]
   posTransactions       PointOfSaleTransaction[]
@@ -467,6 +480,7 @@ model User {
   prescriptionAnnotations PrescriptionAnnotation[] @relation("PrescriptionAnnotationCreatedBy")
   prescriptionChangeRecords PrescriptionChangeRecord[] @relation("PrescriptionChangeRecordChangedBy")
   reviewedPrescriptionChangeRecords PrescriptionChangeRecord[] @relation("PrescriptionChangeRecordReviewedBy")
+  importedSupplyChainTraceRecords SupplyChainTraceRecord[] @relation("SupplyChainTraceImportedBy")
 
   @@index([siteId, role])
 }
@@ -638,6 +652,7 @@ model Product {
   inventoryDemands      InventoryDemand[]
   receivingDiscrepanciesExpected ReceivingDiscrepancy[] @relation("ReceivingDiscrepancyExpectedProduct")
   receivingDiscrepanciesObserved ReceivingDiscrepancy[] @relation("ReceivingDiscrepancyObservedProduct")
+  serializedPackages     SerializedPackage[]
 
   @@index([medicationId, active])
   @@index([manufacturerId, active])
@@ -1121,6 +1136,49 @@ model ExternalClaimOperation {
 
   @@index([siteId, status, updatedAt])
   @@index([fillId, coveragePosition, operation, updatedAt])
+}
+
+model SupplyChainTraceRecord {
+  id                       String       @id @default(uuid())
+  siteId                   String
+  site                     PharmacySite @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  tradingPartnerName       String
+  tradingPartnerIdentifier String?
+  transactionDate          DateTime
+  sourceFormat             String
+  transactionInformation   Json
+  rawPayloadSha256         String?
+  retainedUntil            DateTime
+  importedById             String?
+  importedBy               User?        @relation("SupplyChainTraceImportedBy", fields: [importedById], references: [id], onDelete: Restrict)
+  createdAt                DateTime      @default(now())
+  packages                 SerializedPackage[]
+
+  @@index([siteId, transactionDate])
+  @@index([tradingPartnerIdentifier, transactionDate])
+  @@index([retainedUntil])
+}
+
+model SerializedPackage {
+  id                  String                  @id @default(uuid())
+  siteId              String
+  site                PharmacySite            @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  productId           String
+  product             Product                 @relation(fields: [productId], references: [id], onDelete: Restrict)
+  gtin                String
+  serialNumber        String
+  lotNumber           String?
+  expirationDate      DateTime?
+  status              SerializedPackageStatus @default(RECEIVED)
+  sourceTraceRecordId String?
+  sourceTraceRecord   SupplyChainTraceRecord?  @relation(fields: [sourceTraceRecordId], references: [id], onDelete: Restrict)
+  receivedAt          DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  @@unique([gtin, serialNumber])
+  @@index([siteId, status, receivedAt])
+  @@index([productId, lotNumber, status])
+  @@index([sourceTraceRecordId])
 }
 
 model PrescriptionLabel {
