@@ -1,4 +1,7 @@
-import type { ProductUnit } from "@prisma/client";
+import type {
+  ControlledSubstanceSchedule,
+  ProductUnit,
+} from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
@@ -21,7 +24,17 @@ type UpdateMedicationComplianceBody = {
   ncNarrowTherapeuticIndex?: boolean;
   isBiological?: boolean;
   hasFdaInterchangeableBiologicAlternative?: boolean;
+  controlledSubstanceSchedule?: ControlledSubstanceSchedule;
+  requiresColdChain?: boolean;
 };
+
+const controlledSubstanceSchedules = new Set<ControlledSubstanceSchedule>([
+  "NONE",
+  "II",
+  "III",
+  "IV",
+  "V",
+]);
 
 type UpdateProductComplianceBody = {
   therapeuticEquivalenceCode?: string | null;
@@ -247,6 +260,14 @@ export async function catalogRoutes(app: FastifyInstance) {
       if (!existing) {
         return reply.code(404).send({ error: "Medication not found." });
       }
+      if (
+        body.controlledSubstanceSchedule !== undefined &&
+        !controlledSubstanceSchedules.has(body.controlledSubstanceSchedule)
+      ) {
+        return reply.code(400).send({
+          error: "Invalid controlled-substance schedule.",
+        });
+      }
 
       const medication = await db.$transaction(async (tx) => {
         const updated = await tx.medication.update({
@@ -256,6 +277,9 @@ export async function catalogRoutes(app: FastifyInstance) {
             isBiological: body.isBiological,
             hasFdaInterchangeableBiologicAlternative:
               body.hasFdaInterchangeableBiologicAlternative,
+            controlledSubstanceSchedule:
+              body.controlledSubstanceSchedule,
+            requiresColdChain: body.requiresColdChain,
           },
         });
         await writeAuditEvent(tx, {
@@ -271,12 +295,18 @@ export async function catalogRoutes(app: FastifyInstance) {
               isBiological: existing.isBiological,
               hasFdaInterchangeableBiologicAlternative:
                 existing.hasFdaInterchangeableBiologicAlternative,
+              controlledSubstanceSchedule:
+                existing.controlledSubstanceSchedule,
+              requiresColdChain: existing.requiresColdChain,
             },
             after: {
               ncNarrowTherapeuticIndex: updated.ncNarrowTherapeuticIndex,
               isBiological: updated.isBiological,
               hasFdaInterchangeableBiologicAlternative:
                 updated.hasFdaInterchangeableBiologicAlternative,
+              controlledSubstanceSchedule:
+                updated.controlledSubstanceSchedule,
+              requiresColdChain: updated.requiresColdChain,
             },
           },
         });
