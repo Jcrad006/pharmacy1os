@@ -1116,6 +1116,29 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             issues: openHighIssues,
           });
         }
+
+        const unappliedChanges = await db.prescriptionChangeRecord.findMany({
+          where: {
+            prescriptionId: id,
+            status: "ACTIVE",
+            requiresStructuredApply: true,
+            appliedAt: null,
+          },
+          select: {
+            id: true,
+            changeType: true,
+            whatChanged: true,
+          },
+          orderBy: { changedAt: "asc" },
+        });
+        if (unappliedChanges.length > 0) {
+          return reply.code(409).send({
+            error:
+              "Apply all documented prescription changes to structured prescription data before final pharmacist verification.",
+            code: "UNAPPLIED_PRESCRIPTION_CHANGE",
+            changes: unappliedChanges,
+          });
+        }
       }
 
       if (
@@ -1192,8 +1215,36 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const updated = await db.$transaction(async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "Prescription" WHERE "id" = ${id} FOR UPDATE`,
+        );
+        const lockedPrescription = await tx.prescription.findUnique({
+          where: { id },
+          select: {
+            status: true,
+            heldFromStatus: true,
+            version: true,
+          },
+        });
+        if (
+          !lockedPrescription ||
+          lockedPrescription.status !== current.status ||
+          lockedPrescription.heldFromStatus !== current.heldFromStatus
+        ) {
+          throw new InventoryError(
+            409,
+            "PRESCRIPTION_STATE_CHANGED",
+            "The prescription changed on another workstation. Refresh before continuing.",
+            {
+              expectedStatus: current.status,
+              currentStatus: lockedPrescription?.status ?? null,
+            },
+          );
+        }
+
         const prescriptionData: Prisma.PrescriptionUpdateInput = {
           status: body.status,
+          version: { increment: 1 },
         };
 
         if (body.status === "ON_HOLD") {
@@ -1224,6 +1275,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
             data: {
               status: "READY",
               filledAt: new Date(),
+              version: { increment: 1 },
             },
           });
         }
@@ -1243,6 +1295,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
               status: "SOLD",
               soldAt,
               physicalDispensedQuantity: physicalQuantity,
+              version: { increment: 1 },
             },
           });
 
@@ -1306,7 +1359,10 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
           await tx.prescriptionFill.update({
             where: { id: currentActiveFill.id },
-            data: { status: "CANCELLED" },
+            data: {
+              status: "CANCELLED",
+              version: { increment: 1 },
+            },
           });
 
           await cancelDemandForFill(tx, currentActiveFill.id);
@@ -1330,6 +1386,25 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           for (const completion of linkedCompletions) {
             await cancelDemandForFill(tx, completion.id);
           }
+        }
+
+        if (
+          current.status === "PHARMACIST_REVIEW" &&
+          body.status === "READY"
+        ) {
+          await tx.prescriptionChangeRecord.updateMany({
+            where: {
+              prescriptionId: id,
+              status: "ACTIVE",
+              requiresStructuredApply: true,
+              appliedAt: { not: null },
+              reviewedAt: null,
+            },
+            data: {
+              reviewedById: actor.id,
+              reviewedAt: new Date(),
+            },
+          });
         }
 
         const rx = await tx.prescription.update({
@@ -1389,6 +1464,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
 
       if (!prescription) {
         return reply.code(404).send({ error: "Prescription not found." });
+      }
+
+      if (
+        prescription.medication?.controlledSubstanceSchedule &&
+        prescription.medication.controlledSubstanceSchedule !== "NONE"
+      ) {
+        return reply.code(409).send({
+          error:
+            "Controlled-substance dispensing is intentionally blocked until the dedicated controlled-substance/EPCS workflow is implemented and validated.",
+          code: "CONTROLLED_SUBSTANCE_WORKFLOW_NOT_READY",
+          schedule: prescription.medication.controlledSubstanceSchedule,
+        });
       }
 
       if (prescription.status !== "DUR_REVIEW") {
@@ -2019,6 +2106,18 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           error:
             "Emergency supply requires a catalog-linked medication selection.",
           code: "DRUG_SELECTION_REQUIRED",
+        });
+      }
+
+      if (
+        prescription.medication?.controlledSubstanceSchedule &&
+        prescription.medication.controlledSubstanceSchedule !== "NONE"
+      ) {
+        return reply.code(409).send({
+          error:
+            "Emergency-supply dispensing for controlled substances is not enabled in Pharmacy1OS.",
+          code: "CONTROLLED_SUBSTANCE_WORKFLOW_NOT_READY",
+          schedule: prescription.medication.controlledSubstanceSchedule,
         });
       }
 
