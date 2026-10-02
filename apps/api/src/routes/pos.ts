@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { resolveDevelopmentActor, AccessError } from "../security/devIdentity.js";
+import { InventoryError } from "../inventoryError.js";
 import {
   checkoutFills,
   PosError,
@@ -42,10 +43,14 @@ type RelocateBody = {
 };
 
 function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof AccessError || error instanceof PosError) {
+  if (
+    error instanceof AccessError ||
+    error instanceof PosError ||
+    error instanceof InventoryError
+  ) {
     return reply.code(error.statusCode).send({
       error: error.message,
-      ...(error instanceof PosError
+      ...(error instanceof PosError || error instanceof InventoryError
         ? { code: error.code, details: error.details }
         : {}),
     });
