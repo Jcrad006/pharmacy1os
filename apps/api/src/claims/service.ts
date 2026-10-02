@@ -1184,49 +1184,136 @@ export async function reverseClaimTransaction(
     return { transaction: priorReversal, replayed: true };
   }
 
-  const fill = await loadFillForClaims(original.fillId, context.siteId);
-  const coverage = fill.prescription.patient.coverages.find(
-    (item) => item.id === original.coverageIdSnapshot,
-  );
-  if (!coverage) {
+  const payer = await db.payer.findFirst({
+    where: { id: original.payerId, siteId: context.siteId },
+    include: { billingProfile: true },
+  });
+  if (!payer) {
     throw new ClaimError(
       409,
-      "COVERAGE_SNAPSHOT_UNAVAILABLE",
-      "The original coverage is no longer available for reversal.",
+      "PAYER_SNAPSHOT_UNAVAILABLE",
+      "The payer referenced by the original claim is no longer available for reversal.",
     );
   }
 
-  const adapter = getClaimAdapter(original.claimStandard);
-  const nextIdempotencyKey = `reverse-${original.id}-${randomUUID()}`;
+  const reversalFingerprint = requestFingerprint(
+    "third-party-claim-reversal",
+    {
+      originalTransactionId: original.id,
+      originalTransactionReference: original.transactionReference,
+      originalRequestSnapshot: original.requestSnapshot,
+    },
+  );
+  const nextIdempotencyKey = stableOperationKey(
+    "reverse",
+    reversalFingerprint,
+  );
   const request = claimRequestFromSnapshot(
     original.requestSnapshot,
     nextIdempotencyKey,
   );
-  const response = await adapter.reverse(
-    {
-      ...request,
-      originalTransactionReference: original.transactionReference,
-    },
-    {
-      standard: original.claimStandard,
-      billingNdcStrategy: billingStrategyFromSnapshot(
-        original.billingProfileSnapshot,
-        effectiveBillingProfile(coverage.payer).billingNdcStrategy,
-      ),
-    },
-  );
 
-  const transaction = await persistClaimTransaction({
-    fill,
-    coverage,
-    context,
+  const lease = await acquireExternalClaimOperation({
+    siteId: context.siteId,
+    fillId: original.fillId,
+    coveragePosition: original.coveragePosition,
     operation: "REVERSAL",
     originalTransactionId: original.id,
+    operationKey: nextIdempotencyKey,
+    fingerprint: reversalFingerprint,
     request,
-    response,
-    adapterName: adapter.name,
-    adapterVersion: adapter.version,
   });
+  if (lease.replayTransaction) {
+    return { transaction: lease.replayTransaction, replayed: true };
+  }
+
+  const adapter = getClaimAdapter(original.claimStandard);
+  let response: PersistableResponse;
+  let transaction;
+  try {
+    response = await adapter.reverse(
+      {
+        ...request,
+        originalTransactionReference: original.transactionReference,
+      },
+      {
+        standard: original.claimStandard,
+        billingNdcStrategy: billingStrategyFromSnapshot(
+          original.billingProfileSnapshot,
+          effectiveBillingProfile(payer).billingNdcStrategy,
+        ),
+      },
+    );
+
+    transaction = await db.$transaction(async (tx) => {
+      const adjudicatedAt = new Date();
+      const created = await tx.claimTransaction.create({
+        data: {
+          siteId: context.siteId,
+          fillId: original.fillId,
+          payerId: original.payerId,
+          coverageIdSnapshot: original.coverageIdSnapshot,
+          coveragePosition: original.coveragePosition,
+          operation: "REVERSAL",
+          outcome: response.status,
+          idempotencyKey: request.claimIdempotencyKey,
+          originalTransactionId: original.id,
+          claimStandard: original.claimStandard,
+          adapterName: adapter.name,
+          adapterVersion: adapter.version,
+          billedProductId: original.billedProductId,
+          billedNdc: original.billedNdc,
+          memberIdSnapshot: original.memberIdSnapshot,
+          personCodeSnapshot: original.personCodeSnapshot,
+          groupIdSnapshot: original.groupIdSnapshot,
+          payerIntendedQuantity: original.payerIntendedQuantity,
+          physicalPartQuantity: original.physicalPartQuantity,
+          daysSupply: original.daysSupply,
+          billingProfileVersion: original.billingProfileVersion,
+          billingProfileSnapshot: original.billingProfileSnapshot ?? undefined,
+          requestSnapshot: jsonSnapshot(request),
+          responseSnapshot: jsonSnapshot(response),
+          transactionReference: response.transactionReference ?? null,
+          authorizationNumber: response.authorizationNumber ?? null,
+          amountPaid: decimal(response.amountPaid),
+          patientResponsibility: decimal(response.patientResponsibility),
+          rejectCodes: jsonSnapshot(response.rejectCodes),
+          messages: jsonSnapshot(response.messages),
+          createdById: context.actorId,
+          adjudicatedAt,
+        },
+      });
+
+      await writeAuditEvent(tx, {
+        siteId: context.siteId,
+        actorId: context.actorId,
+        action: "THIRD_PARTY_CLAIM_REVERSED",
+        entityType: "ClaimTransaction",
+        entityId: created.id,
+        requestId: context.requestId,
+        metadata: {
+          fillId: original.fillId,
+          payerId: original.payerId,
+          coveragePosition: original.coveragePosition,
+          originalTransactionId: original.id,
+          outcome: response.status,
+          transactionReference: response.transactionReference ?? null,
+          stableOperationKey: request.claimIdempotencyKey,
+        },
+      });
+      return created;
+    });
+    await markExternalClaimOperationSucceeded(
+      nextIdempotencyKey,
+      response,
+    );
+  } catch (error) {
+    await markExternalClaimOperationAmbiguous(
+      nextIdempotencyKey,
+      error,
+    );
+    throw error;
+  }
 
   if (response.status === "REVERSED") {
     await db.$transaction(async (tx) => {
@@ -1430,7 +1517,7 @@ export async function assertNoActivePaidClaimsForPatientCoverageMutation(
     throw new ClaimError(
       409,
       "PAID_CLAIM_REVERSAL_REQUIRED",
-      "Reverse the active paid claim before changing this patient's coverage while the fill is still in progress.",
+      "Reverse the active paid claim before changing this patient's coverage while an adjudicated fill is still in progress or Ready.",
       {
         claimTransactionId: activePaid.id,
         fillId: activePaid.fillId,
