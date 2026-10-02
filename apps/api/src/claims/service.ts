@@ -722,6 +722,11 @@ async function persistClaimTransaction(input: {
       },
     });
 
+    await tx.prescriptionFill.update({
+      where: { id: input.fill.id },
+      data: { version: { increment: 1 } },
+    });
+
     return transaction;
   });
 }
@@ -1300,6 +1305,10 @@ export async function reverseClaimTransaction(
           transactionReference: response.transactionReference ?? null,
           stableOperationKey: request.claimIdempotencyKey,
         },
+      });
+      await tx.prescriptionFill.update({
+        where: { id: original.fillId },
+        data: { version: { increment: 1 } },
       });
       return created;
     });
