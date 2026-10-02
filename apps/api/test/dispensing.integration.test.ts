@@ -343,6 +343,45 @@ describe("database-backed dispensing workflow", () => {
     expect(reprocessed.json().prescription.status).toBe("PRODUCT_FILL");
   });
 
+  it("allows only one concurrent transition from the same prescription state", async () => {
+    const created = await createSyntheticPrescription({ refillsAllowed: 1 });
+
+    const transition = () =>
+      app.inject({
+        method: "PATCH",
+        url: `/api/prescriptions/${created.prescriptionId}/status`,
+        headers: technicianHeaders,
+        payload: { status: "DUR_REVIEW" },
+      });
+
+    const responses = await Promise.all([transition(), transition()]);
+    const statusCodes = responses.map((response) => response.statusCode).sort();
+    expect(statusCodes).toEqual([200, 409]);
+
+    const finalPrescription = await db.prescription.findUniqueOrThrow({
+      where: { id: created.prescriptionId },
+    });
+    expect(finalPrescription.status).toBe("DUR_REVIEW");
+    expect(finalPrescription.version).toBe(1);
+
+    const auditEvents = await db.auditEvent.findMany({
+      where: {
+        entityType: "Prescription",
+        entityId: created.prescriptionId,
+        action: "PRESCRIPTION_STATUS_CHANGED",
+      },
+    });
+    expect(
+      auditEvents.filter(
+        (event) =>
+          (event.metadata as { from?: string; to?: string } | null)?.from ===
+            "DATA_ENTRY" &&
+          (event.metadata as { from?: string; to?: string } | null)?.to ===
+            "DUR_REVIEW",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("returns an audit history containing the dispensing events", async () => {
     const response = await app.inject({
       method: "GET",
