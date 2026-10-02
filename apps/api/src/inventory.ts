@@ -16,6 +16,7 @@ import {
   calculateNcPatientDiscardDate,
   ensureBiologicCommunicationTask,
 } from "./productFillCompliance.js";
+import { requestFingerprint } from "./idempotency.js";
 
 function decimal(value: Prisma.Decimal | number | string) {
   return value instanceof Prisma.Decimal ? value : new Prisma.Decimal(value);
@@ -105,6 +106,75 @@ async function ensureBalanceNotRecalled(
   }
 }
 
+export async function assertFillPhysicalSourcesDispensable(
+  tx: Prisma.TransactionClient,
+  input: { fillId: string; siteId: string; at?: Date },
+) {
+  const fill = await tx.prescriptionFill.findFirst({
+    where: { id: input.fillId, prescription: { siteId: input.siteId } },
+    include: {
+      productSources: {
+        include: {
+          productLot: true,
+          productExpiration: true,
+        },
+      },
+    },
+  });
+  if (!fill) {
+    throw new InventoryError(404, "FILL_NOT_FOUND", "Fill not found.");
+  }
+
+  const at = input.at ?? new Date();
+  for (const source of fill.productSources) {
+    const recall = await tx.recallCase.findFirst({
+      where: {
+        siteId: input.siteId,
+        productId: source.productId,
+        status: "ACTIVE",
+        OR: [
+          { lotNumberSearch: null },
+          { lotNumberSearch: source.productLot.lotNumberSearch },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (recall) {
+      throw new InventoryError(
+        409,
+        "READY_FILL_RECALLED",
+        "This fill contains a recalled NDC/lot and cannot be sold or handed to the patient.",
+        {
+          fillId: fill.id,
+          sourceId: source.id,
+          recallCaseId: recall.id,
+          reference: recall.reference,
+          ndc: source.ndcSnapshot,
+          lotNumber: source.lotNumberSnapshot,
+        },
+      );
+    }
+
+    const expirationEnd = new Date(source.expirationSnapshot);
+    expirationEnd.setUTCHours(23, 59, 59, 999);
+    if (expirationEnd.getTime() < at.getTime()) {
+      throw new InventoryError(
+        409,
+        "READY_FILL_EXPIRED",
+        "This fill contains product that has expired since verification and cannot be sold or handed to the patient.",
+        {
+          fillId: fill.id,
+          sourceId: source.id,
+          ndc: source.ndcSnapshot,
+          lotNumber: source.lotNumberSnapshot,
+          expirationDate: source.expirationSnapshot.toISOString(),
+        },
+      );
+    }
+  }
+  return fill;
+}
+
 export async function receiveInventory(
   tx: Prisma.TransactionClient,
   input: {
@@ -123,6 +193,23 @@ export async function receiveInventory(
   },
 ) {
   const quantity = positiveQuantity(input.quantity);
+  const idempotencyFingerprint = input.idempotencyKey
+    ? requestFingerprint("inventory-receive", {
+        siteId: input.siteId,
+        productId: input.productId,
+        productLotId: input.productLotId,
+        productExpirationId: input.productExpirationId,
+        quantity: quantity.toString(),
+        source: input.source?.trim() || null,
+        reference: input.reference?.trim() || null,
+        reason: input.reason?.trim() || null,
+        locationId: input.locationId ?? null,
+        unitCost:
+          input.unitCost === null || input.unitCost === undefined
+            ? null
+            : decimal(input.unitCost).toString(),
+      })
+    : null;
 
   if (input.idempotencyKey) {
     const existing = await tx.inventoryTransaction.findUnique({
@@ -130,12 +217,21 @@ export async function receiveInventory(
       include: { inventoryBalance: true },
     });
     if (existing) {
-      if (existing.type !== "RECEIVE") {
+      if (
+        existing.type !== "RECEIVE" ||
+        existing.siteId !== input.siteId ||
+        !existing.idempotencyFingerprint ||
+        existing.idempotencyFingerprint !== idempotencyFingerprint
+      ) {
         throw new InventoryError(
           409,
           "IDEMPOTENCY_KEY_CONFLICT",
-          "This idempotency key was already used for a different inventory operation.",
-          { transactionId: existing.id, type: existing.type },
+          "This idempotency key was already used for a different inventory request.",
+          {
+            transactionId: existing.id,
+            type: existing.type,
+            existingSiteId: existing.siteId,
+          },
         );
       }
       return {
@@ -205,6 +301,7 @@ export async function receiveInventory(
       source: input.source?.trim() || null,
       reference: input.reference?.trim() || null,
       idempotencyKey: input.idempotencyKey?.trim() || null,
+      idempotencyFingerprint,
       unitCost,
       extendedCost: unitCost ? unitCost.mul(quantity) : null,
     },
@@ -484,17 +581,93 @@ export async function reserveInventorySourceForFill(
     },
   });
 
-  await tx.inventoryAllocation.create({
-    data: {
-      siteId: input.siteId,
-      fillId: fill.id,
+  const positions = await tx.inventoryStockPosition.findMany({
+    where: {
       inventoryBalanceId: locked.id,
-      fillProductSourceId: source.id,
-      actorId: input.actorId,
-      quantity,
+      state: "AVAILABLE",
+      quantity: { gt: 0 },
+    },
+    include: { location: true },
+  });
+  const activePositionAllocations = await tx.inventoryAllocation.findMany({
+    where: {
+      inventoryBalanceId: locked.id,
       status: "ACTIVE",
+      inventoryStockPositionId: { not: null },
+    },
+    select: {
+      inventoryStockPositionId: true,
+      quantity: true,
     },
   });
+  const reservedByPosition = new Map<string, Prisma.Decimal>();
+  for (const allocation of activePositionAllocations) {
+    if (!allocation.inventoryStockPositionId) continue;
+    reservedByPosition.set(
+      allocation.inventoryStockPositionId,
+      (reservedByPosition.get(allocation.inventoryStockPositionId) ??
+        new Prisma.Decimal(0)).plus(allocation.quantity),
+    );
+  }
+
+  positions.sort((a, b) => {
+    if (a.location.isDefaultDispensing !== b.location.isDefaultDispensing) {
+      return a.location.isDefaultDispensing ? -1 : 1;
+    }
+    return a.location.code.localeCompare(b.location.code);
+  });
+
+  let positionRemainder = new Prisma.Decimal(quantity);
+  const positionPlan: Array<{
+    positionId: string;
+    locationId: string;
+    quantity: Prisma.Decimal;
+  }> = [];
+  for (const position of positions) {
+    if (positionRemainder.lte(0)) break;
+    const positionAvailable = Prisma.Decimal.max(
+      position.quantity.minus(
+        reservedByPosition.get(position.id) ?? new Prisma.Decimal(0),
+      ),
+      new Prisma.Decimal(0),
+    );
+    if (positionAvailable.lte(0)) continue;
+    const take = Prisma.Decimal.min(positionAvailable, positionRemainder);
+    positionPlan.push({
+      positionId: position.id,
+      locationId: position.locationId,
+      quantity: take,
+    });
+    positionRemainder = positionRemainder.minus(take);
+  }
+
+  if (positionRemainder.gt(0)) {
+    throw new InventoryError(
+      409,
+      "STOCK_POSITION_INCONSISTENT",
+      "Available inventory exists in the balance but cannot be traced to enough physical AVAILABLE stock positions.",
+      {
+        balanceId: locked.id,
+        requestedQuantity: quantity.toString(),
+        unlocatedQuantity: positionRemainder.toString(),
+      },
+    );
+  }
+
+  for (const planned of positionPlan) {
+    await tx.inventoryAllocation.create({
+      data: {
+        siteId: input.siteId,
+        fillId: fill.id,
+        inventoryBalanceId: locked.id,
+        fillProductSourceId: source.id,
+        actorId: input.actorId,
+        inventoryStockPositionId: planned.positionId,
+        quantity: planned.quantity,
+        status: "ACTIVE",
+      },
+    });
+  }
 
   const productIds = new Set([
     ...existingSources.map((item) => item.productId),
@@ -913,6 +1086,9 @@ export async function commitInventoryForFill(
     include: {
       inventoryBalance: true,
       fillProductSource: true,
+      inventoryStockPosition: {
+        include: { location: true },
+      },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -972,6 +1148,7 @@ export async function commitInventoryForFill(
       inventoryBalanceId: balance.id,
       state: "AVAILABLE",
       delta: allocation.quantity.negated(),
+      locationId: allocation.inventoryStockPosition?.locationId ?? undefined,
     });
     await tx.inventoryTransaction.create({
       data: {
@@ -1048,9 +1225,12 @@ export async function returnInventoryForFill(
     where: { fillId: fill.id, status: "COMMITTED" },
     include: {
       inventoryBalance: {
-        include: { product: true },
+        include: { product: true, productLot: true, productExpiration: true },
       },
       fillProductSource: true,
+      inventoryStockPosition: {
+        include: { location: true },
+      },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -1060,6 +1240,28 @@ export async function returnInventoryForFill(
   const medicationIds = new Set<string>();
   for (const allocation of allocations) {
     const balance = await lockBalance(tx, allocation.inventoryBalanceId);
+    const recall = await tx.recallCase.findFirst({
+      where: {
+        siteId: input.siteId,
+        productId: allocation.inventoryBalance.productId,
+        status: "ACTIVE",
+        OR: [
+          { lotNumberSearch: null },
+          {
+            lotNumberSearch:
+              allocation.inventoryBalance.productLot.lotNumberSearch,
+          },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const expirationEnd = new Date(
+      allocation.fillProductSource?.expirationSnapshot ??
+        allocation.inventoryBalance.productExpiration.expirationDate,
+    );
+    expirationEnd.setUTCHours(23, 59, 59, 999);
+    const expired = expirationEnd.getTime() < returnedAt.getTime();
+
     await tx.inventoryBalance.update({
       where: { id: balance.id },
       data: {
@@ -1071,6 +1273,7 @@ export async function returnInventoryForFill(
       inventoryBalanceId: balance.id,
       state: "AVAILABLE",
       delta: allocation.quantity,
+      locationId: allocation.inventoryStockPosition?.locationId ?? undefined,
     });
     await tx.inventoryTransaction.create({
       data: {
@@ -1085,6 +1288,21 @@ export async function returnInventoryForFill(
         reference: allocation.fillProductSourceId,
       },
     });
+
+    if (recall || expired) {
+      await quarantineInventory(tx, {
+        balanceId: balance.id,
+        siteId: input.siteId,
+        actorId: input.actorId,
+        quantity: allocation.quantity,
+        reasonCode: recall ? "RECALL" : "EXPIRED",
+        note: recall
+          ? `Returned fill quarantined because recall ${recall.reference} is active.`
+          : "Returned fill quarantined because the product is expired.",
+        recallCaseId: recall?.id ?? null,
+      });
+    }
+
     await tx.inventoryAllocation.update({
       where: { id: allocation.id },
       data: { status: "RETURNED", resolvedAt: returnedAt },
