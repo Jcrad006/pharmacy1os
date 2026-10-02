@@ -626,6 +626,7 @@ export async function supersedePrescriptionAnnotation(
 
 
 function structuredChangeValue(value: unknown): Prisma.InputJsonValue {
+  if (value === undefined) return null;
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
@@ -887,8 +888,8 @@ export async function applyPrescriptionChangeRecord(
         prescriptionId: rx.id,
         changeType: record.changeType,
         appliedField,
-        beforeValue,
-        afterValue: effectiveAfterValue,
+        beforeValue: structuredChangeValue(beforeValue),
+        afterValue: structuredChangeValue(effectiveAfterValue),
         workflowResetTo:
           rx.status === "DUR_REVIEW" ||
           (rx.status === "ON_HOLD" && rx.heldFromStatus === "DUR_REVIEW")
