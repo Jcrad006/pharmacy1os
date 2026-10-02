@@ -101,6 +101,22 @@ describe("Phase 3H inventory architecture hardening", () => {
     });
     expect(firstReceipt.statusCode).toBe(201);
 
+    const conflictingReplay = await app.inject({
+      method: "POST",
+      url: "/api/receiving/stock",
+      headers: tech,
+      payload: {
+        rawBarcode: rawEarly,
+        quantity: 11,
+        source: "Architecture Test Supplier",
+        reference: `EARLY-CONFLICT-${suffix}`,
+        unitCost: 0.2,
+        idempotencyKey: `arch-early-${suffix}`,
+      },
+    });
+    expect(conflictingReplay.statusCode).toBe(409);
+    expect(conflictingReplay.json().code).toBe("IDEMPOTENCY_KEY_CONFLICT");
+
     const secondReceipt = await app.inject({
       method: "POST",
       url: "/api/receiving/stock",
