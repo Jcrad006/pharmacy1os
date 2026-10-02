@@ -3561,6 +3561,7 @@ export async function prescriptionRoutes(app: FastifyInstance) {
           data: {
             status: "RETURNED_TO_STOCK",
             soldAt: null,
+            version: { increment: 1 },
           },
         });
 
