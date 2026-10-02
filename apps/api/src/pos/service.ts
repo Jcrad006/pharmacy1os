@@ -588,6 +588,7 @@ type CheckoutQuoteLine = {
   medicationName: string;
   fillNumber: number;
   partNumber: number;
+  fillVersion: number;
   quantity: Prisma.Decimal;
   priceBasis: PosPriceBasis;
   claimTransactionId: string | null;
@@ -761,6 +762,7 @@ async function quoteFill(
       medicationName: fill.prescription.medicationName,
       fillNumber: fill.fillNumber,
       partNumber: fill.partNumber,
+      fillVersion: fill.version,
       quantity: new Prisma.Decimal(fill.quantity),
       priceBasis: "COMPLETION_ALREADY_BILLED",
       claimTransactionId: paidClaim.id,
@@ -803,6 +805,7 @@ async function quoteFill(
       medicationName: fill.prescription.medicationName,
       fillNumber: fill.fillNumber,
       partNumber: fill.partNumber,
+      fillVersion: fill.version,
       quantity: new Prisma.Decimal(fill.quantity),
       priceBasis: "THIRD_PARTY",
       claimTransactionId: paidClaim.id,
@@ -1425,15 +1428,32 @@ export async function checkoutFills(
           );
         }
 
-        await tx.prescriptionFill.update({
-          where: { id: current.id },
+        const sold = await tx.prescriptionFill.updateMany({
+          where: {
+            id: current.id,
+            status: "READY",
+            version: line.fillVersion,
+          },
           data: {
             status: "SOLD",
             soldAt,
             physicalDispensedQuantity:
               current.quantity ?? new Prisma.Decimal(0),
+            version: { increment: 1 },
           },
         });
+        if (sold.count !== 1) {
+          throw new PosError(
+            409,
+            "FILL_STATE_CHANGED",
+            "The fill or its adjudication changed while checkout was being completed. Refresh and quote the prescription again.",
+            {
+              fillId: current.id,
+              quotedVersion: line.fillVersion,
+              observedVersion: current.version,
+            },
+          );
+        }
 
         if (quote.pickupFulfillmentMode === "WILL_CALL" && current.willCallPackage) {
           await tx.willCallPackage.update({
