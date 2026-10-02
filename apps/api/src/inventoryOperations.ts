@@ -644,6 +644,52 @@ export async function createRecallCase(
     }
   }
 
+  // READY fills have already committed inventory, so they are no longer
+  // represented by an active reservation and would otherwise fall between
+  // "in progress" and "sold" recall handling. Mark them as affected so the
+  // workstation can surface them, while the POS handoff gate independently
+  // blocks sale until the recall is resolved.
+  const readySourceRows = await tx.fillProductSource.findMany({
+    where: {
+      productId: input.productId,
+      returnedAt: null,
+      fill: {
+        status: "READY",
+        prescription: { siteId: input.siteId },
+      },
+      ...(lotNumberSearch
+        ? { productLot: { lotNumberSearch } }
+        : {}),
+    },
+    select: { fillId: true },
+  });
+  const legacyReadyFills = await tx.prescriptionFill.findMany({
+    where: {
+      prescription: { siteId: input.siteId },
+      productId: input.productId,
+      status: "READY",
+      ...(lotNumberSearch
+        ? { productLot: { lotNumberSearch } }
+        : {}),
+    },
+    select: { id: true },
+  });
+  const affectedReadyFillIds = [
+    ...new Set([
+      ...readySourceRows.map((source) => source.fillId),
+      ...legacyReadyFills.map((fill) => fill.id),
+    ]),
+  ];
+  if (affectedReadyFillIds.length > 0) {
+    await tx.recallAffectedFill.createMany({
+      data: affectedReadyFillIds.map((fillId) => ({
+        recallCaseId: recall.id,
+        fillId,
+      })),
+      skipDuplicates: true,
+    });
+  }
+
   // Sold split-source fills must be matched through immutable source history,
   // not only the legacy first-source compatibility fields on PrescriptionFill.
   const soldSourceRows = await tx.fillProductSource.findMany({
@@ -700,6 +746,7 @@ export async function createRecallCase(
     quarantinedHoldCount: holds.length,
     reservedAffectedQuantity: reservedAffected,
     invalidatedReservedFillCount: affectedReservedFillIds.length,
+    affectedReadyFillCount: affectedReadyFillIds.length,
     affectedSoldFillCount: affectedSoldFillIds.length,
   };
 }
