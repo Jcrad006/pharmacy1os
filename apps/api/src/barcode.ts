@@ -12,6 +12,7 @@ export type ParsedBarcode = {
   gtin: string | null;
   lotNumber: string | null;
   expirationDate: Date | null;
+  serialNumber: string | null;
   format: "GS1" | "PLAIN";
 };
 
@@ -53,6 +54,7 @@ function parsed(
     gtin?: string | null;
     lotNumber?: string | null;
     expirationDate?: Date | null;
+    serialNumber?: string | null;
     format?: "GS1" | "PLAIN";
   },
 ): ParsedBarcode {
@@ -65,6 +67,7 @@ function parsed(
     gtin: options?.gtin ?? (type === "GTIN_14" ? clean : null),
     lotNumber: options?.lotNumber?.trim() || null,
     expirationDate: options?.expirationDate ?? null,
+    serialNumber: options?.serialNumber?.trim() || null,
     format: options?.format ?? "PLAIN",
   };
 }
@@ -88,7 +91,11 @@ function parseParenthesizedGs1(raw: string, value: string) {
   }
 
   const gtin = fields.get("01");
-  if (!gtin || !/^\d{14}$/.test(gtin)) return null;
+  if (
+    !gtin ||
+    !/^\d{14}$/.test(gtin) ||
+    !hasValidGs1CheckDigit(gtin)
+  ) return null;
 
   return parsed(raw, "GTIN_14", gtin, {
     gtin,
@@ -96,6 +103,7 @@ function parseParenthesizedGs1(raw: string, value: string) {
     expirationDate: fields.get("17")
       ? parseGs1Date(fields.get("17")!)
       : null,
+    serialNumber: fields.get("21") ?? null,
     format: "GS1",
   });
 }
@@ -105,6 +113,7 @@ function parseElementString(raw: string, value: string) {
   let gtin: string | null = null;
   let lotNumber: string | null = null;
   let expirationDate: Date | null = null;
+  let serialNumber: string | null = null;
 
   while (cursor < value.length) {
     if (value[cursor] === GS) {
@@ -114,7 +123,9 @@ function parseElementString(raw: string, value: string) {
 
     const ai = value.slice(cursor, cursor + 2);
     if (ai === "01" && /^\d{14}$/.test(value.slice(cursor + 2, cursor + 16))) {
-      gtin = value.slice(cursor + 2, cursor + 16);
+      const candidate = value.slice(cursor + 2, cursor + 16);
+      if (!hasValidGs1CheckDigit(candidate)) return null;
+      gtin = candidate;
       cursor += 16;
       continue;
     }
@@ -125,11 +136,13 @@ function parseElementString(raw: string, value: string) {
       continue;
     }
 
-    if (ai === "10") {
+    if (ai === "10" || ai === "21") {
       const start = cursor + 2;
       const separator = value.indexOf(GS, start);
       const end = separator === -1 ? value.length : separator;
-      lotNumber = value.slice(start, end).trim() || null;
+      const variableValue = value.slice(start, end).trim() || null;
+      if (ai === "10") lotNumber = variableValue;
+      else serialNumber = variableValue;
       cursor = end;
       continue;
     }
@@ -143,8 +156,22 @@ function parseElementString(raw: string, value: string) {
     gtin,
     lotNumber,
     expirationDate,
+    serialNumber,
     format: "GS1",
   });
+}
+
+function hasValidGs1CheckDigit(value: string) {
+  if (!/^\d+$/.test(value) || value.length < 2) return false;
+  const digits = value.split("").map(Number);
+  const expected = digits.pop()!;
+  let sum = 0;
+  let multiplyByThree = true;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    sum += digits[index]! * (multiplyByThree ? 3 : 1);
+    multiplyByThree = !multiplyByThree;
+  }
+  return (10 - (sum % 10)) % 10 === expected;
 }
 
 export function parseBarcode(rawInput: string): ParsedBarcode | null {
@@ -166,15 +193,21 @@ export function parseBarcode(rawInput: string): ParsedBarcode | null {
   }
 
   if (/^\d{14}$/.test(stripped)) {
-    return parsed(raw, "GTIN_14", stripped);
+    return hasValidGs1CheckDigit(stripped)
+      ? parsed(raw, "GTIN_14", stripped)
+      : null;
   }
 
   if (/^\d{13}$/.test(stripped)) {
-    return parsed(raw, "EAN_13", stripped);
+    return hasValidGs1CheckDigit(stripped)
+      ? parsed(raw, "EAN_13", stripped)
+      : null;
   }
 
   if (/^\d{12}$/.test(stripped)) {
-    return parsed(raw, "UPC_A", stripped);
+    return hasValidGs1CheckDigit(stripped)
+      ? parsed(raw, "UPC_A", stripped)
+      : null;
   }
 
   return parsed(raw, "OTHER", stripped);
