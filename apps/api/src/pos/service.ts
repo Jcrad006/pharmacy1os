@@ -9,6 +9,8 @@ import {
 } from "@prisma/client";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
+import { requestFingerprint } from "../idempotency.js";
+import { assertFillPhysicalSourcesDispensable } from "../inventory.js";
 
 export class PosError extends Error {
   constructor(
@@ -1184,6 +1186,41 @@ export async function checkoutFills(
     );
   }
 
+  const fingerprint = requestFingerprint("pos-checkout", {
+    siteId: context.siteId,
+    fillIds: [...input.fillIds].sort(),
+    pickupFulfillmentMode: input.pickupFulfillmentMode ?? "WILL_CALL",
+    pickupPackages: [...input.pickupPackages]
+      .map((item) => ({
+        fillId: item.fillId,
+        bagBarcode: item.bagBarcode?.trim().toUpperCase() ?? "",
+      }))
+      .sort((a, b) => a.fillId.localeCompare(b.fillId)),
+    pickup: {
+      recipientName: input.pickup.recipientName?.trim() ?? "",
+      relationship: input.pickup.relationship?.trim() || null,
+      identityMethod: input.pickup.identityMethod,
+      identityValue: input.pickup.identityValue?.trim() || null,
+      signatureMethod: input.pickup.signatureMethod,
+      signatureName: input.pickup.signatureName?.trim() || null,
+      signatureReference: input.pickup.signatureReference?.trim() || null,
+    },
+    tenders: [...(input.tenders ?? [])]
+      .map((tender) => ({
+        method: tender.method,
+        amount:
+          tender.amount instanceof Prisma.Decimal
+            ? tender.amount.toString()
+            : String(tender.amount),
+        reference: tender.reference?.trim() || null,
+      }))
+      .sort((a, b) =>
+        `${a.method}:${a.amount}:${a.reference ?? ""}`.localeCompare(
+          `${b.method}:${b.amount}:${b.reference ?? ""}`,
+        ),
+      ),
+  });
+
   const existing = await db.pointOfSaleTransaction.findUnique({
     where: { idempotencyKey: key },
     include: {
@@ -1196,11 +1233,18 @@ export async function checkoutFills(
     },
   });
   if (existing) {
-    if (existing.siteId !== context.siteId) {
+    if (
+      existing.siteId !== context.siteId ||
+      existing.requestFingerprint !== fingerprint
+    ) {
       throw new PosError(
         409,
         "IDEMPOTENCY_KEY_CONFLICT",
-        "That idempotency key belongs to another pharmacy site.",
+        "That idempotency key was already used for a different checkout request.",
+        {
+          existingTransactionId: existing.id,
+          existingSiteId: existing.siteId,
+        },
       );
     }
     return { transaction: existing, replayed: true };
@@ -1219,7 +1263,20 @@ export async function checkoutFills(
           },
         },
       });
-      if (replay) return replay;
+      if (replay) {
+        if (
+          replay.siteId !== context.siteId ||
+          replay.requestFingerprint !== fingerprint
+        ) {
+          throw new PosError(
+            409,
+            "IDEMPOTENCY_KEY_CONFLICT",
+            "That idempotency key was already used for a different checkout request.",
+            { existingTransactionId: replay.id },
+          );
+        }
+        return replay;
+      }
 
       const quote = await quoteFillsInTransaction(
         tx,
@@ -1254,6 +1311,7 @@ export async function checkoutFills(
           totalTendered: payment.totalTendered,
           changeDue: payment.changeDue,
           idempotencyKey: key,
+          requestFingerprint: fingerprint,
           pickupFulfillmentMode: quote.pickupFulfillmentMode,
           pickupRecipientName: pickup.recipientName,
           pickupRelationship: pickup.relationship,
@@ -1316,6 +1374,12 @@ export async function checkoutFills(
             { fillId: line.fillId },
           );
         }
+
+        await assertFillPhysicalSourcesDispensable(tx, {
+          fillId: current.id,
+          siteId: context.siteId,
+          at: soldAt,
+        });
 
         if (quote.pickupFulfillmentMode === "WILL_CALL") {
           if (
@@ -1483,7 +1547,11 @@ export async function checkoutFills(
           },
         },
       });
-      if (replay && replay.siteId === context.siteId) {
+      if (
+        replay &&
+        replay.siteId === context.siteId &&
+        replay.requestFingerprint === fingerprint
+      ) {
         return { transaction: replay, replayed: true };
       }
       throw new PosError(
