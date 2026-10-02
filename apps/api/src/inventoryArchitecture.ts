@@ -398,17 +398,44 @@ export async function reconcileDemandAvailability(
     orderBy: [{ neededBy: "asc" }, { createdAt: "asc" }],
   });
 
+  let remainingForPatientDemand = new Prisma.Decimal(available);
   for (const demand of demands) {
+    if (demand.source === "REORDER") {
+      await tx.inventoryDemand.update({
+        where: { id: demand.id },
+        data: {
+          availableQuantity: available,
+          status: available.gte(demand.requiredQuantity) ? "READY" : "OPEN",
+        },
+      });
+      continue;
+    }
+
+    const coverable = Prisma.Decimal.min(
+      remainingForPatientDemand,
+      demand.requiredQuantity,
+    );
+    const ready = coverable.gte(demand.requiredQuantity);
     await tx.inventoryDemand.update({
       where: { id: demand.id },
       data: {
-        availableQuantity: available,
-        status: available.gte(demand.requiredQuantity) ? "READY" : "OPEN",
+        availableQuantity: coverable,
+        status: ready ? "READY" : "OPEN",
       },
     });
+    if (ready) {
+      remainingForPatientDemand = Prisma.Decimal.max(
+        remainingForPatientDemand.minus(demand.requiredQuantity),
+        new Prisma.Decimal(0),
+      );
+    }
   }
 
-  return { availableQuantity: available, demandCount: demands.length };
+  return {
+    availableQuantity: available,
+    uncommittedAvailableQuantity: remainingForPatientDemand,
+    demandCount: demands.length,
+  };
 }
 
 export async function getFefoRecommendation(
