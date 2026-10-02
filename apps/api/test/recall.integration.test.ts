@@ -148,6 +148,38 @@ describe("Phase 3H recall workflow", () => {
       ).statusCode,
     ).toBe(200);
 
+    const readyFill = await createFill(5, `${suffix}-READY`);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/api/fills/${readyFill.fillId}/scan-barcode`,
+          headers: tech,
+          payload: { rawBarcode },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${readyFill.prescriptionId}/status`,
+          headers: tech,
+          payload: { status: "PHARMACIST_REVIEW" },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/prescriptions/${readyFill.prescriptionId}/status`,
+          headers: pharmacist,
+          payload: { status: "READY" },
+        })
+      ).statusCode,
+    ).toBe(200);
+
     const techRecall = await app.inject({
       method: "POST",
       url: "/api/inventory/recalls",
@@ -174,9 +206,51 @@ describe("Phase 3H recall workflow", () => {
     });
     expect(recallCreated.statusCode).toBe(201);
     expect(recallCreated.json().recall.status).toBe("ACTIVE");
+    expect(recallCreated.json().summary.affectedReadyFillCount).toBe(1);
     expect(recallCreated.json().summary.affectedSoldFillCount).toBe(1);
     expect(recallCreated.json().summary.quarantinedHoldCount).toBe(1);
     const recallId = recallCreated.json().recall.id as string;
+
+    const quote = await app.inject({
+      method: "POST",
+      url: "/api/pos/quote",
+      headers: tech,
+      payload: {
+        fillIds: [readyFill.fillId],
+        pickupFulfillmentMode: "IMMEDIATE",
+      },
+    });
+    expect(quote.statusCode).toBe(200);
+    const amountDue = Number(quote.json().quote.totalDue);
+    const recalledCheckout = await app.inject({
+      method: "POST",
+      url: "/api/pos/checkout",
+      headers: tech,
+      payload: {
+        fillIds: [readyFill.fillId],
+        pickupFulfillmentMode: "IMMEDIATE",
+        pickupPackages: [],
+        tenders:
+          amountDue > 0 ? [{ method: "CASH", amount: amountDue }] : [],
+        pickup: {
+          recipientName: "Recall Ready Patient",
+          relationship: "Self",
+          identityMethod: "KNOWN_PATIENT",
+          signatureMethod: "ELECTRONIC_TYPED",
+          signatureName: "Recall Ready Patient",
+        },
+        idempotencyKey: `recall-ready-${randomUUID()}`,
+      },
+    });
+    expect(recalledCheckout.statusCode).toBe(409);
+    expect(recalledCheckout.json().code).toBe("READY_FILL_RECALLED");
+
+    const returnedReady = await app.inject({
+      method: "POST",
+      url: `/api/fills/${readyFill.fillId}/return-to-stock`,
+      headers: tech,
+    });
+    expect(returnedReady.statusCode).toBe(200);
 
     const recalledReceipt = await app.inject({
       method: "POST",
@@ -216,10 +290,13 @@ describe("Phase 3H recall workflow", () => {
     const recalled = recalls
       .json()
       .recalls.find((item: { id: string }) => item.id === recallId);
-    expect(recalled.affectedFills).toHaveLength(1);
-    expect(recalled.affectedFills[0].fill.prescription.patient.firstName).toBe(
-      "Casey",
-    );
+    expect(recalled.affectedFills).toHaveLength(2);
+    expect(
+      recalled.affectedFills.every(
+        (item: { fill: { prescription: { patient: { firstName: string } } } }) =>
+          item.fill.prescription.patient.firstName === "Casey",
+      ),
+    ).toBe(true);
     expect(recalled.holds[0].recallCaseId).toBe(recallId);
 
     const closed = await app.inject({
