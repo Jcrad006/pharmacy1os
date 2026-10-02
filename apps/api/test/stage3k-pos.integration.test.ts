@@ -693,6 +693,15 @@ describe("Stage 3K Will Call / POS hardening", () => {
     const scanned = await scan(fillId, 20);
     expect(scanned.json().adjudication.state).toBe("PAID_LABEL_READY");
     await makeReady(prescriptionId);
+
+    const coverageDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/patients/${patient.id}/coverages/1`,
+      headers: pharmacistHeaders,
+    });
+    expect(coverageDelete.statusCode).toBe(409);
+    expect(coverageDelete.json().code).toBe("PAID_CLAIM_REVERSAL_REQUIRED");
+
     const staged = await stage(fillId);
 
     const claim = await db.claimTransaction.findFirstOrThrow({
