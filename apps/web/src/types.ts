@@ -256,6 +256,13 @@ export type PrescriptionChangeRecord = {
   status: PrescriptionChangeRecordStatus;
   changedById: string;
   changedAt: string;
+  requiresStructuredApply: boolean;
+  appliedField: string | null;
+  beforeValue: unknown;
+  afterValue: unknown;
+  appliedAt: string | null;
+  reviewedById: string | null;
+  reviewedAt: string | null;
   supersedesChangeRecordId: string | null;
   changedBy: {
     id: string;
@@ -989,6 +996,7 @@ export type ParsedBarcode = {
   gtin: string | null;
   lotNumber: string | null;
   expirationDate: string | null;
+  serialNumber: string | null;
   format: "GS1" | "PLAIN";
 };
 
@@ -1023,6 +1031,8 @@ export type Medication = {
   ncNarrowTherapeuticIndex: boolean;
   isBiological: boolean;
   hasFdaInterchangeableBiologicAlternative: boolean;
+  controlledSubstanceSchedule: "NONE" | "II" | "III" | "IV" | "V";
+  requiresColdChain: boolean;
   active: boolean;
   products: Product[];
 };
@@ -1315,6 +1325,7 @@ export type PosQuoteLine = {
   medicationName: string;
   fillNumber: number;
   partNumber: number;
+  fillVersion: number;
   quantity: string | number;
   priceBasis: PosPriceBasis;
   claimTransactionId: string | null;
@@ -1372,6 +1383,7 @@ export type PointOfSaleTransaction = {
   totalTendered: string | number;
   changeDue: string | number;
   idempotencyKey: string;
+  requestFingerprint: string;
   pickupFulfillmentMode: PickupFulfillmentMode;
   pickupRecipientName: string;
   pickupRelationship: string | null;
