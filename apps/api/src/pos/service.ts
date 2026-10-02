@@ -274,7 +274,9 @@ export async function stageWillCallPackage(
         prescription: { siteId: context.siteId },
       },
       include: {
-        prescription: true,
+        prescription: {
+          include: { medication: true },
+        },
         prescriptionLabels: {
           where: { status: "ACTIVE" },
           select: { id: true },
@@ -316,6 +318,23 @@ export async function stageWillCallPackage(
     const location = await resolveWillCallLocation(tx, context, input, {
       allowDefault: true,
     });
+    if (
+      fill.prescription.medication?.requiresColdChain &&
+      (location.temperatureMinC === null ||
+        location.temperatureMaxC === null)
+    ) {
+      throw new PosError(
+        409,
+        "COLD_CHAIN_WILL_CALL_REQUIRED",
+        "This medication requires cold-chain storage. Stage it only in a Will Call location with configured temperature limits.",
+        {
+          fillId: fill.id,
+          medicationId: fill.prescription.medicationId,
+          locationId: location.id,
+          locationCode: location.code,
+        },
+      );
+    }
     const bagBarcode =
       input.bagBarcode?.trim().toUpperCase() ||
       `WC-BAG-${randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
