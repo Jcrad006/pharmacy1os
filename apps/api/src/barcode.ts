@@ -183,13 +183,11 @@ export function parseBarcode(rawInput: string): ParsedBarcode | null {
     .replace(/[\r\n]+$/g, "");
 
   if (stripped.includes("(01)")) {
-    const gs1 = parseParenthesizedGs1(raw, stripped);
-    if (gs1) return gs1;
+    return parseParenthesizedGs1(raw, stripped);
   }
 
-  if (stripped.startsWith("01")) {
-    const gs1 = parseElementString(raw, stripped);
-    if (gs1) return gs1;
+  if (stripped.startsWith("01") && stripped.length >= 16) {
+    return parseElementString(raw, stripped);
   }
 
   if (/^\d{14}$/.test(stripped)) {
