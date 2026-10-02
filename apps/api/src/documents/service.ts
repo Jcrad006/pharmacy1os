@@ -30,6 +30,7 @@ export type ChangeRecordInput = {
   contactedParty?: string | null;
   authorizingPrescriber?: string | null;
   note?: string | null;
+  structuredValue?: unknown;
 };
 
 export type AnnotationInput = {
@@ -130,6 +131,11 @@ function validateChange(input: ChangeRecordInput | undefined) {
     contactedParty: trimOptional(input.contactedParty),
     authorizingPrescriber: trimOptional(input.authorizingPrescriber),
     note: trimOptional(input.note),
+    requiresStructuredApply: input.changeType !== "OTHER",
+    afterValue:
+      input.structuredValue === undefined
+        ? undefined
+        : (JSON.parse(JSON.stringify(input.structuredValue)) as Prisma.InputJsonValue),
   };
 }
 
@@ -615,5 +621,282 @@ export async function supersedePrescriptionAnnotation(
         },
       },
     });
+  });
+}
+
+
+function structuredChangeValue(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+export async function applyPrescriptionChangeRecord(
+  changeRecordId: string,
+  structuredValue: unknown,
+  context: DocumentActorContext,
+) {
+  return db.$transaction(async (tx) => {
+    const record = await tx.prescriptionChangeRecord.findFirst({
+      where: {
+        id: changeRecordId,
+        siteId: context.siteId,
+        status: "ACTIVE",
+      },
+      include: {
+        prescription: {
+          include: {
+            fills: {
+              where: { status: { in: ["SCHEDULED", "IN_PROGRESS", "READY"] } },
+              select: { id: true, status: true },
+            },
+          },
+        },
+      },
+    });
+    if (!record) {
+      throw new DocumentVaultError(
+        404,
+        "PRESCRIPTION_CHANGE_NOT_FOUND",
+        "Active prescription change record not found.",
+      );
+    }
+    if (!record.requiresStructuredApply) {
+      throw new DocumentVaultError(
+        409,
+        "PRESCRIPTION_CHANGE_NO_STRUCTURED_APPLY",
+        "This documentation-only change does not map to a structured prescription field.",
+      );
+    }
+    if (record.appliedAt) {
+      throw new DocumentVaultError(
+        409,
+        "PRESCRIPTION_CHANGE_ALREADY_APPLIED",
+        "This documented prescription change has already been applied to structured prescription data.",
+      );
+    }
+    if (record.prescription.fills.length > 0) {
+      throw new DocumentVaultError(
+        409,
+        "PRESCRIPTION_CHANGE_REQUIRES_FILL_RESET",
+        "Resolve or cancel the active/scheduled fill before applying a documented prescription change.",
+        {
+          fillIds: record.prescription.fills.map((fill) => fill.id),
+        },
+      );
+    }
+
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "Prescription" WHERE "id" = ${record.prescriptionId} FOR UPDATE`,
+    );
+    const rx = await tx.prescription.findUniqueOrThrow({
+      where: { id: record.prescriptionId },
+    });
+
+    if (!["RECEIVED", "DATA_ENTRY", "DUR_REVIEW", "ON_HOLD"].includes(rx.status)) {
+      throw new DocumentVaultError(
+        409,
+        "PRESCRIPTION_CHANGE_STATE_BLOCKED",
+        "Structured prescription changes must be applied before Product Fill begins.",
+        { status: rx.status },
+      );
+    }
+
+    let appliedField: string;
+    let beforeValue: unknown;
+    const data: Prisma.PrescriptionUpdateInput = {
+      version: { increment: 1 },
+    };
+
+    switch (record.changeType) {
+      case "SIG": {
+        const value = typeof structuredValue === "string" ? structuredValue.trim() : "";
+        if (!value) {
+          throw new DocumentVaultError(400, "STRUCTURED_SIG_REQUIRED", "A nonblank SIG is required.");
+        }
+        appliedField = "sig";
+        beforeValue = rx.sig;
+        data.sig = value;
+        break;
+      }
+      case "QUANTITY": {
+        const value = Number(structuredValue);
+        if (!Number.isFinite(value) || value <= 0) {
+          throw new DocumentVaultError(400, "STRUCTURED_QUANTITY_INVALID", "Quantity must be greater than zero.");
+        }
+        appliedField = "quantityWritten";
+        beforeValue = rx.quantityWritten?.toString() ?? null;
+        data.quantityWritten = value;
+        break;
+      }
+      case "REFILLS": {
+        const value = Number(structuredValue);
+        if (!Number.isInteger(value) || value < rx.refillsUsed) {
+          throw new DocumentVaultError(
+            400,
+            "STRUCTURED_REFILLS_INVALID",
+            "Refills must be a whole number not less than fills already used.",
+          );
+        }
+        appliedField = "refillsAllowed";
+        beforeValue = rx.refillsAllowed;
+        data.refillsAllowed = value;
+        break;
+      }
+      case "STRENGTH": {
+        const value = typeof structuredValue === "string" ? structuredValue.trim() : "";
+        if (!value) throw new DocumentVaultError(400, "STRUCTURED_STRENGTH_REQUIRED", "Strength is required.");
+        appliedField = "strength";
+        beforeValue = rx.strength;
+        data.strength = value;
+        break;
+      }
+      case "DOSAGE_FORM": {
+        const value = typeof structuredValue === "string" ? structuredValue.trim() : "";
+        if (!value) throw new DocumentVaultError(400, "STRUCTURED_DOSAGE_FORM_REQUIRED", "Dosage form is required.");
+        appliedField = "dosageForm";
+        beforeValue = rx.dosageForm;
+        data.dosageForm = value;
+        break;
+      }
+      case "DAW": {
+        if (
+          structuredValue !== "UNSPECIFIED" &&
+          structuredValue !== "SELECTION_PERMITTED" &&
+          structuredValue !== "DISPENSE_AS_WRITTEN"
+        ) {
+          throw new DocumentVaultError(400, "STRUCTURED_DAW_INVALID", "Invalid product-selection directive.");
+        }
+        appliedField = "productSelectionDirective";
+        beforeValue = rx.productSelectionDirective;
+        data.productSelectionDirective = structuredValue;
+        if (structuredValue === "DISPENSE_AS_WRITTEN" && !rx.prescribedProductId) {
+          throw new DocumentVaultError(
+            409,
+            "DAW_PRESCRIBED_PRODUCT_REQUIRED",
+            "A prescribed product/NDC must be identified before applying Dispense As Written.",
+          );
+        }
+        break;
+      }
+      case "WRITTEN_DATE": {
+        if (typeof structuredValue !== "string") {
+          throw new DocumentVaultError(400, "STRUCTURED_WRITTEN_DATE_INVALID", "Written date must be an ISO date string.");
+        }
+        const value = new Date(structuredValue);
+        if (Number.isNaN(value.getTime())) {
+          throw new DocumentVaultError(400, "STRUCTURED_WRITTEN_DATE_INVALID", "Written date is invalid.");
+        }
+        appliedField = "writtenDate";
+        beforeValue = rx.writtenDate?.toISOString() ?? null;
+        data.writtenDate = value;
+        break;
+      }
+      case "DRUG": {
+        const medicationId = typeof structuredValue === "string" ? structuredValue.trim() : "";
+        const medication = medicationId
+          ? await tx.medication.findFirst({
+              where: { id: medicationId, active: true },
+            })
+          : null;
+        if (!medication) {
+          throw new DocumentVaultError(400, "STRUCTURED_DRUG_INVALID", "Select an active Drug catalog entry.");
+        }
+        appliedField = "medicationId";
+        beforeValue = rx.medicationId;
+        data.medication = { connect: { id: medication.id } };
+        data.medicationName = medication.genericName;
+        data.strength = medication.strength;
+        data.dosageForm = medication.dosageForm;
+        if (rx.prescribedProductId) {
+          const prescribed = await tx.product.findUnique({
+            where: { id: rx.prescribedProductId },
+            select: { medicationId: true },
+          });
+          if (!prescribed || prescribed.medicationId !== medication.id) {
+            data.prescribedProduct = { disconnect: true };
+            data.productSelectionDirective = "UNSPECIFIED";
+          }
+        }
+        break;
+      }
+      case "PRESCRIBER": {
+        const prescriberId = typeof structuredValue === "string" ? structuredValue.trim() : "";
+        const prescriber = prescriberId
+          ? await tx.prescriber.findFirst({
+              where: { id: prescriberId, siteId: context.siteId },
+              select: { id: true },
+            })
+          : null;
+        if (!prescriber) {
+          throw new DocumentVaultError(400, "STRUCTURED_PRESCRIBER_INVALID", "Select a prescriber at this pharmacy site.");
+        }
+        appliedField = "prescriberId";
+        beforeValue = rx.prescriberId;
+        data.prescriber = { connect: { id: prescriber.id } };
+        break;
+      }
+      default:
+        throw new DocumentVaultError(
+          409,
+          "STRUCTURED_CHANGE_UNSUPPORTED",
+          "This change type cannot be applied automatically to structured prescription data.",
+          { changeType: record.changeType },
+        );
+    }
+
+    if (rx.status === "DUR_REVIEW") {
+      data.status = "DATA_ENTRY";
+    } else if (rx.status === "ON_HOLD" && rx.heldFromStatus === "DUR_REVIEW") {
+      data.heldFromStatus = "DATA_ENTRY";
+    }
+
+    const updated = await tx.prescription.update({
+      where: { id: rx.id },
+      data,
+    });
+
+    const effectiveAfterValue =
+      appliedField === "quantityWritten"
+        ? updated.quantityWritten?.toString() ?? null
+        : appliedField === "writtenDate"
+          ? updated.writtenDate?.toISOString() ?? null
+          : (updated as unknown as Record<string, unknown>)[appliedField] ?? structuredValue;
+
+    const applied = await tx.prescriptionChangeRecord.update({
+      where: { id: record.id },
+      data: {
+        appliedField,
+        beforeValue: structuredChangeValue(beforeValue),
+        afterValue: structuredChangeValue(effectiveAfterValue),
+        appliedAt: new Date(),
+      },
+      include: {
+        changedBy: {
+          select: { id: true, displayName: true, role: true },
+        },
+      },
+    });
+
+    await writeAuditEvent(tx, {
+      siteId: context.siteId,
+      actorId: context.actorId,
+      action: "PRESCRIPTION_DOCUMENTED_CHANGE_APPLIED",
+      entityType: "PrescriptionChangeRecord",
+      entityId: record.id,
+      requestId: context.requestId,
+      metadata: {
+        prescriptionId: rx.id,
+        changeType: record.changeType,
+        appliedField,
+        beforeValue,
+        afterValue: effectiveAfterValue,
+        workflowResetTo:
+          rx.status === "DUR_REVIEW" ||
+          (rx.status === "ON_HOLD" && rx.heldFromStatus === "DUR_REVIEW")
+            ? "DATA_ENTRY"
+            : null,
+      },
+    });
+
+    return { changeRecord: applied, prescription: updated };
   });
 }
