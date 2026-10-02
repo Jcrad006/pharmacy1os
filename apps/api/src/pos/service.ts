@@ -878,6 +878,7 @@ async function quoteFill(
     medicationName: fill.prescription.medicationName,
     fillNumber: fill.fillNumber,
     partNumber: fill.partNumber,
+    fillVersion: fill.version,
     quantity: new Prisma.Decimal(fill.quantity),
     priceBasis: "CASH",
     claimTransactionId: null,
