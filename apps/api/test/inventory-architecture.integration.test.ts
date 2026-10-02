@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { db } from "../src/db.js";
+import { reconcileDemandAvailability } from "../src/inventoryArchitecture.js";
 
 process.env.ALLOW_DEV_IDENTITY = "true";
 
@@ -227,5 +228,105 @@ describe("Phase 3H inventory architecture hardening", () => {
             policy.productId === productId,
         ),
     ).toBe(true);
+  });
+
+  it("does not double count the same available stock across competing patient demands", async () => {
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
+    const medicationId = `med-demand-${suffix}`;
+    const productId = `product-demand-${suffix}`;
+    await db.medication.create({
+      data: {
+        id: medicationId,
+        genericName: `Demand Test Drug ${suffix}`,
+        strength: "1 mg",
+        dosageForm: "tablet",
+      },
+    });
+    await db.product.create({
+      data: {
+        id: productId,
+        medicationId,
+        manufacturerId: "manufacturer-demo-generics",
+        ndc: `70000-${suffix.slice(0, 4)}-01`,
+        ndcSearch: `70000${suffix.slice(0, 4)}01`,
+        descriptor: "Demand contention test",
+        packageType: "bottle",
+        unitsPerPackage: 10,
+        dispensingUnit: "EACH",
+      },
+    });
+    const lot = await db.productLot.create({
+      data: {
+        siteId: "site-demo-001",
+        productId,
+        lotNumber: `DEM-${suffix}`,
+        lotNumberSearch: `DEM${suffix}`.toUpperCase(),
+      },
+    });
+    const expiration = await db.productExpiration.create({
+      data: {
+        siteId: "site-demo-001",
+        productId,
+        expirationDate: new Date("2029-12-31T00:00:00.000Z"),
+      },
+    });
+    const balance = await db.inventoryBalance.create({
+      data: {
+        siteId: "site-demo-001",
+        productId,
+        productLotId: lot.id,
+        productExpirationId: expiration.id,
+        onHandQuantity: 10,
+      },
+    });
+    const location = await db.inventoryLocation.findFirstOrThrow({
+      where: {
+        siteId: "site-demo-001",
+        isDefaultDispensing: true,
+        active: true,
+      },
+    });
+    await db.inventoryStockPosition.create({
+      data: {
+        inventoryBalanceId: balance.id,
+        locationId: location.id,
+        state: "AVAILABLE",
+        quantity: 10,
+      },
+    });
+
+    const first = await db.inventoryDemand.create({
+      data: {
+        siteId: "site-demo-001",
+        medicationId,
+        productId,
+        source: "MANUAL",
+        requiredQuantity: 10,
+        neededBy: new Date("2027-01-01T10:00:00.000Z"),
+      },
+    });
+    const second = await db.inventoryDemand.create({
+      data: {
+        siteId: "site-demo-001",
+        medicationId,
+        productId,
+        source: "MANUAL",
+        requiredQuantity: 10,
+        neededBy: new Date("2027-01-01T11:00:00.000Z"),
+      },
+    });
+
+    await db.$transaction((tx) =>
+      reconcileDemandAvailability(tx, "site-demo-001", medicationId),
+    );
+
+    const [firstAfter, secondAfter] = await Promise.all([
+      db.inventoryDemand.findUniqueOrThrow({ where: { id: first.id } }),
+      db.inventoryDemand.findUniqueOrThrow({ where: { id: second.id } }),
+    ]);
+    expect(firstAfter.status).toBe("READY");
+    expect(firstAfter.availableQuantity.toNumber()).toBe(10);
+    expect(secondAfter.status).toBe("OPEN");
+    expect(secondAfter.availableQuantity.toNumber()).toBe(0);
   });
 });
