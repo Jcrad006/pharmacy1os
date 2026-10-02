@@ -25,7 +25,10 @@ import {
   readImmutableDocument,
   readStoredDocumentPayload,
 } from "../src/documentVault.js";
-import { withExclusiveDocumentVaultLock } from "../src/vaultCoordination.js";
+import {
+  clearDocumentVaultRecoveryRequired,
+  withExclusiveDocumentVaultLock,
+} from "../src/vaultCoordination.js";
 
 process.env.ALLOW_DEV_IDENTITY = "true";
 process.env.DOCUMENT_ENCRYPTION_KEY =
@@ -39,6 +42,8 @@ process.env.BACKUP_ROOT = resolve(
   "pharmacy1os-stage3l1-backups-" + process.pid,
 );
 process.env.DOCUMENT_VAULT_LOCK_TIMEOUT_MS = "2000";
+process.env.BACKUP_SIGNING_KEY =
+  "stage3l1-backup-signing-key-0123456789abcdef0123456789abcdef";
 
 const app = buildApp();
 const technicianHeaders = { "x-dev-user": "dev-technician" };
@@ -208,6 +213,41 @@ describe("Stage 3L.1 coordinated backup and vault integrity", () => {
     );
   });
 
+  it("detects manifest tampering even when the attacker recomputes the plain SHA-256 checksum", async () => {
+    const backupDirectory = resolve(process.env.BACKUP_ROOT!, backupId);
+    const manifestPath = resolve(backupDirectory, "manifest.json");
+    const hashPath = resolve(backupDirectory, "manifest.sha256");
+    const originalManifest = await readFile(manifestPath);
+    const originalHash = await readFile(hashPath);
+
+    const parsed = JSON.parse(originalManifest.toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    parsed.applicationVersion = "attacker-rewritten-version";
+    const tamperedManifest = Buffer.from(
+      JSON.stringify(parsed, null, 2) + "\n",
+      "utf8",
+    );
+    await writeFile(manifestPath, tamperedManifest);
+    await writeFile(
+      hashPath,
+      createHash("sha256").update(tamperedManifest).digest("hex") + "\n",
+    );
+
+    const verification = await verifyBackupSet(backupId);
+    expect(verification.status).toBe("FAIL");
+    expect(
+      verification.findings.some(
+        (item) => item.type === "MANIFEST_SIGNATURE_MISMATCH",
+      ),
+    ).toBe(true);
+
+    await writeFile(manifestPath, originalManifest);
+    await writeFile(hashPath, originalHash);
+    expect((await verifyBackupSet(backupId)).status).toBe("PASS");
+  });
+
   it("blocks document writes while the coordinated exclusive lock is active", async () => {
     let release!: () => void;
     const hold = new Promise<void>((resolvePromise) => {
@@ -359,6 +399,43 @@ describe("Stage 3L.1 coordinated backup and vault integrity", () => {
     expect(rootEntries.some((name) => name.startsWith(".incomplete-"))).toBe(
       false,
     );
+  });
+
+  it("keeps document writes fail-closed after a post-restore integrity failure", async () => {
+    const deliberatelyWrongRecord = {
+      ...documentRecord,
+      sha256: "0".repeat(64),
+    };
+
+    try {
+      await expect(
+        restoreBackupSet(backupId, {
+          offlineConfirmed: true,
+          tooling: {
+            restoreDatabase: async () => undefined,
+            listDocuments: async () => [deliberatelyWrongRecord],
+          },
+        }),
+      ).rejects.toMatchObject({ code: "RESTORE_POSTCHECK_FAILED" });
+
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/api/prescriptions/" + prescriptionId + "/documents/original",
+        headers: technicianHeaders,
+        payload: {
+          sourceType: "SCAN",
+          mimeType: "image/png",
+          originalFilename: "blocked-after-failed-restore.png",
+          base64Data: Buffer.from("must-remain-blocked").toString("base64"),
+        },
+      });
+      expect(blocked.statusCode).toBe(503);
+      expect(blocked.json().code).toBe(
+        "DOCUMENT_VAULT_RESTORE_RECOVERY_REQUIRED",
+      );
+    } finally {
+      await clearDocumentVaultRecoveryRequired();
+    }
   });
 
   it("restricts maintenance endpoints to administrators", async () => {
