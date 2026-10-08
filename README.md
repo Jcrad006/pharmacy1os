@@ -239,3 +239,7 @@ Synthetic third-party adjudication and prescription-label generation are now imp
 Barcode-to-product mappings created during receiving are correctable, but correction is restricted to pharmacists and administrators through the dedicated inventory-correction permission. A correction requires the replacement NDC/product and a documented reason. Pharmacy1OS preserves the original assignment in the audit trail, records the old and new Drug/NDC, and warns when the barcode had already been used on prescription fills.
 
 A correction never blindly deletes lot or expiration records from the old NDC. Matching old traceability is surfaced for pharmacist review because those records may represent legitimate stock independent of the incorrect barcode mapping.
+
+## Experimental Python-native rewrite (separate development track)
+
+A **non-production, incomplete Python replacement** is being developed under [`python/`](python/README.md), with the migration plan in [`docs/PYTHON_MIGRATION.md`](docs/PYTHON_MIGRATION.md). It provides a PySide6 native workstation, a Python service and FastAPI adapter, plus isolated synthetic tests. **It is not equivalent to the existing TypeScript application and does not replace it.** Do not run it with real patient data or live pharmacy integrations.
