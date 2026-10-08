@@ -383,7 +383,7 @@
 
 ## Phase 3L.3 — Engineering reliability and deterministic builds
 
-**Engineering stage completed:** PR [#41](https://github.com/Jcrad006/pharmacy1os/pull/41), after all required code, browser and security checks passed on the final implementation. This is a development-stage result, **not clinical, security, or regulatory approval for production use**.
+**Engineering stage completed:** PR [#41](https://github.com/Jcrad006/pharmacy1os/pull/41), merged into `main` at commit `b3886f338d808b17175437ceb1536814660d3580`, after all required code, browser and security checks passed on the final implementation. This is a development-stage result, **not clinical, security, or regulatory approval for production use**.
 
 - [x] Reviewed/pinned pnpm lockfile and frozen CI installation with unchanged-lockfile verification
 - [x] SPDX-JSON SBOM generation, CodeQL extended JavaScript/TypeScript SAST, production high/critical dependency audit and [vulnerability handling policy](DEPENDENCY_SECURITY_POLICY.md)

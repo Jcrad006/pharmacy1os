@@ -1,6 +1,6 @@
 # Stage 3L.3 — Engineering reliability and deterministic builds
 
-**Development implementation verified.** Scope and exit criteria: [PROGRESSION_MAP.md](PROGRESSION_MAP.md). Stage PR: [#41](https://github.com/Jcrad006/pharmacy1os/pull/41).
+**Development implementation merged into `main` at `b3886f338d808b17175437ceb1536814660d3580`.** Scope and exit criteria: [PROGRESSION_MAP.md](PROGRESSION_MAP.md). Stage PR: [#41](https://github.com/Jcrad006/pharmacy1os/pull/41).
 
 ## Delivered controls
 
