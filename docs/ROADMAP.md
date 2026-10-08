@@ -1,6 +1,6 @@
 # Pharmacy1OS Roadmap
 
-> **Development progression:** The agreed post-3L.2 development sequence, dependencies, stage exit gates, and production-readiness blockers are maintained in [Pharmacy1OS Progression Map](PROGRESSION_MAP.md). Stage **3L.3 — Engineering reliability and deterministic builds** is completed by PR #41. The next recommended stage is **3M — Production identity, RBAC, and security**, followed by 3N operational resilience. This checklist remains the implementation-status ledger; the progression map is the sequencing reference.
+> **Development progression:** The agreed post-3L.2 development sequence, dependencies, stage exit gates, and production-readiness blockers are maintained in [Pharmacy1OS Progression Map](PROGRESSION_MAP.md). Stage **3L.3 — Engineering reliability and deterministic builds** is completed by PR #41. Stage **3M — Production identity, RBAC, and security** is **in progress** on PR #42; the first OIDC/session/RBAC increment is documented in [Stage 3M.1 Identity](STAGE_3M1_IDENTITY.md). The stage remains incomplete and is followed by 3N operational resilience. This checklist remains the implementation-status ledger; the progression map is the sequencing reference.
 
 ## Phase 0 — Foundation
 - [x] Monorepo layout
