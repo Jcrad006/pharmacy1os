@@ -22,7 +22,6 @@ export function PrivilegeApprovals({ user, onError }: {
   const [permission, setPermission] = useState<"inventory:correct" | "thirdparty:override">("inventory:correct");
   const [requestedRole, setRequestedRole] = useState<"PHARMACIST" | "PHARMACIST_IN_CHARGE" | "ADMIN">("PHARMACIST");
   const [targetId, setTargetId] = useState("");
-  const [kind, setKind] = useState<"ROLE_GRANT" | "TEMP_PERMISSION">("TEMP_PERMISSION");
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -58,6 +57,7 @@ export function PrivilegeApprovals({ user, onError }: {
 
   function requestAccess(event: FormEvent) {
     event.preventDefault();
+    const kind = canRequestRole ? "ROLE_GRANT" : "TEMP_PERMISSION";
     const target = staff.find(item => item.id === targetId);
     if (kind === "ROLE_GRANT" && !target) {
       onError("Choose a target staff account from this site.");
@@ -66,7 +66,7 @@ export function PrivilegeApprovals({ user, onError }: {
     void submit(async () => {
       await createPrivilegedRequest(kind === "ROLE_GRANT" ? {
         kind, reason, targetUserId: target!.id,
-        requestedRole, expectedAssignmentUpdatedAt: target!.updatedAt,
+        requestedRole: effectiveRole, expectedAssignmentUpdatedAt: target!.updatedAt,
       } : { kind, reason, requestedPermission: permission });
       setReason("");
     }, "Access request created. A different authorized site leader must review it.");
@@ -74,10 +74,10 @@ export function PrivilegeApprovals({ user, onError }: {
 
   const canRequestRole = user?.role === "ADMIN" || user?.role === "PHARMACIST_IN_CHARGE";
   const temporaryEligible = user?.role === "TECHNICIAN";
+  const effectiveRole = user?.role === "PHARMACIST_IN_CHARGE" ? "ADMIN" : requestedRole;
   const permittedRole = user?.role === "PHARMACIST_IN_CHARGE" ? ["ADMIN"] as const
     : ["PHARMACIST", "PHARMACIST_IN_CHARGE"] as const;
-  const roleOptions = (requestedRole === "ADMIN" && user?.role === "ADMIN")
-    ? permittedRole : permittedRole;
+  const roleOptions = permittedRole;
   const visibleStatus = (entry: PrivilegedAccessRequest) =>
     entry.status === "PENDING" && new Date(entry.reviewDeadlineAt).getTime() <= Date.now()
       ? "Expired" : display(entry.status);
@@ -94,20 +94,7 @@ export function PrivilegeApprovals({ user, onError }: {
         <section className="panel staff-panel">
           <h3>Request authorization</h3>
           <form className="staff-form" onSubmit={requestAccess}>
-            {temporaryEligible && canRequestRole && <label>Request type
-              <select value={kind} onChange={event => setKind(event.target.value as typeof kind)}>
-                <option value="TEMP_PERMISSION">Temporary permission</option>
-                <option value="ROLE_GRANT">Privileged role review</option>
-              </select>
-            </label>}
-            {canRequestRole && !temporaryEligible && (
-              <label>Request type
-                <select value="ROLE_GRANT" onChange={() => undefined}>
-                  <option value="ROLE_GRANT">Privileged role review</option>
-                </select>
-              </label>
-            )}
-            {(canRequestRole && !temporaryEligible) || kind === "ROLE_GRANT" ? (
+            {canRequestRole ? (
               <>
                 <label>Target staff
                   <select required value={targetId} onChange={event => setTargetId(event.target.value)}>
@@ -120,7 +107,7 @@ export function PrivilegeApprovals({ user, onError }: {
                   </select>
                 </label>
                 <label>Requested high-trust role
-                  <select value={roleOptions.includes(requestedRole as never) ? requestedRole : roleOptions[0]}
+                  <select value={effectiveRole}
                     onChange={event => setRequestedRole(event.target.value as typeof requestedRole)}>
                     {roleOptions.map(option =>
                       <option key={option} value={option}>{display(option)}</option>)}
