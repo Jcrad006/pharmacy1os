@@ -101,6 +101,8 @@ export type DurIssueStatus = "OPEN" | "RESOLVED";
 
 export type DevUser = {
   id?: string;
+  temporaryPermissions?: string[];
+  temporaryPermissionExpiresAt?: Record<string, string>;
   externalAuthId: string;
   displayName: string;
   role: UserRole;
