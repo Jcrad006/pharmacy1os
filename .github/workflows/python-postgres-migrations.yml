@@ -39,7 +39,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd 'pg_isready -U pharmacy1os -d pharmacy1os_py_migration'
+          --health-cmd "pg_isready -U pharmacy1os -d pharmacy1os_py_migration"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 15
