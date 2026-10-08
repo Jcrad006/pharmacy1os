@@ -271,6 +271,30 @@ export async function privilegedAccessRoutes(app: FastifyInstance) {
           if (!entry.requestedRole || !entry.expectedAssignmentUpdatedAt) {
             throw new AccessError(409, "Role request is invalid.");
           }
+          if (entry.requestedRole === "PHARMACIST" ||
+              entry.requestedRole === "PHARMACIST_IN_CHARGE") {
+            // This only confirms a second person's *synthetic* evidence
+            // attestation. It does not establish licensure or clinical safety.
+            const evidence = await tx.staffCredentialReview.findFirst({
+              where: {
+                siteId: entry.siteId, targetUserId: entry.targetUserId,
+                role: entry.requestedRole, status: "TEST_ATTESTED",
+                expiresAt: { gt: now },
+                reviewedBy: {
+                  active: true,
+                  siteRoleAssignments: {
+                    some: {
+                      siteId: entry.siteId, active: true,
+                      role: "PHARMACIST_IN_CHARGE",
+                    },
+                  },
+                },
+              },
+              select: { id: true },
+            });
+            if (!evidence)
+              throw new AccessError(403, "Current independent test credential attestation is required.");
+          }
           const changed = await tx.siteRoleAssignment.updateMany({
             where: {
               id: grant.id, active: true,
