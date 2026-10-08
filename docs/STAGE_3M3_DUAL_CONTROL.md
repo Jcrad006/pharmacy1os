@@ -12,7 +12,8 @@ Prevent a single privileged staff actor from granting themselves clinical/admin 
 - `POST /api/privileged/requests`: authenticated OIDC user with **MFA within the last five minutes** creates a pending request. A test request expires 10 minutes after creation. The reason is mandatory.
 - `POST /api/privileged/requests/:id/review`: **another human identity**, separately logged in with recent MFA, approves or denies with a mandatory note; database compare-and-set allows only one decision, and decisions are recorded in the same database transaction as any role/session modifications.
 - `POST /api/privileged/requests/:id/cancel`: requester or beneficiary cancels pending request or stops an active temporary permission early. Cancellation is audited.
-- `Access Approvals` workstation screen allows ordinary eligible staff to request temporary access and site leaders to view/review scoped approval requests.
+- `Access Approvals` workstation screen allows eligible technicians to request temporary access and site leaders to view/review scoped approval requests.
+- Authenticated `/api/auth/me` returns only server-effective site-specific temporary scopes and expiry timestamps; the workstation re-queries them after approval operations and navigation, and the Inventory correction UI only shows an elevated action before its recorded expiry. The server remains authoritative even if a browser has stale UI state.
 
 ### Temporary permissions
 
