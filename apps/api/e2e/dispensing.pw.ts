@@ -88,7 +88,11 @@ test("browser drives a paid synthetic claim and label through pharmacist verific
     async () => (await db.prescription.findUniqueOrThrow({ where: { id: rx.id } })).status,
     { message: "Product Fill should enter Pharmacist Review before changing staff identity" },
   ).toBe("PHARMACIST_REVIEW");
-  await expect(page.getByText(/Product prepared → Pharmacist Review|Current action/).first()).toBeVisible();
+  // Wait for the technician's UI reload to complete before switching identity.
+  // Otherwise the previous role's fetch can overwrite the pharmacist view.
+  await expect(page.locator(".verification-gate button.primary-button")).toHaveText(
+    "Pharmacist verification required",
+  );
   await page.locator("#staff").selectOption("dev-pharmacist");
   const verify = page.locator(".verification-gate button.primary-button");
   await expect(verify).toBeVisible();
