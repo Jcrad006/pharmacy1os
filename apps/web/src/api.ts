@@ -146,6 +146,7 @@ export async function listPrivilegedRequests() {
   return request<{
     requests: PrivilegedAccessRequest[];
     temporaryPermissions: string[];
+    syntheticRoleGrantsEnabled: boolean;
   }>("/api/privileged/requests");
 }
 
