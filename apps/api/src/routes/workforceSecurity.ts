@@ -77,6 +77,17 @@ export async function workforceSecurityRoutes(app: FastifyInstance) {
           ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE"].includes(g.role))) {
           throw new AccessError(403, "Protected professional/leader accounts require independent offboarding review.");
         }
+        // A site administrator may not revoke an employee's *other* sites
+        // unless independently granted administrator authority at every site.
+        const targetSites = [...new Set(grants.filter(g => g.active).map(g => g.siteId))];
+        const authorizedSites = await tx.siteRoleAssignment.count({
+          where: {
+            userId: auth.actor.id, siteId: { in: targetSites },
+            active: true, role: "ADMIN",
+          },
+        });
+        if (authorizedSites !== targetSites.length)
+          throw new AccessError(403, "Global offboarding requires administrative authorization at every affected site.");
         const updated = await tx.user.updateMany({
           where: { id: userId, active: true },
           data: { active: false },
