@@ -137,6 +137,13 @@ describe("Stage 3M.4 cross-site workforce suspension", () => {
   });
 
   it("globally suspends ordinary staff, revokes every site's sessions and permissions, and audits", async () => {
+    const notOrgAdmin = await api(adminId, "POST", "/api/staff/" + techId + "/global-suspend", {
+      reason: "Cannot revoke access at sites where admin has no role",
+    });
+    expect(notOrgAdmin.statusCode).toBe(403);
+    await db.siteRoleAssignment.create({
+      data: { userId: adminId, siteId: site2, role: "ADMIN" },
+    });
     await db.privilegedAccessRequest.create({
       data: {
         siteId: site1, targetUserId: techId, requestedById: techId, reviewedById: picId,
