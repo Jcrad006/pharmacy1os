@@ -24,6 +24,7 @@ export function PrivilegeApprovals({ user, onError }: {
   const [targetId, setTargetId] = useState("");
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState("");
+  const [roleGrantsEnabled, setRoleGrantsEnabled] = useState(false);
 
   async function refresh() {
     const [result, siteStaff] = await Promise.all([
@@ -31,6 +32,7 @@ export function PrivilegeApprovals({ user, onError }: {
       isLeader(user?.role) ? listStaff() : Promise.resolve(null),
     ]);
     setRequests(result.requests);
+    setRoleGrantsEnabled(result.syntheticRoleGrantsEnabled);
     setStaff(siteStaff?.staff ?? []);
   }
 
@@ -89,8 +91,9 @@ export function PrivilegeApprovals({ user, onError }: {
         <p>Every request requires a separately authenticated approving staff member. Requests expire after 10 minutes; temporary permission grants last no more than 15 minutes. Fresh multifactor authentication is required to request or approve.</p>
         <p>Development-only demonstration: dual approval does not verify pharmacist licensure, certify legal authorization, or make Pharmacy1OS production-ready.</p>
         {notice && <p role="status" className="message">{notice}</p>}
+        {canRequestRole && !roleGrantsEnabled && <p>Privileged role grants are disabled by default. Credential verification and production authorization are not implemented.</p>}
       </section>
-      {(temporaryEligible || canRequestRole) && (
+      {(temporaryEligible || (canRequestRole && roleGrantsEnabled)) && (
         <section className="panel staff-panel">
           <h3>Request authorization</h3>
           <form className="staff-form" onSubmit={requestAccess}>
