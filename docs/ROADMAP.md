@@ -1,5 +1,7 @@
 # Pharmacy1OS Roadmap
 
+> **Development progression:** The agreed post-3L.2 development sequence, dependencies, stage exit gates, and production-readiness blockers are maintained in [Pharmacy1OS Progression Map](PROGRESSION_MAP.md). The next recommended stage is **3L.3 — Engineering reliability and deterministic builds**, followed by 3M production identity/security and 3N operational resilience. This checklist remains the implementation-status ledger; the progression map is the sequencing reference.
+
 ## Phase 0 — Foundation
 - [x] Monorepo layout
 - [x] Web workstation shell
