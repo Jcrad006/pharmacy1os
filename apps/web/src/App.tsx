@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getDevelopmentUsers,
+  getAuthStatus,
+  getAuthenticatedUser,
+  endAuthenticatedSession,
+  setAuthCsrfToken,
   getPatients,
   getPrescribers,
   getPrescriptionQueue,
@@ -49,6 +53,8 @@ const viewTitles: Record<View, string> = {
 };
 
 export function App() {
+  const [authMode, setAuthMode] = useState<"loading" | "development" | "oidc">("loading");
+  const [authReady, setAuthReady] = useState(false);
   const [users, setUsers] = useState<DevUser[]>([]);
   const [selectedExternalId, setSelectedExternalId] = useState(
     () => localStorage.getItem("pharmacy1os.devUser") ?? "",
@@ -105,8 +111,25 @@ export function App() {
   }
 
   useEffect(() => {
-    getDevelopmentUsers()
-      .then((nextUsers) => {
+    void getAuthStatus().then(async (status) => {
+      setAuthMode(status.mode);
+      if (status.mode === "oidc") {
+        try {
+          const result = await getAuthenticatedUser();
+          setAuthCsrfToken(result.csrfToken);
+          setUsers([result.user]);
+          setSelectedExternalId("authenticated");
+          setAuthReady(true);
+        } catch {
+          // A locked, expired, or absent session must show the sign-in screen.
+          setAuthCsrfToken(null);
+          setSelectedExternalId("");
+          setAuthReady(false);
+        }
+        return;
+      }
+      try {
+        const nextUsers = await getDevelopmentUsers();
         setUsers(nextUsers);
         const stored = localStorage.getItem("pharmacy1os.devUser");
         if (stored && nextUsers.some((user) => user.externalAuthId === stored)) {
@@ -115,17 +138,22 @@ export function App() {
           setSelectedExternalId(nextUsers[0].externalAuthId);
           localStorage.setItem("pharmacy1os.devUser", nextUsers[0].externalAuthId);
         }
-      })
-      .catch((error) => {
+      } catch (error) {
         setMessage(error instanceof Error ? error.message : "Unable to load demo staff.");
-      });
+      } finally {
+        setAuthReady(true);
+      }
+    }).catch((error) => {
+      setAuthMode("development");
+      setMessage(error instanceof Error ? error.message : "Authentication status unavailable.");
+    });
   }, []);
 
   useEffect(() => {
-    if (selectedExternalId) {
+    if (authReady && selectedExternalId) {
       void refreshWorkspace(selectedExternalId);
     }
-  }, [selectedExternalId]);
+  }, [authReady, selectedExternalId]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -196,6 +224,7 @@ export function App() {
   }, [queue, willCall]);
 
   function selectUser(value: string) {
+    if (authMode !== "development") return;
     setSelectedExternalId(value);
     localStorage.setItem("pharmacy1os.devUser", value);
   }
@@ -215,6 +244,62 @@ export function App() {
   async function afterMutation(messageText: string) {
     await refreshWorkspace();
     setMessage(messageText);
+  }
+
+  async function endSession(action: "lock" | "logout") {
+    try {
+      await endAuthenticatedSession(action);
+    } finally {
+      setAuthCsrfToken(null);
+      setSelectedExternalId("");
+      setUsers([]);
+      setQueue([]);
+      setPatients([]);
+      setPrescribers([]);
+      setAuthReady(false);
+    }
+  }
+
+  // Human inactivity drives workstation lock; server independently expires
+  // sessions on inactivity and enforces every API permission.
+  useEffect(() => {
+    if (authMode !== "oidc" || !authReady) return;
+    let timeout: ReturnType<typeof setTimeout>;
+    let lastActivity = Date.now();
+    const lock = () => { void endSession("lock").catch(() => undefined); };
+    const activity = () => {
+      if (Date.now() - lastActivity >= 15 * 60_000) { lock(); return; }
+      lastActivity = Date.now();
+      clearTimeout(timeout);
+      timeout = setTimeout(lock, 15 * 60_000);
+    };
+    timeout = setTimeout(lock, 15 * 60_000);
+    for (const eventName of ["pointerdown", "keydown", "focus"]) {
+      window.addEventListener(eventName, activity);
+    }
+    return () => {
+      clearTimeout(timeout);
+      for (const eventName of ["pointerdown", "keydown", "focus"]) {
+        window.removeEventListener(eventName, activity);
+      }
+    };
+  }, [authMode, authReady]);
+
+  if (authMode === "loading") {
+    return <main className="app-shell"><section className="notice">Checking workstation identity…</section></main>;
+  }
+
+  if (authMode === "oidc" && !authReady) {
+    return (
+      <main className="app-shell">
+        <section className="notice">
+          <h1>Pharmacy1OS workstation locked</h1>
+          <p>Sign in using your assigned staff identity and multifactor authentication.</p>
+          <p><a href="/api/auth/login">Sign in with identity provider</a></p>
+          <small>Stage 3M development prototype. Synthetic data only; clinical use is prohibited.</small>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -243,15 +328,26 @@ export function App() {
         </nav>
 
         <div className="user-panel">
-          <label htmlFor="staff">Synthetic staff identity</label>
-          <select id="staff" value={selectedExternalId} onChange={(event) => selectUser(event.target.value)}>
-            {users.map((user) => (
-              <option key={user.externalAuthId} value={user.externalAuthId}>
-                {user.displayName} — {roleLabel(user.role)}
-              </option>
-            ))}
-          </select>
-          <small>Development only. This is not production authentication.</small>
+          {authMode === "development" ? (
+            <>
+              <label htmlFor="staff">Synthetic staff identity</label>
+              <select id="staff" value={selectedExternalId} onChange={(event) => selectUser(event.target.value)}>
+                {users.map((user) => (
+                  <option key={user.externalAuthId} value={user.externalAuthId}>
+                    {user.displayName} — {roleLabel(user.role)}
+                  </option>
+                ))}
+              </select>
+              <small>Development only. This is not production authentication.</small>
+            </>
+          ) : (
+            <>
+              <strong>{selectedUser?.displayName}</strong>
+              <small>Authenticated staff · {selectedUser?.siteName}</small>
+              <button onClick={() => void endSession("lock").catch(setMessage)}>Lock workstation</button>
+              <button onClick={() => void endSession("logout").catch(setMessage)}>Sign out</button>
+            </>
+          )}
           <div className="shortcut-hint">
             <span><kbd>F1</kbd> Dashboard</span>
             <span><kbd>F2</kbd> Exceptions</span>
