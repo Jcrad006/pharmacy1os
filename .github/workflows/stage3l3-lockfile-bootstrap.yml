@@ -1,0 +1,39 @@
+name: Stage 3L.3 lockfile bootstrap (temporary)
+
+# Temporary bootstrap: runs only on the dedicated development branch.
+# Remove this workflow after the generated lockfile has been committed.
+on:
+  push:
+    branches: [stage3l3-engineering-reliability]
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.repository == 'Jcrad006/pharmacy1os'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Generate first committed dependency lockfile
+        run: pnpm install --lockfile-only --no-frozen-lockfile
+      - name: Commit lockfile on development branch only
+        run: |
+          set -euo pipefail
+          git add pnpm-lock.yaml
+          if git diff --cached --quiet; then
+            echo "Lockfile already matches dependency manifests."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "build(3L.3): commit generated pnpm dependency lockfile"
+          git push origin "HEAD:refs/heads/stage3l3-engineering-reliability"
