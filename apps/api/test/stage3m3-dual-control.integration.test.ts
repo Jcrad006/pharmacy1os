@@ -145,6 +145,20 @@ describe("Stage 3M.3 two-person privileged authorization", () => {
       .resolves.toMatchObject({ actor: { id: technicianId, role: "TECHNICIAN" } });
     await expect(authenticateSession(mockRequest(technicianId), "prescription:verify"))
       .rejects.toMatchObject({ statusCode: 403 });
+    const reviewerGrantKey = { userId_siteId: { userId: picId, siteId: site } };
+    await db.siteRoleAssignment.update({ where: reviewerGrantKey, data: { active: false } });
+    await expect(authenticateSession(mockRequest(technicianId), "inventory:correct"))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await db.siteRoleAssignment.update({ where: reviewerGrantKey, data: { active: true } });
+    const beforeExpiry = await db.privilegedAccessRequest.findUniqueOrThrow({ where: { id } });
+    await db.privilegedAccessRequest.update({
+      where: { id }, data: { effectiveUntil: new Date(Date.now() - 1000) },
+    });
+    await expect(authenticateSession(mockRequest(technicianId), "inventory:correct"))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await db.privilegedAccessRequest.update({
+      where: { id }, data: { effectiveUntil: beforeExpiry.effectiveUntil },
+    });
     const repeat = await api(adminId, "POST", "/api/privileged/requests/" + id + "/review", {
       decision: "APPROVED", note: "Attempt to reuse decided approval",
     });
