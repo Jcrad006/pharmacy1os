@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { db } from "../src/db.js";
@@ -154,8 +154,8 @@ describe("OIDC signature, claims and MFA", () => {
     expect(() => verifyOidcIdToken(signed({ aud: "attacker" }), jwks, "good-nonce")).toThrow();
     expect(() => verifyOidcIdToken(signed({ amr: ["pwd"] }), jwks, "good-nonce")).toThrow();
     expect(() => verifyOidcIdToken(signed({ auth_time: 1 }), jwks, "good-nonce")).toThrow();
-    const forged = signed().replace(/.$/, "A");
-    // If last character happens to already be 'A', tamper with payload instead.
-    expect(() => verifyOidcIdToken(forged === signed() ? "A" + signed().slice(1) : forged, jwks, "good-nonce")).toThrow();
+    const parts = signed().split(".");
+    parts[2] = (parts[2]![0] === "A" ? "B" : "A") + parts[2]!.slice(1);
+    expect(() => verifyOidcIdToken(parts.join("."), jwks, "good-nonce")).toThrow();
   });
 });
