@@ -151,6 +151,15 @@ export function canWriteInventory(user?: DevUser) {
 }
 
 
+export function hasCurrentTemporaryPermission(user: DevUser | undefined, permission: string) {
+  const deadline = user?.temporaryPermissionExpiresAt?.[permission];
+  return Boolean(user?.temporaryPermissions?.includes(permission) &&
+    deadline && new Date(deadline).getTime() > Date.now());
+}
+
 export function canCorrectInventory(user?: DevUser) {
-  return Boolean(user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "INVENTORY_MANAGER"].includes(user.role));
+  return Boolean(user && (
+    ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "INVENTORY_MANAGER"].includes(user.role) ||
+    hasCurrentTemporaryPermission(user, "inventory:correct")
+  ));
 }
