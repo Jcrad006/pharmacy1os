@@ -263,6 +263,13 @@ export async function staffRoutes(app: FastifyInstance) {
           where: { userId: id, siteId: auth.actor.siteId, revokedAt: null },
           data: { revokedAt: new Date() },
         });
+        // Explicit staff-session revocation also revokes still-live
+        // temporary permissions at this site. A fresh login does not restore them.
+        await tx.privilegedAccessRequest.updateMany({
+          where: { siteId: auth.actor.siteId, targetUserId: id,
+            kind: "TEMP_PERMISSION", status: "APPROVED" },
+          data: { status: "CANCELLED", effectiveUntil: new Date() },
+        });
         await writeAuditEvent(tx, {
           siteId: auth.actor.siteId, actorId: auth.actor.id,
           action: "STAFF_SITE_SESSIONS_REVOKED", entityType: "User",
