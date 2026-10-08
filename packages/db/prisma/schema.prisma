@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum CredentialReviewStatus {
+  PENDING
+  TEST_ATTESTED
+  REJECTED
+}
+
 enum PrivilegedAccessKind {
   ROLE_GRANT
   TEMP_PERMISSION
@@ -408,6 +414,8 @@ model PharmacySite {
   siteRoleAssignments SiteRoleAssignment[]
   authSessions  AuthSession[]
   privilegedAccessRequests PrivilegedAccessRequest[]
+  credentialReviews StaffCredentialReview[]
+  securityEvents SecurityEvent[]
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
@@ -464,6 +472,9 @@ model User {
   privilegedAccessTargets PrivilegedAccessRequest[] @relation("PrivilegeTarget")
   privilegedAccessRequests PrivilegedAccessRequest[] @relation("PrivilegeRequester")
   privilegedAccessReviews PrivilegedAccessRequest[] @relation("PrivilegeReviewer")
+  credentialSubjectReviews StaffCredentialReview[] @relation("CredentialSubject")
+  credentialSubmittedReviews StaffCredentialReview[] @relation("CredentialSubmitter")
+  credentialCompletedReviews StaffCredentialReview[] @relation("CredentialReviewer")
   auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
   interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
@@ -2084,4 +2095,47 @@ model PrivilegedAccessRequest {
 
   @@index([siteId, status, createdAt])
   @@index([targetUserId, status, effectiveUntil])
+}
+
+// Stage 3M.4: double-reviewed, TEST-ONLY credential attestations. No automatic
+// license lookup. TEST_ATTESTED must never be represented as board verification.
+model StaffCredentialReview {
+  id           String                 @id @default(uuid())
+  siteId       String
+  site         PharmacySite           @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  targetUserId String
+  target       User                   @relation("CredentialSubject", fields: [targetUserId], references: [id], onDelete: Restrict)
+  submittedById String
+  submittedBy  User                   @relation("CredentialSubmitter", fields: [submittedById], references: [id], onDelete: Restrict)
+  reviewedById String?
+  reviewedBy   User?                  @relation("CredentialReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  role         UserRole
+  status       CredentialReviewStatus @default(PENDING)
+  authority    String
+  evidenceReference String
+  rationale    String
+  reviewNote   String?
+  expiresAt    DateTime
+  createdAt    DateTime               @default(now())
+  reviewedAt   DateTime?
+
+  @@index([siteId, status, createdAt])
+  @@index([targetUserId, role, status, expiresAt])
+}
+
+// Security events contain no PHI, session tokens, raw IPs or query strings.
+// Origin-bound HMACs allow short-lived correlation without storing network IDs.
+model SecurityEvent {
+  id          String   @id @default(uuid())
+  siteId      String?
+  site        PharmacySite? @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  kind        String
+  requestPath String
+  httpStatus  Int
+  networkHash String?
+  occurredAt  DateTime @default(now())
+
+  @@index([occurredAt, kind])
+  @@index([siteId, occurredAt])
+  @@index([networkHash, occurredAt])
 }
