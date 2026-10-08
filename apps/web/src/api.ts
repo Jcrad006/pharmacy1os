@@ -184,6 +184,75 @@ export async function cancelPrivilegedRequest(id: string) {
   );
 }
 
+export type CredentialReview = {
+  id: string;
+  targetUserId: string;
+  submittedById: string;
+  reviewedById: string | null;
+  role: "PHARMACIST" | "PHARMACIST_IN_CHARGE";
+  status: "PENDING" | "TEST_ATTESTED" | "REJECTED";
+  authority: string;
+  rationale: string;
+  reviewNote: string | null;
+  expiresAt: string;
+  createdAt: string;
+  reviewedAt: string | null;
+};
+
+export type SecurityIncident = {
+  id: string;
+  kind: string;
+  requestPath: string;
+  httpStatus: number;
+  occurredAt: string;
+};
+
+export async function suspendStaffGlobally(memberId: string, reason: string) {
+  return request<{
+    globallySuspended: boolean; affectedSites: number;
+    revokedSessions: number; cancelledPrivileges: number;
+  }>("/api/staff/" + encodeURIComponent(memberId) + "/global-suspend", {
+    method: "POST", body: JSON.stringify({ reason }),
+  });
+}
+
+export async function listCredentialReviews() {
+  return request<{ reviews: CredentialReview[]; automaticAuthorityVerification: boolean }>(
+    "/api/credentials/reviews",
+  );
+}
+
+export async function submitCredentialReview(input: {
+  targetUserId: string;
+  role: "PHARMACIST" | "PHARMACIST_IN_CHARGE";
+  authority: string;
+  evidenceReference: string;
+  rationale: string;
+  expiresAt: string;
+}) {
+  return request<{ review: CredentialReview }>("/api/credentials/reviews", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export async function decideCredentialReview(
+  id: string, decision: "TEST_ATTESTED" | "REJECTED", note: string,
+) {
+  return request<{ review: CredentialReview }>(
+    "/api/credentials/reviews/" + encodeURIComponent(id) + "/decision", {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    },
+  );
+}
+
+export async function listSecurityEvents() {
+  return request<{
+    windowHours: number; siteFailures: number;
+    unattributedLoginFailures: number;
+    events: SecurityIncident[]; note: string;
+  }>("/api/security/events");
+}
+
 export type RoutineStaffRole =
   | "TECHNICIAN" | "INTERN" | "CASHIER" | "AUDITOR" | "INVENTORY_MANAGER";
 
