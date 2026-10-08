@@ -7,6 +7,13 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ProtectedOffboardingStatus {
+  PENDING
+  APPROVED
+  DENIED
+  CANCELLED
+}
+
 enum CredentialReviewStatus {
   PENDING
   TEST_ATTESTED
@@ -415,6 +422,7 @@ model PharmacySite {
   authSessions  AuthSession[]
   privilegedAccessRequests PrivilegedAccessRequest[]
   credentialReviews StaffCredentialReview[]
+  protectedOffboardingRequests ProtectedOffboardingRequest[]
   securityEvents SecurityEvent[]
   patients      Patient[]
   prescribers   Prescriber[]
@@ -475,6 +483,9 @@ model User {
   credentialSubjectReviews StaffCredentialReview[] @relation("CredentialSubject")
   credentialSubmittedReviews StaffCredentialReview[] @relation("CredentialSubmitter")
   credentialCompletedReviews StaffCredentialReview[] @relation("CredentialReviewer")
+  protectedOffboardingTargets ProtectedOffboardingRequest[] @relation("OffboardingTarget")
+  protectedOffboardingRequests ProtectedOffboardingRequest[] @relation("OffboardingRequester")
+  protectedOffboardingReviews ProtectedOffboardingRequest[] @relation("OffboardingReviewer")
   auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
   interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
@@ -2138,4 +2149,27 @@ model SecurityEvent {
   @@index([occurredAt, kind])
   @@index([siteId, occurredAt])
   @@index([networkHash, occurredAt])
+}
+
+// Stage 3M.5: globally suspending a protected professional/administrator
+// requires a separately MFA-authenticated approver with scoped site authority.
+model ProtectedOffboardingRequest {
+  id               String                     @id @default(uuid())
+  siteId           String
+  site             PharmacySite               @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  targetUserId     String
+  target           User                       @relation("OffboardingTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+  requestedById    String
+  requestedBy      User                       @relation("OffboardingRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewedById     String?
+  reviewedBy       User?                      @relation("OffboardingReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  status           ProtectedOffboardingStatus @default(PENDING)
+  reason           String
+  reviewNote       String?
+  createdAt        DateTime                   @default(now())
+  reviewDeadlineAt DateTime
+  reviewedAt       DateTime?
+
+  @@index([siteId, status, createdAt])
+  @@index([targetUserId, status, createdAt])
 }
