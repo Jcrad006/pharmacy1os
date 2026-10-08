@@ -391,6 +391,8 @@ model PharmacySite {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   users         User[]
+  siteRoleAssignments SiteRoleAssignment[]
+  authSessions  AuthSession[]
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
@@ -436,11 +438,14 @@ model User {
   siteId            String
   site              PharmacySite       @relation(fields: [siteId], references: [id])
   externalAuthId    String?            @unique
+  oidcSubject       String?            @unique
   displayName       String
   role              UserRole
   active            Boolean            @default(true)
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
+  siteRoleAssignments SiteRoleAssignment[]
+  authSessions      AuthSession[]
   auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
   interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
@@ -1984,4 +1989,52 @@ model AuditEvent {
 
   @@index([siteId, occurredAt])
   @@index([entityType, entityId])
+}
+
+
+// Stage 3M: staff grants are scoped to a site; legacy User.role remains
+// solely for the synthetic development workflow and historical records.
+model SiteRoleAssignment {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  siteId    String
+  site      PharmacySite @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  role      UserRole
+  active    Boolean      @default(true)
+  grantedAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([userId, siteId])
+  @@index([siteId, active, role])
+}
+
+// A random session secret exists only in the browser's HttpOnly cookie.
+// The database stores its SHA-256 hash, allowing immediate server revocation.
+model AuthSession {
+  id             String       @id @default(uuid())
+  sessionHash    String       @unique
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  siteId         String
+  site           PharmacySite @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  createdAt      DateTime     @default(now())
+  lastSeenAt     DateTime     @default(now())
+  idleExpiresAt  DateTime
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  mfaVerifiedAt  DateTime
+
+  @@index([userId, revokedAt])
+  @@index([siteId, expiresAt])
+}
+
+// One-time authorization-code state; never a bearer-session credential.
+model OidcLoginAttempt {
+  stateHash   String   @id
+  nonce       String
+  pkceVerifier String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  consumedAt  DateTime?
 }
