@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
 import { writeAuditEvent } from "../audit.js";
 import { AccessError } from "../security/devIdentity.js";
+import { checkAuthLoginThrottle } from "../security/securityMonitoring.js";
 import {
   oidcEnabled, oidcConfig, oidcMetadata, pkceChallenge,
   randomUrlToken, redeemAuthorizationCode,
@@ -39,9 +40,10 @@ export async function authRoutes(app: FastifyInstance) {
     syntheticOnly: true,
   }));
 
-  app.get("/auth/login", async (_request, reply) => {
+  app.get("/auth/login", async (request, reply) => {
     try {
       requireMode();
+      await checkAuthLoginThrottle(request);
       const { clientId, redirectUri } = oidcConfig();
       const provider = await oidcMetadata();
       const state = randomUrlToken();
