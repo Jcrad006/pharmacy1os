@@ -51,43 +51,43 @@ export function primaryProviderContact(
 
 export function canProcess(user?: DevUser) {
   return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+    user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "TECHNICIAN", "INTERN"].includes(user.role),
   );
 }
 
 export function canEditPrescription(user?: DevUser) {
   return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+    user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "TECHNICIAN", "INTERN"].includes(user.role),
   );
 }
 
 export function canManagePrescriptionDocuments(user?: DevUser) {
   return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+    user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "TECHNICIAN", "INTERN"].includes(user.role),
   );
 }
 
 export function canVerify(user?: DevUser) {
-  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+  return Boolean(user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE"].includes(user.role));
 }
 
 export function canAuthorizeEmergencySupply(user?: DevUser) {
-  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+  return Boolean(user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE"].includes(user.role));
 }
 
 export function canSell(user?: DevUser) {
   return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "CASHIER"].includes(user.role),
+    user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "TECHNICIAN", "CASHIER"].includes(user.role),
   );
 }
 
 export function canReadAudit(user?: DevUser) {
-  return Boolean(user && ["ADMIN", "PHARMACIST", "AUDITOR"].includes(user.role));
+  return Boolean(user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "AUDITOR"].includes(user.role));
 }
 
 export function canWritePatients(user?: DevUser) {
   return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+    user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "TECHNICIAN", "INTERN"].includes(user.role),
   );
 }
 
