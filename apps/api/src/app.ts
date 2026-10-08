@@ -8,6 +8,8 @@ import { developmentRoutes } from "./routes/development.js";
 import { authRoutes } from "./routes/auth.js";
 import { staffRoutes } from "./routes/staff.js";
 import { privilegedAccessRoutes } from "./routes/privilegedAccess.js";
+import { workforceSecurityRoutes } from "./routes/workforceSecurity.js";
+import { registerSecurityMonitoring, securityMonitoringRoutes } from "./security/securityMonitoring.js";
 import { assertRuntimeSafetyConfiguration } from "./security/runtimeSafety.js";
 import { patientRoutes } from "./routes/patients.js";
 import { prescriberRoutes } from "./routes/prescribers.js";
@@ -64,6 +66,8 @@ export function buildApp(options: BuildAppOptions = {}) {
     bodyLimit: 36 * 1024 * 1024,
   });
 
+  registerSecurityMonitoring(app);
+
   app.register(cors, {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
   });
@@ -90,6 +94,8 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(authRoutes, { prefix: "/api" });
   app.register(staffRoutes, { prefix: "/api" });
   app.register(privilegedAccessRoutes, { prefix: "/api" });
+  app.register(workforceSecurityRoutes, { prefix: "/api" });
+  app.register(securityMonitoringRoutes, { prefix: "/api" });
   app.register(developmentRoutes, { prefix: "/api" });
   app.register(patientRoutes, { prefix: "/api" });
   app.register(prescriberRoutes, { prefix: "/api" });
