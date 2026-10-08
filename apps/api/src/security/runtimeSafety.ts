@@ -68,4 +68,10 @@ export function assertRuntimeSafetyConfiguration() {
       "Production WEB_ORIGIN must use HTTPS.",
     );
   }
+  // Authentication is now under development, but independent security review
+  // and full Stage 3M exit gates remain incomplete. No production mode bypass.
+  throw new RuntimeSafetyError(
+    "STAGE_3M_PRODUCTION_GATE",
+    "Production startup remains prohibited until Stage 3M's full security exit gate is satisfied.",
+  );
 }
