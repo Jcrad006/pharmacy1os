@@ -7,6 +7,7 @@ import { hashSecret, authenticateSession } from "../src/security/sessions.js";
 
 process.env.AUTH_MODE = "oidc";
 process.env.ALLOW_DEV_IDENTITY = "true";
+process.env.ENABLE_SYNTHETIC_ROLE_GRANTS = "true";
 process.env.AUTH_SESSION_SECRET = "stage-3m3-test-secret-abcdefghijklmnopqrstuv012345";
 process.env.OIDC_ISSUER = "http://localhost:4999/realms/test";
 process.env.OIDC_CLIENT_ID = "pharmacy1os-test";
