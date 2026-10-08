@@ -111,6 +111,23 @@ export async function workforceSecurityRoutes(app: FastifyInstance) {
           },
           data: { status: "CANCELLED", effectiveUntil: new Date() },
         });
+        await tx.privilegedAccessRequest.updateMany({
+          where: {
+            AND: [
+              { OR: [{ requestedById: userId }, { reviewedById: userId }] },
+              { OR: [{ status: "PENDING" },
+                { kind: "TEMP_PERMISSION", status: "APPROVED" }] },
+            ],
+          },
+          data: { status: "CANCELLED", effectiveUntil: new Date() },
+        });
+        await tx.protectedOffboardingRequest.updateMany({
+          where: {
+            status: "PENDING",
+            OR: [{ requestedById: userId }, { targetUserId: userId }],
+          },
+          data: { status: "CANCELLED" },
+        });
         await writeAuditEvent(tx, {
           siteId: auth.actor.siteId, actorId: auth.actor.id,
           action: "STAFF_GLOBAL_SUSPENSION", entityType: "User",
