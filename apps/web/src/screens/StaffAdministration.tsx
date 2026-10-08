@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   changeStaffSiteRole, listStaff, provisionStaff, revokeStaffSiteSessions,
-  setStaffSiteAccess, type RoutineStaffRole, type StaffMember,
+  setStaffSiteAccess, suspendStaffGlobally, type RoutineStaffRole, type StaffMember,
 } from "../api";
 import type { DevUser } from "../types";
 
@@ -23,6 +23,8 @@ export function StaffAdministration({ user, onError }: {
   const [role, setRole] = useState<RoutineStaffRole>("TECHNICIAN");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [globalTargetId, setGlobalTargetId] = useState("");
+  const [globalReason, setGlobalReason] = useState("");
 
   async function refresh() {
     const response = await listStaff();
@@ -131,7 +133,34 @@ export function StaffAdministration({ user, onError }: {
                       () => revokeStaffSiteSessions(member),
                       "Active sessions for this staff member at this site revoked.",
                     )}>Revoke sessions</button>
+                  {user?.role === "ADMIN" && !restricted && !self && member.accountActive && (
+                    <button disabled={busy}
+                      onClick={() => { setGlobalTargetId(member.id); setGlobalReason(""); }}>
+                      Suspend across all sites
+                    </button>
+                  )}
                 </div>
+                {user?.role === "ADMIN" && globalTargetId === member.id && !restricted && (
+                  <form className="staff-form" onSubmit={(event) => {
+                    event.preventDefault();
+                    void mutate(async () => {
+                      await suspendStaffGlobally(member.id, globalReason);
+                      setGlobalTargetId("");
+                      setGlobalReason("");
+                    }, "Account suspended organization-wide; all active sessions revoked.");
+                  }}>
+                    <label>
+                      Global offboarding reason (required, 10–500 characters)
+                      <input required minLength={10} maxLength={500}
+                        value={globalReason} onChange={event => setGlobalReason(event.target.value)} />
+                    </label>
+                    <p>Irreversible in this prototype. This disables access at every pharmacy and will not automatically restore sessions.</p>
+                    <button type="submit" disabled={busy || globalReason.trim().length < 10}>
+                      Confirm global suspension
+                    </button>
+                    <button type="button" onClick={() => setGlobalTargetId("")}>Cancel</button>
+                  </form>
+                )}
                 {restricted && <small>Privileged role changes require separate approval.</small>}
               </div>
             );
