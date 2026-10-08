@@ -45,7 +45,7 @@ function request(method: "GET" | "POST" | "PATCH", url: string, payload?: unknow
       ...adminCookie,
       ...(method !== "GET" ? { "x-csrf-token": csrf } : {}),
     },
-    ...(payload === undefined ? {} : { payload }),
+    ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }),
   });
 }
 
