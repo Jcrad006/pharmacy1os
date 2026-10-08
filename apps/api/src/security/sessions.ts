@@ -41,6 +41,7 @@ export type AuthenticatedSession = {
   sessionHash: string;
   csrfToken: string;
   expiresAt: Date;
+  mfaVerifiedAt: Date;
 };
 
 export async function authenticateSession(
@@ -70,7 +71,23 @@ export async function authenticateSession(
     throw new AccessError(403, "No active role for this site.");
   }
   if (permission && !roleHasPermission(grant.role as Role, permission)) {
-    throw new AccessError(403, "Insufficient permissions.");
+    // A narrowly scoped, second-person approved permission may supplement
+    // (never replace) the user's active base role for no more than 15 minutes.
+    const elevated = ["inventory:correct", "thirdparty:override"].includes(permission) &&
+      now.getTime() - session.mfaVerifiedAt.getTime() <= 15 * 60_000 &&
+      await db.privilegedAccessRequest.findFirst({
+        where: {
+          kind: "TEMP_PERMISSION",
+          status: "APPROVED",
+          siteId: session.siteId,
+          targetUserId: session.userId,
+          requestedPermission: permission,
+          effectiveUntil: { gt: now },
+          reviewedBy: { active: true },
+        },
+        select: { id: true },
+      });
+    if (!elevated) throw new AccessError(403, "Insufficient permissions.");
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
     const provided = request.headers["x-csrf-token"];
@@ -107,6 +124,7 @@ export async function authenticateSession(
     sessionHash,
     csrfToken: csrfFor(sessionHash),
     expiresAt: session.expiresAt,
+    mfaVerifiedAt: session.mfaVerifiedAt,
   };
 }
 
