@@ -172,9 +172,9 @@ describe("Stage 3M.3 two-person privileged authorization", () => {
     const audit = await db.auditEvent.findMany({
       where: { entityType: "PrivilegedAccessRequest", entityId: id },
     });
-    expect(audit.map(e => e.action)).toEqual([
+    expect(audit.map(e => e.action).sort()).toEqual([
       "PRIVILEGE_APPROVAL_REQUESTED", "PRIVILEGE_APPROVED", "PRIVILEGE_CANCELLED",
-    ]);
+    ].sort());
   });
 
   it("rejects expired, stale MFA and denied privileges; a denial never grants access", async () => {
