@@ -22,6 +22,7 @@ import { DrugCatalog } from "./screens/DrugCatalog";
 import { Receiving } from "./screens/Receiving";
 import { Inventory } from "./screens/Inventory";
 import { ThirdParty } from "./screens/ThirdParty";
+import { StaffAdministration } from "./screens/StaffAdministration";
 import type { DevUser, ExceptionSummary, Patient, Prescriber, PrescriptionQueueItem } from "./types";
 import { roleLabel } from "./workflow";
 
@@ -36,6 +37,7 @@ type View =
   | "receiving"
   | "inventory"
   | "third-party"
+  | "staff"
   | "detail";
 
 const viewTitles: Record<View, string> = {
@@ -49,6 +51,7 @@ const viewTitles: Record<View, string> = {
   receiving: "Inventory Receiving",
   inventory: "Inventory Ledger",
   "third-party": "Third Party / COB",
+  staff: "Staff Administration",
   detail: "Prescription Detail",
 };
 
@@ -324,6 +327,9 @@ export function App() {
           <button className={view === "receiving" ? "nav-item active" : "nav-item"} onClick={() => navigate("receiving")}><span>Receiving</span><kbd>F8</kbd></button>
           <button className={view === "inventory" ? "nav-item active" : "nav-item"} onClick={() => navigate("inventory")}><span>Inventory</span><kbd>F9</kbd></button>
           <button className={view === "third-party" ? "nav-item active" : "nav-item"} onClick={() => navigate("third-party")}><span>Third Party / COB</span><kbd>F10</kbd></button>
+          {authMode === "oidc" && ["ADMIN", "PHARMACIST_IN_CHARGE"].includes(selectedUser?.role ?? "") && (
+            <button className={view === "staff" ? "nav-item active" : "nav-item"} onClick={() => navigate("staff")}>Staff Administration</button>
+          )}
           <button className="nav-item" disabled>Reports</button>
         </nav>
 
@@ -490,6 +496,10 @@ export function App() {
             user={selectedUser}
             onError={setMessage}
           />
+        )}
+
+        {view === "staff" && authMode === "oidc" && (
+          <StaffAdministration user={selectedUser} onError={setMessage} />
         )}
 
         {view === "detail" && selectedPrescriptionId && (
