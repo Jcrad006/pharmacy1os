@@ -83,7 +83,18 @@ export async function authenticateSession(
           targetUserId: session.userId,
           requestedPermission: permission,
           effectiveUntil: { gt: now },
-          reviewedBy: { active: true },
+          // Revoking the reviewing leader's site authority also invalidates
+          // still-active synthetic delegations they approved.
+          reviewedBy: {
+            active: true,
+            siteRoleAssignments: {
+              some: {
+                siteId: session.siteId,
+                active: true,
+                role: { in: ["ADMIN", "PHARMACIST_IN_CHARGE"] },
+              },
+            },
+          },
         },
         select: { id: true },
       });
