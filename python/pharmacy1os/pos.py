@@ -184,11 +184,14 @@ class PosService:
                                 identity_method=identity_method, signature_method=signature_method,
                                 signature_attested=True, subtotal=total, status="POSTED")
             s.add(tx); s.flush()
+            from .date_rules import require_date_eligible, record_sale_time
             for fid, price, fill, rx, bag in selected:
+                require_date_eligible(s, rx)
                 s.add(PosLine(transaction_id=tx.id, fill_id=fid, amount=price,
                               scanned_bag=bag_values[fid] or None))
                 s.add(Sale(fill_id=fid, verified_identity=True, signature_attested=True,
                            tender="SPLIT_SYNTHETIC", amount=price))
+                record_sale_time(s, actor, fill)
                 fill.status = "SOLD"; rx.status = "SOLD"
                 if fill.fill_number > 0:
                     rx.refills_used = max(rx.refills_used, fill.fill_number)

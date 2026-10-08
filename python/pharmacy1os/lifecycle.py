@@ -43,6 +43,8 @@ class LifecycleService:
             if before in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"}:
                 if rx.expiration_date and rx.expiration_date < date.today().isoformat():
                     raise WorkflowError("Cannot resume an expired prescription toward dispensing")
+                from .date_rules import require_date_eligible
+                require_date_eligible(s, rx)
                 if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
                             DUR.severity == "HIGH", DUR.resolved.is_(False))):
                     raise WorkflowError("Unresolved high-severity DUR issue")

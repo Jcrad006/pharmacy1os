@@ -64,6 +64,8 @@ class SchedulingService:
                 raise WorkflowError("Schedule cannot exceed prescription expiration date")
             if rx.do_not_fill_before and due.isoformat() < rx.do_not_fill_before:
                 raise WorkflowError("Schedule cannot precede do-not-fill-before date")
+            from .date_rules import require_date_eligible
+            require_date_eligible(s, rx, on=due)
             if q is not None and positive(q) > rx.quantity:
                 raise WorkflowError("Scheduled quantity exceeds authorized quantity")
             if s.scalar(select(ScheduledFill.id).where(ScheduledFill.prescription_id == rx.id,

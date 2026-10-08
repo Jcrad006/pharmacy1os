@@ -21,6 +21,7 @@ from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
 from .exceptions import ExceptionService
+from .date_rules import DateRulesService
 
 from sqlalchemy import select
 
@@ -65,6 +66,7 @@ def main() -> None:
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
     exception_service = ExceptionService(service)
+    date_rules_service = DateRulesService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -190,6 +192,7 @@ def main() -> None:
                 self.action("Resume Rx", self.resume_rx)
                 self.action("Cancel Rx", self.cancel_rx)
                 self.action("Rx Documents", self.document_window)
+                self.action("Date Rules / Min Refill Interval", self.rx_date_policy)
             elif page == 2:
                 self.action("Multi-Fill Checkout (Synthetic)", self.pos_checkout)
                 self.action("Refund / Void (Synthetic)", self.pos_adjust)
@@ -435,6 +438,24 @@ def main() -> None:
             events = will_call_service.history(self.actor, fill_id)
             QMessageBox.information(self, "Will Call custody (synthetic)",
                                     json.dumps(events, indent=2))
+
+        def rx_date_policy(self):
+            rx_id = self.selected_id()
+            current = date_rules_service.preview(self.actor, rx_id)
+            QMessageBox.information(self, "Synthetic Rx date eligibility",
+                                    json.dumps(current, indent=2))
+            if self.actor.role not in ("PHARMACIST", "ADMIN"):
+                return
+            selection = QMessageBox.question(
+                self, "Synthetic Rx date policy",
+                "Edit the minimum interval between sold fills?\n"
+                "This is a synthetic safety setting, NOT insurance or legal authorization.")
+            if selection != QMessageBox.StandardButton.Yes:
+                return
+            days = int(self.ask("Rx minimum interval", "Number of days (0–365)",
+                                str(current["minimum_days_between_fills"])))
+            reason = self.ask("Rx minimum interval", "Document reason for rule change")
+            date_rules_service.set_minimum_days(self.actor, rx_id, days, reason)
 
         def fill_for_rx(self, rx_id):
             with service.sessions() as s:

@@ -20,7 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.schema import ForeignKeyConstraint
 
 from .models import Base
-from . import provider_directory, scheduling_models, billing_models, willcall, pos_models  # noqa: F401 -- register all mapped extensions
+from . import provider_directory, scheduling_models, billing_models, willcall, pos_models, date_rules  # noqa: F401 -- register all mapped extensions
 
 
 class MigrationSafetyError(RuntimeError):

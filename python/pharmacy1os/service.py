@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -289,6 +289,8 @@ class PharmacyService:
             raise WorkflowError("Prescription expired")
         if rx.do_not_fill_before and rx.do_not_fill_before > today:
             raise WorkflowError("Do-not-fill-before date not reached")
+        from .date_rules import require_date_eligible
+        require_date_eligible(s, rx, on=effective_date) if effective_date else require_date_eligible(s, rx)
         if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
                     DUR.severity == "HIGH", DUR.resolved.is_(False))):
             raise WorkflowError("Unresolved high-severity DUR issue")
@@ -410,6 +412,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PHARMACIST_REVIEW":
                 raise WorkflowError("Fill not awaiting pharmacist review")
+            from .date_rules import require_date_eligible
+            require_date_eligible(s, rx)
             if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
                         DUR.severity == "HIGH", DUR.resolved.is_(False))):
                 raise WorkflowError("Unresolved high-severity DUR issue")
@@ -457,6 +461,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "READY" or not identity_verified or not signed:
                 raise WorkflowError("Ready fill, identity verification and signature required")
+            from .date_rules import require_date_eligible
+            require_date_eligible(s, rx)
             from .inventory_advanced import assert_not_recalled
             for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
                 stock = s.get(Stock, src.stock_id)
@@ -475,6 +481,8 @@ class PharmacyService:
                 raise WorkflowError("Tender and nonnegative amount in cents required")
             s.add(Sale(fill_id=f.id, verified_identity=True, signature_attested=True,
                        tender=tender, amount=Decimal(amount)))
+            from .date_rules import record_sale_time
+            record_sale_time(s, actor, f)
             if bag:
                 from .willcall import record_closed
                 record_closed(s, actor, f, "SOLD", "Pickup completed with verified identity and signature")
