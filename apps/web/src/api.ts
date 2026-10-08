@@ -122,6 +122,67 @@ async function requestBlob(path: string, devUser: string) {
 }
 
 
+export type PrivilegedAccessKind = "ROLE_GRANT" | "TEMP_PERMISSION";
+export type PrivilegedAccessStatus = "PENDING" | "APPROVED" | "DENIED" | "CANCELLED";
+export type PrivilegedAccessRequest = {
+  id: string;
+  siteId: string;
+  targetUserId: string;
+  requestedById: string;
+  reviewedById: string | null;
+  kind: PrivilegedAccessKind;
+  status: PrivilegedAccessStatus;
+  requestedRole: import("./types").UserRole | null;
+  requestedPermission: string | null;
+  reason: string;
+  reviewNote: string | null;
+  createdAt: string;
+  reviewDeadlineAt: string;
+  reviewedAt: string | null;
+  effectiveUntil: string | null;
+};
+
+export async function listPrivilegedRequests() {
+  return request<{
+    requests: PrivilegedAccessRequest[];
+    temporaryPermissions: string[];
+  }>("/api/privileged/requests");
+}
+
+export async function createPrivilegedRequest(input: {
+  kind: PrivilegedAccessKind;
+  reason: string;
+  targetUserId?: string;
+  requestedRole?: "PHARMACIST" | "PHARMACIST_IN_CHARGE" | "ADMIN";
+  requestedPermission?: "inventory:correct" | "thirdparty:override";
+  expectedAssignmentUpdatedAt?: string;
+}) {
+  return request<{ request: PrivilegedAccessRequest }>("/api/privileged/requests", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function reviewPrivilegedRequest(
+  id: string,
+  decision: "APPROVED" | "DENIED",
+  note: string,
+) {
+  return request<{ request: PrivilegedAccessRequest }>(
+    "/api/privileged/requests/" + encodeURIComponent(id) + "/review", {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    },
+  );
+}
+
+export async function cancelPrivilegedRequest(id: string) {
+  return request<{ request: PrivilegedAccessRequest }>(
+    "/api/privileged/requests/" + encodeURIComponent(id) + "/cancel", {
+      method: "POST", body: JSON.stringify({}),
+    },
+  );
+}
+
 export type RoutineStaffRole =
   | "TECHNICIAN" | "INTERN" | "CASHIER" | "AUDITOR" | "INVENTORY_MANAGER";
 
