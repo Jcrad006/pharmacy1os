@@ -121,6 +121,61 @@ async function requestBlob(path: string, devUser: string) {
   return response.blob();
 }
 
+
+export type RoutineStaffRole =
+  | "TECHNICIAN" | "INTERN" | "CASHIER" | "AUDITOR" | "INVENTORY_MANAGER";
+
+export type StaffMember = {
+  id: string;
+  displayName: string;
+  role: import("./types").UserRole;
+  active: boolean;
+  accountActive: boolean;
+  provisioned: boolean;
+  assignmentId: string;
+  updatedAt: string;
+};
+
+export async function listStaff() {
+  return request<{ staff: StaffMember[]; assignableRoles: RoutineStaffRole[] }>("/api/staff");
+}
+
+export async function provisionStaff(input: {
+  displayName: string; oidcSubject: string; role: RoutineStaffRole;
+}) {
+  return request<{ staff: StaffMember }>("/api/staff", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export async function changeStaffSiteRole(member: StaffMember, role: RoutineStaffRole) {
+  return request<{ assignment: { updatedAt: string } }>(
+    "/api/staff/" + encodeURIComponent(member.id) + "/role", {
+      method: "PATCH", body: JSON.stringify({
+        role, expectedUpdatedAt: member.updatedAt,
+      }),
+    },
+  );
+}
+
+export async function setStaffSiteAccess(member: StaffMember, active: boolean) {
+  return request<{ assignment: { updatedAt: string } }>(
+    "/api/staff/" + encodeURIComponent(member.id) + "/site-access", {
+      method: "PATCH", body: JSON.stringify({
+        active, expectedUpdatedAt: member.updatedAt,
+      }),
+    },
+  );
+}
+
+export async function revokeStaffSiteSessions(member: StaffMember) {
+  return request<{ revokedSessions: number }>(
+    "/api/staff/" + encodeURIComponent(member.id) + "/sessions/revoke", {
+      method: "POST", body: JSON.stringify({}),
+    },
+  );
+}
+
 export async function getDevelopmentUsers() {
   const result = await request<{
     users: Array<DevUser & { externalAuthId: string | null }>;
