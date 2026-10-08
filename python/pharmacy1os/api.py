@@ -29,6 +29,8 @@ from .pos import PosService
 from .pos_api import make_pos_router
 from .patient_directory import PatientDirectory
 from .patient_api import make_patient_router
+from .exceptions import ExceptionService
+from .exceptions_api import make_exceptions_router
 
 
 class PatientIn(BaseModel):
@@ -248,6 +250,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_willcall_router(WillCallService(svc), staff_actor))
     app.include_router(make_pos_router(PosService(svc), staff_actor))
     app.include_router(make_patient_router(PatientDirectory(svc), staff_actor))
+    app.include_router(make_exceptions_router(ExceptionService(svc), staff_actor))
 
     @app.get("/health")
     def health():

@@ -20,6 +20,7 @@ from .billing import BillingService
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
+from .exceptions import ExceptionService
 
 from sqlalchemy import select
 
@@ -63,6 +64,7 @@ def main() -> None:
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
+    exception_service = ExceptionService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -174,7 +176,7 @@ def main() -> None:
                 widget = self.toolbar.takeAt(0).widget()
                 if widget:
                     widget.deleteLater()
-            self.search.setVisible(page in (0, 4))
+            self.search.setVisible(page in (0, 1, 4))
             if page == 0:
                 self.action("Advance → DUR", self.advance)
                 self.action("Start Fill", self.start_fill)
@@ -259,9 +261,10 @@ def main() -> None:
             else:
                 with service.sessions() as s:
                     if page == 1:
-                        headers = ["Severity", "Code", "Resolved"]
-                        self.rows = [(x.id, x.severity, x.code, str(x.resolved))
-                                     for x in s.scalars(select(DUR).join(Prescription, DUR.prescription_id == Prescription.id).where(Prescription.site_id == self.actor.site_id)).all()]
+                        headers = ["Kind", "Severity", "Rx", "Patient", "Issue / Next step"]
+                        self.rows = [(x["id"], x["kind"], x["severity"], x["rx_number"],
+                                      x["patient_name"], x["title"])
+                                     for x in exception_service.list(self.actor, query=self.search.text())]
                     elif page == 2:
                         headers = ["Bag", "Bin", "Status"]
                         self.rows = [(x.id, x.bag_barcode, x.bin_name, x.status)
