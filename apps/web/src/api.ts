@@ -184,6 +184,49 @@ export async function cancelPrivilegedRequest(id: string) {
   );
 }
 
+export type ProtectedOffboardingRequest = {
+  id: string;
+  siteId: string;
+  targetUserId: string;
+  requestedById: string;
+  reviewedById: string | null;
+  status: "PENDING" | "APPROVED" | "DENIED" | "CANCELLED";
+  reason: string;
+  reviewNote: string | null;
+  createdAt: string;
+  reviewDeadlineAt: string;
+  reviewedAt: string | null;
+};
+
+export async function listProtectedOffboarding() {
+  return request<{ requests: ProtectedOffboardingRequest[] }>("/api/protected-offboarding");
+}
+
+export async function requestProtectedOffboarding(targetUserId: string, reason: string) {
+  return request<{ request: ProtectedOffboardingRequest }>("/api/protected-offboarding", {
+    method: "POST", body: JSON.stringify({ targetUserId, reason }),
+  });
+}
+
+export async function reviewProtectedOffboarding(
+  id: string, decision: "APPROVED" | "DENIED", note: string,
+) {
+  return request<{ request: ProtectedOffboardingRequest;
+    revokedSessions: number; disabledSites: number; cancelledPrivileges: number }>(
+    "/api/protected-offboarding/" + encodeURIComponent(id) + "/review", {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    },
+  );
+}
+
+export async function cancelProtectedOffboarding(id: string) {
+  return request<{ request: ProtectedOffboardingRequest }>(
+    "/api/protected-offboarding/" + encodeURIComponent(id) + "/cancel", {
+      method: "POST", body: JSON.stringify({}),
+    },
+  );
+}
+
 export type CredentialReview = {
   id: string;
   targetUserId: string;
