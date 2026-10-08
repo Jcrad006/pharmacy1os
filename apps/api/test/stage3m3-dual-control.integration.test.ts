@@ -82,6 +82,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   const ids = staff.map(u => u.id);
+  await db.staffCredentialReview.deleteMany({ where: { targetUserId: { in: ids } } });
   await db.privilegedAccessRequest.deleteMany({
     where: { OR: [
       { requestedById: { in: ids } }, { targetUserId: { in: ids } },
@@ -253,6 +254,21 @@ describe("Stage 3M.3 two-person privileged authorization", () => {
     expect((await api(adminId, "POST", "/api/privileged/requests/" + id + "/review", {
       decision: "APPROVED", note: "Administrator cannot approve their own request",
     })).statusCode).toBe(403);
+    // Stage 3M.4: a current independently reviewed synthetic credential
+    // record must exist before test-only clinical-role elevation.
+    await db.staffCredentialReview.create({
+      data: {
+        siteId: site, targetUserId: technicianId,
+        submittedById: adminId, reviewedById: picId,
+        role: "PHARMACIST", status: "TEST_ATTESTED",
+        authority: "Synthetic licensing authority",
+        evidenceReference: "SYNTHETIC-REFERENCE-12345",
+        rationale: "Independent synthetic review for test-only role grant",
+        reviewNote: "Synthetic evidence reviewed by distinct site leader",
+        expiresAt: new Date(Date.now() + 24 * 3_600_000),
+        reviewedAt: new Date(),
+      },
+    });
     const approved = await api(picId, "POST", "/api/privileged/requests/" + id + "/review", {
       decision: "APPROVED", note: "Synthetic licensed-staff workflow demonstration only",
     });
