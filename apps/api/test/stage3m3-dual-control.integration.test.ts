@@ -269,6 +269,21 @@ describe("Stage 3M.3 two-person privileged authorization", () => {
         reviewedAt: new Date(),
       },
     });
+    const requesterGrant = {
+      userId_siteId: { userId: adminId, siteId: site },
+    };
+    await db.siteRoleAssignment.update({
+      where: requesterGrant, data: { active: false },
+    });
+    const staleRequester = await api(picId, "POST",
+      "/api/privileged/requests/" + id + "/review", {
+        decision: "APPROVED",
+        note: "A disabled requester must never activate pending privileges",
+      });
+    expect(staleRequester.statusCode).toBe(409);
+    await db.siteRoleAssignment.update({
+      where: requesterGrant, data: { active: true },
+    });
     const approved = await api(picId, "POST", "/api/privileged/requests/" + id + "/review", {
       decision: "APPROVED", note: "Synthetic licensed-staff workflow demonstration only",
     });
