@@ -22,6 +22,9 @@ A site leader (`ADMIN` or `PHARMACIST_IN_CHARGE`) must approve. Upon approval, a
 
 ### High-trust role requests — strictly synthetic
 
+**Default-deny:** The site role-grant route is completely disabled unless `ENABLE_SYNTHETIC_ROLE_GRANTS=true` is explicitly set in a non-production development/test environment. The default `false` value is intentional. The server rejects both requesting and approving high-trust roles while disabled, and the workstation hides the request form. This flag **must never be used as a substitute** for independently verified professional credentials or an authorization process.
+
+
 The high-trust role request path may modify an existing test-site grant on second-person approval, but **not** through the ordinary staff enrollment/role editor. Approved role changes revoke all existing sessions of the beneficiary at the affected site. No new user can self-provision as an administrator or pharmacist.
 
 - `PHARMACIST` or `PHARMACIST_IN_CHARGE`: site `ADMIN` requests; *different* current site `PHARMACIST_IN_CHARGE` approves.
