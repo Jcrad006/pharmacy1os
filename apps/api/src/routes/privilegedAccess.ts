@@ -237,6 +237,25 @@ export async function privilegedAccessRoutes(app: FastifyInstance) {
         } else if (!isManager) {
           throw new AccessError(403, "Temporary permissions require a site leader's approval.");
         }
+        // Review never trusts only the identity/role saved when the request was
+        // created. A departed or demoted requester cannot leave a pending
+        // clinical/admin escalation for another reviewer to activate later.
+        const requester = await tx.user.findUnique({
+          where: { id: entry.requestedById }, select: { active: true },
+        });
+        const requesterGrant = await tx.siteRoleAssignment.findUnique({
+          where: {
+            userId_siteId: {
+              userId: entry.requestedById, siteId: entry.siteId,
+            },
+          },
+        });
+        if (!requester?.active || !requesterGrant?.active ||
+            (entry.kind === "ROLE_GRANT" &&
+              (!isHighTrustRole(entry.requestedRole) ||
+                !mayRequestRole(requesterGrant.role, entry.requestedRole)))) {
+          throw new AccessError(409, "The original requester no longer has authority.");
+        }
         const target = await tx.user.findUnique({ where: { id: entry.targetUserId } });
         const grant = await tx.siteRoleAssignment.findUnique({
           where: { userId_siteId: { userId: entry.targetUserId, siteId: entry.siteId } },
