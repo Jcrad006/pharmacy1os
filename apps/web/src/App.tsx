@@ -23,6 +23,7 @@ import { Receiving } from "./screens/Receiving";
 import { Inventory } from "./screens/Inventory";
 import { ThirdParty } from "./screens/ThirdParty";
 import { StaffAdministration } from "./screens/StaffAdministration";
+import { PrivilegeApprovals } from "./screens/PrivilegeApprovals";
 import type { DevUser, ExceptionSummary, Patient, Prescriber, PrescriptionQueueItem } from "./types";
 import { roleLabel } from "./workflow";
 
@@ -38,6 +39,7 @@ type View =
   | "inventory"
   | "third-party"
   | "staff"
+  | "privileges"
   | "detail";
 
 const viewTitles: Record<View, string> = {
@@ -52,6 +54,7 @@ const viewTitles: Record<View, string> = {
   inventory: "Inventory Ledger",
   "third-party": "Third Party / COB",
   staff: "Staff Administration",
+  privileges: "Access Approvals",
   detail: "Prescription Detail",
 };
 
@@ -327,6 +330,9 @@ export function App() {
           <button className={view === "receiving" ? "nav-item active" : "nav-item"} onClick={() => navigate("receiving")}><span>Receiving</span><kbd>F8</kbd></button>
           <button className={view === "inventory" ? "nav-item active" : "nav-item"} onClick={() => navigate("inventory")}><span>Inventory</span><kbd>F9</kbd></button>
           <button className={view === "third-party" ? "nav-item active" : "nav-item"} onClick={() => navigate("third-party")}><span>Third Party / COB</span><kbd>F10</kbd></button>
+          {authMode === "oidc" && (
+            <button className={view === "privileges" ? "nav-item active" : "nav-item"} onClick={() => navigate("privileges")}>Access Approvals</button>
+          )}
           {authMode === "oidc" && ["ADMIN", "PHARMACIST_IN_CHARGE"].includes(selectedUser?.role ?? "") && (
             <button className={view === "staff" ? "nav-item active" : "nav-item"} onClick={() => navigate("staff")}>Staff Administration</button>
           )}
@@ -496,6 +502,10 @@ export function App() {
             user={selectedUser}
             onError={setMessage}
           />
+        )}
+
+        {view === "privileges" && authMode === "oidc" && (
+          <PrivilegeApprovals user={selectedUser} onError={setMessage} />
         )}
 
         {view === "staff" && authMode === "oidc" && (
