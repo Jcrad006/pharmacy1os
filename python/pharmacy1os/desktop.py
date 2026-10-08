@@ -18,6 +18,7 @@ from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
 from .billing import BillingService
 from .willcall import WillCallService
+from .pos import PosService
 
 from sqlalchemy import select
 
@@ -59,6 +60,7 @@ def main() -> None:
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
     will_call_service = WillCallService(service)
+    pos_service = PosService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -185,6 +187,8 @@ def main() -> None:
                 self.action("Cancel Rx", self.cancel_rx)
                 self.action("Rx Documents", self.document_window)
             elif page == 2:
+                self.action("Multi-Fill Checkout (Synthetic)", self.pos_checkout)
+                self.action("Refund / Void (Synthetic)", self.pos_adjust)
                 self.action("Rebag / Retire Old Barcode", self.rebag_will_call)
                 self.action("Relocate Package", self.relocate_will_call)
                 self.action("Custody History", self.will_call_history)
@@ -342,6 +346,65 @@ def main() -> None:
             history = billing_service.history(self.actor, fill_id)
             QMessageBox.information(self, "Synthetic claim provenance",
                                     json.dumps(history, indent=2))
+
+        def pos_checkout(self):
+            fill_ids = [x.strip() for x in self.ask(
+                "Synthetic checkout", "Fill IDs separated by commas").split(",") if x.strip()]
+            amounts = [x.strip() for x in self.ask(
+                "Synthetic checkout", "Manual line amounts separated by commas (no real pricing)").split(",")]
+            mode = self.ask("Synthetic checkout", "WILL_CALL or IMMEDIATE", "WILL_CALL").upper()
+            if len(fill_ids) != len(amounts):
+                raise ValueError("Provide exactly one line amount per fill")
+            bags = {}
+            if mode == "WILL_CALL":
+                barcodes = [x.strip() for x in self.ask(
+                    "Synthetic checkout", "Scanned physical bag barcodes, same order").split(",")]
+                if len(barcodes) != len(fill_ids):
+                    raise ValueError("Provide one scanned bag per fill")
+                bags = dict(zip(fill_ids, barcodes))
+            from decimal import Decimal
+            total = sum((Decimal(x) for x in amounts), Decimal("0"))
+            tender_type = self.ask("Synthetic checkout", "CASH/CARD/CHECK/OTHER", "CASH").upper()
+            tenders = [] if total == 0 else [{"method": tender_type, "amount": str(total)}]
+            recipient = self.ask("Synthetic checkout", "Recipient name")
+            identity = self.ask("Synthetic checkout", "Identity verification method",
+                                "DATE_OF_BIRTH").upper()
+            signature = self.ask("Synthetic checkout", "Attested signature method",
+                                 "PAPER").upper()
+            approval = QMessageBox.question(self, "Synthetic checkout",
+                "Confirm identity verified and signature attested?\\n"
+                "NO REAL MONEY OR CLAIMS WILL BE PROCESSED.")
+            if approval != QMessageBox.StandardButton.Yes:
+                return
+            key = self.ask("Synthetic checkout", "Unique checkout request key")
+            result = pos_service.checkout(self.actor,
+                lines=[{"fill_id":fid, "amount":amt} for fid, amt in zip(fill_ids, amounts)],
+                tenders=tenders, scanned_bags=bags, recipient_name=recipient,
+                identity_method=identity, signature_method=signature,
+                signature_attested=True, idempotency_key=key, mode=mode)
+            QMessageBox.information(self, "Synthetic POS receipt",
+                pos_service.receipt(self.actor, result["id"]))
+
+        def pos_adjust(self):
+            tx_id = self.ask("Synthetic POS", "Transaction ID")
+            action = self.ask("Synthetic POS", "REFUND, VOID, or LEDGER", "LEDGER").upper()
+            if action == "LEDGER":
+                data = pos_service.ledger(self.actor, tx_id)
+                QMessageBox.information(self, "Financial event ledger",
+                                        json.dumps(data, indent=2))
+                return
+            reason = self.ask("Synthetic POS", "Document financial adjustment reason")
+            key = self.ask("Synthetic POS", "Unique idempotency request key")
+            if action == "REFUND":
+                amount = self.ask("Synthetic POS", "Refund amount")
+                method = self.ask("Synthetic POS", "Refund method", "CASH").upper()
+                result = pos_service.refund(self.actor, tx_id, amount, method, reason, key)
+            elif action == "VOID":
+                result = pos_service.void(self.actor, tx_id, reason, key)
+            else:
+                raise ValueError("Unknown synthetic POS adjustment")
+            QMessageBox.information(self, "Synthetic financial record",
+                                    json.dumps(result, indent=2))
 
         def selected_will_call_fill(self):
             with service.sessions() as session:

@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
