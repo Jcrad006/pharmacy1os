@@ -120,7 +120,7 @@ export async function authRoutes(app: FastifyInstance) {
       });
       return {
         user: {
-          externalAuthId: "authenticated", displayName: auth.actor.displayName,
+          id: auth.actor.id, externalAuthId: "authenticated", displayName: auth.actor.displayName,
           role: auth.actor.role, siteId: auth.actor.siteId, siteName: site?.name ?? "",
         },
         csrfToken: auth.csrfToken,
