@@ -15,6 +15,7 @@ from .models import Staff
 from .service import AccessDenied, Actor, PharmacyService, WorkflowError
 from .documents import DocumentService, decode_base64
 from .inventory_ops import InventoryService
+from .inventory_advanced import AdvancedInventoryService
 from .lifecycle import LifecycleService
 
 
@@ -144,11 +145,54 @@ class AdjustmentIn(BaseModel):
     delta: str
     reason: str
 
+class PurchaseOrderLineIn(BaseModel):
+    product_id: str
+    quantity: str
+
+
+class PurchaseOrderIn(BaseModel):
+    vendor: str
+    reference: str
+    lines: list[PurchaseOrderLineIn] = Field(min_length=1, max_length=100)
+
+
+class PurchaseReceiptIn(BaseModel):
+    lot: str
+    expires: str
+    quantity: str
+    invoice: str
+
+
+class TransferIn(BaseModel):
+    stock_id: str
+    destination_site_id: str
+    quantity: str
+    reason: str
+
+
+class CycleCountEntryIn(BaseModel):
+    stock_id: str
+    counted_on_hand: str
+
+
+class CycleReviewIn(BaseModel):
+    approve: bool
+    reason: str
+
+
+class RecallIn(BaseModel):
+    product_id: str
+    reference: str
+    reason: str
+    lot: str | None = None
+
+
 def create_app(service: PharmacyService | None = None, *, synthetic_enabled: bool = False) -> FastAPI:
     app = FastAPI(title="Pharmacy1OS Python migration — synthetic only", version="0.1.0")
     svc = service or PharmacyService(os.getenv("PHARMACY1OS_PY_DATABASE_URL", "sqlite+pysqlite:///pharmacy1os_demo.sqlite3"))
     docs = DocumentService.from_demo_env(svc)
     stock_ops = InventoryService(svc)
+    advanced_ops = AdvancedInventoryService(svc)
     lifecycle = LifecycleService(svc)
 
     @app.middleware("http")
@@ -347,6 +391,85 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     @app.post("/api/inventory/stock/{stock_id}/adjust")
     def adjust_inventory(stock_id: str, payload: AdjustmentIn, actor: DemoActor):
         stock_ops.adjust(actor, stock_id, **payload.model_dump())
+        return {"ok": True}
+
+    @app.get("/api/inventory/sites")
+    def inventory_sites(actor: DemoActor):
+        from sqlalchemy import select
+        from .models import Site
+        with svc.sessions() as session:
+            svc._authorized(session, actor, "read")
+            return [{"id": row.id, "name": row.name} for row in
+                    session.scalars(select(Site).order_by(Site.name)).all()]
+
+    @app.get("/api/inventory/purchase-orders")
+    def purchase_orders(actor: DemoActor):
+        return {"orders": advanced_ops.purchase_orders(actor)}
+
+    @app.post("/api/inventory/purchase-orders")
+    def create_purchase_order(payload: PurchaseOrderIn, actor: DemoActor):
+        return {"id": advanced_ops.create_purchase_order(actor, payload.vendor,
+                payload.reference, [line.model_dump() for line in payload.lines])}
+
+    @app.post("/api/inventory/purchase-orders/lines/{line_id}/receive")
+    def receive_purchase_order(line_id: str, payload: PurchaseReceiptIn, actor: DemoActor):
+        return {"id": advanced_ops.receive_purchase_order(actor, line_id, **payload.model_dump())}
+
+    @app.post("/api/inventory/purchase-orders/{order_id}/cancel")
+    def cancel_purchase_order(order_id: str, payload: ReasonIn, actor: DemoActor):
+        advanced_ops.cancel_purchase_order(actor, order_id, payload.reason)
+        return {"ok": True}
+
+    @app.get("/api/inventory/transfers")
+    def transfers(actor: DemoActor):
+        return {"transfers": advanced_ops.transfers(actor)}
+
+    @app.post("/api/inventory/transfers")
+    def ship_transfer(payload: TransferIn, actor: DemoActor):
+        return {"id": advanced_ops.ship_transfer(actor, **payload.model_dump())}
+
+    @app.post("/api/inventory/transfers/{transfer_id}/receive")
+    def receive_transfer(transfer_id: str, actor: DemoActor):
+        return {"stock_id": advanced_ops.receive_transfer(actor, transfer_id)}
+
+    @app.post("/api/inventory/transfers/{transfer_id}/cancel")
+    def cancel_transfer(transfer_id: str, payload: ReasonIn, actor: DemoActor):
+        advanced_ops.cancel_transfer(actor, transfer_id, payload.reason)
+        return {"ok": True}
+
+    @app.get("/api/inventory/cycle-counts")
+    def cycle_counts(actor: DemoActor):
+        return {"counts": advanced_ops.cycle_counts(actor)}
+
+    @app.post("/api/inventory/cycle-counts")
+    def create_cycle_count(actor: DemoActor):
+        return {"id": advanced_ops.create_cycle_count(actor)}
+
+    @app.post("/api/inventory/cycle-counts/{session_id}/lines")
+    def record_cycle_count(session_id: str, payload: CycleCountEntryIn, actor: DemoActor):
+        return {"id": advanced_ops.record_count(actor, session_id, **payload.model_dump())}
+
+    @app.post("/api/inventory/cycle-counts/{session_id}/submit")
+    def submit_cycle_count(session_id: str, actor: DemoActor):
+        advanced_ops.submit_cycle_count(actor, session_id)
+        return {"ok": True}
+
+    @app.post("/api/inventory/cycle-counts/{session_id}/review")
+    def review_cycle_count(session_id: str, payload: CycleReviewIn, actor: DemoActor):
+        advanced_ops.review_cycle_count(actor, session_id, **payload.model_dump())
+        return {"ok": True}
+
+    @app.get("/api/inventory/recalls")
+    def recalls(actor: DemoActor):
+        return {"recalls": advanced_ops.recalls(actor)}
+
+    @app.post("/api/inventory/recalls")
+    def open_recall(payload: RecallIn, actor: DemoActor):
+        return {"id": advanced_ops.open_recall(actor, **payload.model_dump())}
+
+    @app.post("/api/inventory/recalls/{recall_id}/close")
+    def close_recall(recall_id: str, payload: ReasonIn, actor: DemoActor):
+        advanced_ops.close_recall(actor, recall_id, payload.reason)
         return {"ok": True}
 
     return app

@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from .documents import DocumentService
 from .inventory_ops import InventoryService
+from .inventory_advanced import AdvancedInventoryService
 from .lifecycle import LifecycleService
 
 from sqlalchemy import select
@@ -22,6 +23,7 @@ from .service import Actor, PharmacyService
 VIEWS = [
     "Dashboard", "Exceptions", "Will Call", "New Prescription", "Patients",
     "Providers", "Drug / Product", "Receiving", "Inventory", "Third Party",
+    "Supply Chain",
 ]
 
 
@@ -46,6 +48,7 @@ def main() -> None:
     service.create_schema()
     document_service = DocumentService.from_demo_env(service)
     inventory_service = InventoryService(service)
+    advanced_service = AdvancedInventoryService(service)
     lifecycle_service = LifecycleService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
@@ -189,13 +192,31 @@ def main() -> None:
                 self.action("Resolve Hold", self.resolve_stock_hold)
                 self.action("Adjust Stock", self.adjust_stock)
                 self.action("Stock Ledger", self.stock_ledger)
+            elif page == 10:
+                self.action("Purchase Orders", self.manage_po)
+                self.action("Site Transfers", self.manage_transfer)
+                self.action("Cycle Counts", self.manage_count)
+                self.action("Product Recalls", self.manage_recall)
             self.action("Refresh", self.refresh)
             self.refresh()
 
         def refresh(self):
             self.rows = []
             page = self.selected_view
-            if page == 0:
+            if page == 10:
+                headers = ["Type", "Identifier", "Status", "Detail"]
+                self.rows = [(x['id'], 'PO', x['reference'], x['status'], x['vendor'])
+                             for x in advanced_service.purchase_orders(self.actor)]
+                self.rows += [(x['id'], 'Transfer', x['id'][:8], x['status'],
+                               f"{x['quantity']} to {x['to_site_id'][:8]}")
+                              for x in advanced_service.transfers(self.actor)]
+                self.rows += [(x['id'], 'Cycle count', x['id'][:8], x['status'],
+                               f"{len(x['lines'])} lines")
+                              for x in advanced_service.cycle_counts(self.actor)]
+                self.rows += [(x['id'], 'Recall', x['reference'], x['status'],
+                               x['lot'] or 'Entire NDC')
+                              for x in advanced_service.recalls(self.actor)]
+            elif page == 0:
                 headers = ["Rx", "Patient", "Drug", "Workflow"]
                 self.rows = [(x["id"], x["rx_number"], x["patient"], x["drug"], x["status"])
                              for x in service.queue(self.actor, self.search.text())]
@@ -366,6 +387,116 @@ def main() -> None:
             movements = inventory_service.ledger(self.actor, self.selected_id())
             details = "\n".join(f"{m['kind']}: on-hand {m['on_hand_delta']}, reserved {m['reserved_delta']}, held {m['quarantined_delta']}" for m in movements)
             QMessageBox.information(self, "Synthetic stock ledger", details or "No movements")
+
+        def choose_item(self, title, prompt, rows, label):
+            if not rows:
+                raise ValueError(f"No {title.lower()} records available")
+            names = [label(item) for item in rows]
+            value, ok = QInputDialog.getItem(self, title, prompt, names, 0, False)
+            if not ok:
+                raise ValueError("Selection cancelled")
+            return rows[names.index(value)]
+
+        def choose_stock(self):
+            with service.sessions() as session:
+                stocks = session.scalars(select(Stock).where(Stock.site_id == self.actor.site_id)).all()
+                options = [(st.id, session.get(Product, st.product_id).ndc,
+                            st.lot, str(st.on_hand - st.reserved - st.quarantined)) for st in stocks]
+            return self.choose_item("Stock", "Select lot", options,
+                lambda x: f"{x[1]}  lot {x[2]}  available {x[3]}  [{x[0][:8]}]")[0]
+
+        def manage_po(self):
+            op = self.choose_item("Purchase Orders", "Action", ['Create', 'Receive', 'Cancel'], lambda x: x)
+            if op == 'Create':
+                ndc = self.ask('New PO', 'NDC')
+                with service.sessions() as session:
+                    product = session.scalar(select(Product).where(Product.ndc == ndc))
+                    if product is None:
+                        raise ValueError('NDC not found')
+                    pid = product.id
+                advanced_service.create_purchase_order(self.actor,
+                    self.ask('New PO', 'Vendor'), self.ask('New PO', 'PO number/reference'),
+                    [{'product_id': pid, 'quantity': self.ask('New PO', 'Quantity ordered')}])
+            elif op == 'Receive':
+                lines = [line for po in advanced_service.purchase_orders(self.actor)
+                         if po['status'] in ('OPEN','PARTIAL') for line in po['lines']
+                         if Decimal(line['received']) < Decimal(line['ordered'])]
+                line = self.choose_item('PO receipt', 'Unreceived order line', lines,
+                    lambda x: f"{x['id'][:8]}  {x['product_id'][:8]}  {x['received']}/{x['ordered']}")
+                advanced_service.receive_purchase_order(self.actor, line['id'],
+                    self.ask('Receive PO', 'Lot number'), self.ask('Receive PO', 'Expiration YYYY-MM-DD'),
+                    self.ask('Receive PO', 'Received quantity'), self.ask('Receive PO', 'Invoice reference'))
+            else:
+                orders = [p for p in advanced_service.purchase_orders(self.actor)
+                          if p['status'] in ('OPEN','PARTIAL')]
+                order = self.choose_item('Cancel PO', 'Order', orders,
+                    lambda x: f"{x['reference']} - {x['vendor']}")
+                advanced_service.cancel_purchase_order(self.actor, order['id'],
+                    self.ask('Cancel PO', 'Reason'))
+
+        def manage_transfer(self):
+            action = self.choose_item('Transfers', 'Action', ['Ship', 'Receive', 'Cancel'], lambda x: x)
+            if action == 'Ship':
+                from .models import Site
+                with service.sessions() as session:
+                    options = [(x.id, x.name) for x in session.scalars(select(Site)).all()
+                               if x.id != self.actor.site_id]
+                dest = self.choose_item('Destination', 'Pharmacy location', options, lambda x: x[1])
+                advanced_service.ship_transfer(self.actor, self.choose_stock(), dest[0],
+                    self.ask('Transfer', 'Quantity'), self.ask('Transfer', 'Reason'))
+            else:
+                options = [x for x in advanced_service.transfers(self.actor)
+                           if x['status'] == 'IN_TRANSIT' and
+                           (x['to_site_id'] if action == 'Receive' else x['from_site_id']) == self.actor.site_id]
+                transfer = self.choose_item('Transfers', 'In-transit shipment', options,
+                    lambda x: f"{x['id'][:8]} - {x['quantity']}")
+                if action == 'Receive':
+                    advanced_service.receive_transfer(self.actor, transfer['id'])
+                else:
+                    advanced_service.cancel_transfer(self.actor, transfer['id'],
+                        self.ask('Cancel transfer', 'Reason'))
+
+        def manage_count(self):
+            action = self.choose_item('Cycle Counts', 'Action',
+                ['Create', 'Record quantity', 'Submit', 'Review'], lambda x: x)
+            if action == 'Create':
+                advanced_service.create_cycle_count(self.actor)
+                return
+            allowed = ('OPEN',) if action in ('Record quantity','Submit') else ('SUBMITTED',)
+            sessions = [x for x in advanced_service.cycle_counts(self.actor)
+                        if x['status'] in allowed]
+            count = self.choose_item('Cycle Counts', 'Session', sessions,
+                lambda x: f"{x['id'][:8]} - {x['status']} - {len(x['lines'])} lines")
+            if action == 'Record quantity':
+                advanced_service.record_count(self.actor, count['id'], self.choose_stock(),
+                    self.ask('Cycle Count', 'Physically counted on-hand quantity'))
+            elif action == 'Submit':
+                advanced_service.submit_cycle_count(self.actor, count['id'])
+            else:
+                choice = self.choose_item('Cycle Count Review', 'Disposition',
+                    ['Approve', 'Reject'], lambda x: x)
+                advanced_service.review_cycle_count(self.actor, count['id'],
+                    choice == 'Approve', self.ask('Review Count', 'Reason'))
+
+        def manage_recall(self):
+            action = self.choose_item('Recalls', 'Action', ['Open', 'Close'], lambda x: x)
+            if action == 'Open':
+                ndc = self.ask('Open Recall', 'Affected NDC')
+                with service.sessions() as session:
+                    product = session.scalar(select(Product).where(Product.ndc == ndc))
+                    if product is None:
+                        raise ValueError('NDC not found')
+                    pid = product.id
+                scope = self.choose_item('Recall scope', 'Scope', ['Entire NDC', 'Specific lot'], lambda x: x)
+                lot = self.ask('Recall', 'Lot') if scope == 'Specific lot' else None
+                advanced_service.open_recall(self.actor, pid, self.ask('Recall', 'Recall reference'),
+                    self.ask('Recall', 'Reason'), lot)
+            else:
+                recalls = [r for r in advanced_service.recalls(self.actor) if r['status'] == 'ACTIVE']
+                recall = self.choose_item('Close Recall', 'Recall', recalls,
+                    lambda x: f"{x['reference']} - {x['lot'] or 'all lots'}")
+                advanced_service.close_recall(self.actor, recall['id'],
+                    self.ask('Close Recall', 'Closure documentation'))
 
         def document_window(self):
             rx_id = self.selected_id()

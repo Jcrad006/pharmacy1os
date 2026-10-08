@@ -301,6 +301,7 @@ class InventoryHold(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     reason: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(25), default="ACTIVE")
+    recall_id: Mapped[str | None] = mapped_column(ForeignKey("py_recall_cases.id"), nullable=True, index=True)
     resolution_reason: Mapped[str | None] = mapped_column(Text)
     created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
     resolved_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id"), nullable=True)
@@ -310,3 +311,124 @@ class InventoryHold(Base):
         CheckConstraint("quantity > 0"),
         CheckConstraint("status IN ('ACTIVE','RELEASED','DISPOSED')"),
     )
+
+
+class PurchaseOrder(Base):
+    __tablename__ = "py_purchase_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    vendor: Mapped[str] = mapped_column(String(180))
+    reference: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(25), default="OPEN")
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("site_id", "reference"),
+        CheckConstraint("status IN ('OPEN','PARTIAL','RECEIVED','CANCELLED')"),
+    )
+
+
+class PurchaseOrderLine(Base):
+    __tablename__ = "py_purchase_order_lines"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    order_id: Mapped[str] = mapped_column(ForeignKey("py_purchase_orders.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("py_products.id"))
+    ordered: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    received: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal("0"))
+    __table_args__ = (
+        UniqueConstraint("order_id", "product_id"),
+        CheckConstraint("ordered > 0 AND received >= 0 AND received <= ordered"),
+    )
+
+
+class PurchaseOrderReceipt(Base):
+    __tablename__ = "py_purchase_order_receipts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    line_id: Mapped[str] = mapped_column(ForeignKey("py_purchase_order_lines.id"), index=True)
+    stock_id: Mapped[str] = mapped_column(ForeignKey("py_stock.id"))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    invoice: Mapped[str] = mapped_column(String(140))
+    received_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (CheckConstraint("quantity > 0"),)
+
+
+class InventoryTransfer(Base):
+    __tablename__ = "py_inventory_transfers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    from_site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    to_site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    source_stock_id: Mapped[str] = mapped_column(ForeignKey("py_stock.id"))
+    received_stock_id: Mapped[str | None] = mapped_column(ForeignKey("py_stock.id"), nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    status: Mapped[str] = mapped_column(String(25), default="IN_TRANSIT")
+    reason: Mapped[str] = mapped_column(Text)
+    shipped_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    closed_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        CheckConstraint("quantity > 0"),
+        CheckConstraint("from_site_id <> to_site_id"),
+        CheckConstraint("status IN ('IN_TRANSIT','RECEIVED','CANCELLED')"),
+    )
+
+
+class CycleCountSession(Base):
+    __tablename__ = "py_cycle_count_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    status: Mapped[str] = mapped_column(String(25), default="OPEN")
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    reviewed_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id"), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (CheckConstraint("status IN ('OPEN','SUBMITTED','APPROVED','REJECTED')"),)
+
+
+class CycleCountLine(Base):
+    __tablename__ = "py_cycle_count_lines"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    session_id: Mapped[str] = mapped_column(ForeignKey("py_cycle_count_sessions.id"), index=True)
+    stock_id: Mapped[str] = mapped_column(ForeignKey("py_stock.id"), index=True)
+    counted_on_hand: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    baseline_on_hand: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    baseline_reserved: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    baseline_quarantined: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    movement_count: Mapped[int] = mapped_column(Integer)
+    counted_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    __table_args__ = (
+        UniqueConstraint("session_id", "stock_id"),
+        CheckConstraint("counted_on_hand >= 0 AND baseline_on_hand >= 0 AND movement_count >= 0"),
+    )
+
+
+class RecallCase(Base):
+    __tablename__ = "py_recall_cases"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("py_products.id"), index=True)
+    lot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reference: Mapped[str] = mapped_column(String(140))
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(25), default="ACTIVE")
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    closed_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("site_id", "reference"),
+        CheckConstraint("status IN ('ACTIVE','CLOSED')"),
+    )
+
+
+class RecallExposure(Base):
+    """Historical fills affected at recall discovery; must not be erased on closure."""
+    __tablename__ = "py_recall_exposures"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    recall_id: Mapped[str] = mapped_column(ForeignKey("py_recall_cases.id"), index=True)
+    fill_id: Mapped[str] = mapped_column(ForeignKey("py_fills.id"))
+    status_at_discovery: Mapped[str] = mapped_column(String(30))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (UniqueConstraint("recall_id", "fill_id"),)

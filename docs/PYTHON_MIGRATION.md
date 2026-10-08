@@ -84,3 +84,23 @@ For each legacy module: preserve a documented API/domain contract; port edge cas
 4. SQLite stock locking, multi-workstation concurrency, idempotent commands, service restart behavior, and direct cross-site relational constraints have not been demonstrated as production safe. Current balance checks do not replace PostgreSQL locking, triggers and independent concurrency tests.
 5. The initial Python domain is **not** feature-equivalent with the TypeScript application. No old modules or old database tables have been removed; do not merge/replace the TypeScript application yet.
 6. Existing Python local tests cover the listed synthetic behavior; they do not establish clinical suitability, compliance, external claims or hardware readiness.
+
+## Third migration increment — advanced inventory operations (2026-10-08)
+
+The Python rewrite now includes **synthetic development counterparts** for purchase orders, intersite inventory transfers, physical cycle counts and recalls in `pharmacy1os/inventory_advanced.py`, backed by SQLAlchemy tables and FastAPI/Qt interfaces. Legacy TypeScript code and the live-shaped Prisma schema remain untouched.
+
+### Converted functionality
+
+- **Purchase orders:** one or more unique products per order; partial and complete receipts by NDC/lot/expiration; invoice references and append-only receipt/movement/audit records; over-receipt prevention and pharmacist-only cancellation of remaining unreceived quantities. Canceling an order does not undo quantities already received.
+- **Site transfers:** pharmacist-controlled outgoing shipments and cancellations, technician receipt at the destination site, preservation of product/lot/expiration provenance, single terminal disposition, per-site audit and stock movements. Transfers cannot ship reserved, quarantined or recalled stock; a canceled in-transit shipment restores the source stock and re-quarantines affected units if a recall became active during transit.
+- **Cycle counts:** technician/inventory-staff counts, immutable baseline and movement-count capture, submitted review state, all-or-nothing pharmacist review, stale snapshot rejection, and explicit prohibition on reducing on-hand below reserved plus quarantined quantities.
+- **Product recalls:** NDC-wide or lot-specific site-scoped recall cases; quarantine of available stock; explicit blocking during Product Fill, final verification, and Ready-fill checkout; automatic quarantine of newly received, canceled-transfer and unsold returned units; pharmacist closure with quarantine retained until separately reviewed; historical READY/SOLD fill-exposure linkage.
+- **Qt workstation:** new F11 `Supply Chain` work area, with basic dialogs for orders, transfers, counts and recalls. Qt still requires hands-on graphical testing; compilation alone is not a working-hardware validation.
+- **FastAPI:** synthetic CRUD/workflow routes for these four domains. Production API remains blocked without real authentication; header-selected demo identities are not secure identities.
+- **Synthetic demo schema upgrade:** SQLite `create_schema()` now recognizes the one new nullable `py_inventory_holds.recall_id` column and upgrades a *synthetic-only* local database. No old Prisma/PostgreSQL schema is migrated.
+
+### Verification and gaps
+
+The synthetic Python regression suite has **32 passing tests** on this increment, covering order and transfer safety, stale counts, recall gating and exposure history, user/site isolation, API, and the earlier dispensing/document functionality. Python modules compile. **PySide6 was not installed in the build container**, so the native GUI has not received a runtime smoke test. No PostgreSQL concurrent-client/load or migration testing has been performed.
+
+This is **not full parity** with the TypeScript inventory system: supplier receiving discrepancy workflows, locations/stock positions, FEFO planning, purchase-order idempotency, advanced custody event records, serialized DSCSA traceability, and all external/hardware integrations remain outstanding. In particular, SQLite demo transaction behavior does not establish race-free production operation or regulatory compliance. Use only synthetic data; do not merge over the working TypeScript application.

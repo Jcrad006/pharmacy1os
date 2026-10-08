@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -82,8 +82,21 @@ class PharmacyService:
         self.sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     def create_schema(self) -> None:
-        """For *fresh, isolated synthetic databases only*. No legacy schema mutation."""
+        """Create isolated synthetic tables; upgrade one known SQLite demo column.
+
+        This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
+        production design must use reviewed Alembic migrations instead.
+        """
         Base.metadata.create_all(self.engine)
+        if self.engine.dialect.name == "sqlite":
+            with self.engine.begin() as conn:
+                columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_inventory_holds')").all()}
+                if "recall_id" not in columns:
+                    conn.exec_driver_sql("ALTER TABLE py_inventory_holds "
+                        "ADD COLUMN recall_id VARCHAR(36) REFERENCES py_recall_cases(id)")
+                    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS "
+                        "ix_py_inventory_holds_recall_id ON py_inventory_holds (recall_id)")
 
     def bootstrap_demo(self) -> dict[str, Any]:
         """Create a synthetic pharmacy and demo actors; never production identities."""
@@ -208,6 +221,8 @@ class PharmacyService:
             s.flush()
             from .inventory_ops import record_movement
             record_movement(s, actor, stock, "RECEIVE", on_hand=qty)
+            from .inventory_advanced import quarantine_recalled_receipt
+            quarantine_recalled_receipt(s, actor, stock, qty)
             self._audit(s, actor, "INVENTORY_RECEIVE", stock.id, {"quantity": str(qty)})
             return stock.id
 
@@ -321,6 +336,8 @@ class PharmacyService:
                 Stock.product_id == product.id, Stock.lot == lot, Stock.expires == expires))
             if not stock or stock.expires <= date.today().isoformat():
                 raise WorkflowError("Lot/expiration mismatch or expired stock")
+            from .inventory_advanced import assert_not_recalled
+            assert_not_recalled(s, stock)
             sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
             if len(sources) >= 4 or any(source.stock_id == stock.id for source in sources):
                 raise WorkflowError("Maximum four distinct sources; duplicates rejected")
@@ -389,6 +406,8 @@ class PharmacyService:
                 stock = s.get(Stock, src.stock_id)
                 if stock.expires <= date.today().isoformat() or stock.reserved < src.quantity:
                     raise WorkflowError("Source expired or reservation invalid")
+                from .inventory_advanced import assert_not_recalled
+                assert_not_recalled(s, stock)
                 from .inventory_ops import record_movement
                 record_movement(s, actor, stock, "FILL_DISPENSE",
                                 on_hand=-src.quantity, reserved=-src.quantity)
@@ -419,6 +438,12 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "READY" or not identity_verified or not signed:
                 raise WorkflowError("Ready fill, identity verification and signature required")
+            from .inventory_advanced import assert_not_recalled
+            for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
+                stock = s.get(Stock, src.stock_id)
+                if stock is None or stock.site_id != actor.site_id or stock.expires <= date.today().isoformat():
+                    raise WorkflowError("Ready fill stock was lost or expired")
+                assert_not_recalled(s, stock)
             bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
             if bag and (bag.status != "STAGED" or scanned_bag != bag.bag_barcode):
                 raise WorkflowError("Staged fill requires the correct bag barcode")
@@ -456,6 +481,8 @@ class PharmacyService:
                 from .inventory_ops import record_movement
                 record_movement(s, actor, stock, "RETURN_TO_STOCK", on_hand=src.quantity,
                                 reason=reason.strip())
+                from .inventory_advanced import quarantine_recalled_receipt
+                quarantine_recalled_receipt(s, actor, stock, src.quantity)
             bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
             if bag:
                 bag.status = "RETURNED"

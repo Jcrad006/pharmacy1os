@@ -77,6 +77,8 @@ class LifecycleService:
                         raise WorkflowError("Fill stock is not at this pharmacy site")
                     if f.status == "READY":
                         record_movement(s, actor, stock, "CANCEL_RETURN", on_hand=src.quantity, reason=reason.strip())
+                        from .inventory_advanced import quarantine_recalled_receipt
+                        quarantine_recalled_receipt(s, actor, stock, src.quantity)
                     else:
                         record_movement(s, actor, stock, "CANCEL_RELEASE", reserved=-src.quantity,
                                         reason=reason.strip())

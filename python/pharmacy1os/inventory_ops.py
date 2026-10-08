@@ -99,6 +99,9 @@ class InventoryService:
             stock = s.scalar(select(Stock).where(Stock.id == hold.stock_id).with_for_update())
             if stock is None or stock.site_id != actor.site_id:
                 raise WorkflowError("Hold stock is outside the pharmacy site")
+            if disposition == "RELEASED":
+                from .inventory_advanced import assert_not_recalled
+                assert_not_recalled(s, stock)
             movement = record_movement(s, actor, stock, disposition,
                     on_hand=-hold.quantity if disposition == "DISPOSED" else ZERO,
                     quarantined=-hold.quantity, reason=reason.strip())
@@ -124,6 +127,9 @@ class InventoryService:
             stock = self.service._site(s, Stock, stock_id, actor)
             stock = s.scalar(select(Stock).where(Stock.id == stock.id).with_for_update())
             movement = record_movement(s, actor, stock, "MANUAL_ADJUST", on_hand=number, reason=reason.strip())
+            if number > 0:
+                from .inventory_advanced import quarantine_recalled_receipt
+                quarantine_recalled_receipt(s, actor, stock, number)
             self.service._audit(s, actor, "STOCK_ADJUSTED", stock.id,
                                 {"delta": str(number), "reason": reason.strip(), "movement_id": movement})
 
