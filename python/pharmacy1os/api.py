@@ -17,6 +17,8 @@ from .documents import DocumentService, decode_base64
 from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
 from .lifecycle import LifecycleService
+from .provider_api import make_provider_router
+from .provider_directory import ProviderDirectory
 
 
 class PatientIn(BaseModel):
@@ -230,6 +232,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
             return Actor(id=user.id, site_id=user.site_id, role=user.role)
 
     DemoActor = Annotated[Actor, Depends(staff_actor)]
+    app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
 
     @app.get("/health")
     def health():

@@ -115,3 +115,21 @@ def test_invalid_migration_url_refused(monkeypatch):
     monkeypatch.setenv("PHARMACY1OS_DATABASE_URL", "postgresql://example/unsafe")
     with pytest.raises(MigrationSafetyError, match="Explicit"):
         database_url()
+
+
+def test_incremental_upgrade_preserves_prior_patient_rows(monkeypatch, tmp_path):
+    """Version 2 must be additive to a populated version 1 synthetic database."""
+    url = setup_env(monkeypatch, tmp_path / "forward.db")
+    command.upgrade(migration_config(), "63ff0bb0a4d8")
+    pharmacy = PharmacyService(url)
+    demo = pharmacy.bootstrap_demo()
+    patient_id = pharmacy.add_patient(demo["actors"]["TECHNICIAN"], "Synthetic", "Preserved")
+    pharmacy.engine.dispose()
+    command.upgrade(migration_config(), "head")
+    engine = create_engine(url)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT last_name FROM py_patients WHERE id=:id"),
+                                  {"id": patient_id}).scalar_one() == "Preserved"
+    assert revision_at_head(engine)
+    assert not verify_mapped_schema(engine)
+    engine.dispose()

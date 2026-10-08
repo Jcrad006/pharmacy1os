@@ -182,6 +182,7 @@ def upgrade() -> None:
     sa.UniqueConstraint('site_id', 'reference')
     )
     op.create_index(op.f('ix_py_recall_cases_site_id'), 'py_recall_cases', ['site_id'], unique=False)
+    op.create_index(op.f('ix_py_recall_cases_product_id'), 'py_recall_cases', ['product_id'], unique=False)
     op.create_table('py_stock',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('site_id', sa.String(length=36), nullable=False),
@@ -217,6 +218,7 @@ def upgrade() -> None:
     sa.UniqueConstraint('session_id', 'stock_id')
     )
     op.create_index(op.f('ix_py_cycle_count_lines_session_id'), 'py_cycle_count_lines', ['session_id'], unique=False)
+    op.create_index(op.f('ix_py_cycle_count_lines_stock_id'), 'py_cycle_count_lines', ['stock_id'], unique=False)
     op.create_table('py_documents',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('site_id', sa.String(length=36), nullable=False),

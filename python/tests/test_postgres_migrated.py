@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from pharmacy1os.db_cli import migration_config, revision_at_head, verify_mapped_schema
 from pharmacy1os.models import Audit, InventoryMovement, Stock
+from pharmacy1os.provider_directory import ProviderDirectory
 from pharmacy1os.service import PharmacyService
 
 
@@ -27,6 +28,11 @@ def test_python_migrated_postgres_persists_inventory_with_audit():
         product = pharmacy.add_product(pharmacist, drug, "00000-1111-22", "Demo Manufacturer", "synthetic tablets")
         pharmacy.register_barcode(pharmacist, product, "00000111122")
         stock_id = pharmacy.receive(technician, "00000111122", "LOT001", "2030-09-30", "120")
+        prescriber = pharmacy.add_prescriber(technician, "Synthetic", "Provider", "MD")
+        directory = ProviderDirectory(pharmacy)
+        directory.add_identifier(pharmacist, prescriber, "NPI", "1234567893", is_primary=True)
+        directory.add_contact(technician, prescriber, "FAX", "919-555-0101", is_primary=True)
+        assert directory.search(technician, "5550101")[0]["id"] == prescriber
         with pharmacy.sessions() as session:
             stock = session.get(Stock, stock_id)
             assert stock is not None and stock.on_hand == 120

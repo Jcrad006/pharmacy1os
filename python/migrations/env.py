@@ -11,6 +11,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from pharmacy1os.models import Base
+from pharmacy1os import provider_directory  # noqa: F401 -- register extension tables
 
 config = context.config
 target_metadata = Base.metadata
