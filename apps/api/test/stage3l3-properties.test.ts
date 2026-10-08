@@ -102,4 +102,24 @@ describe("Stage 3L.3 deterministic properties", () => {
     expect(canTransitionPrescription("PHARMACIST_REVIEW", "READY")).toBe(true);
     expect(canTransitionPrescription("PRODUCT_FILL", "READY")).toBe(false);
   });
+  it("preserves exact 0.001-unit quantities and cent rounding under seeded splits", async () => {
+    const { Prisma } = await import("@prisma/client");
+    const rand = pseudoRandom(0x31a3004);
+    for (let iteration = 0; iteration < 600; iteration += 1) {
+      const milliUnits = 1 + Math.floor(rand() * 100000);
+      const firstMilli = Math.floor(rand() * (milliUnits + 1));
+      const secondMilli = milliUnits - firstMilli;
+      const full = new Prisma.Decimal(milliUnits).div(1000);
+      const first = new Prisma.Decimal(firstMilli).div(1000);
+      const second = new Prisma.Decimal(secondMilli).div(1000);
+      expect(first.add(second).eq(full)).toBe(true);
+      expect(full.sub(first).eq(second)).toBe(true);
+      expect(first.gte(0) && second.gte(0)).toBe(true);
+      const price = new Prisma.Decimal(Math.floor(rand() * 5000)).div(100);
+      const total = full.mul(price).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      expect(total.decimalPlaces()).toBeLessThanOrEqual(2);
+      expect(total.gte(0)).toBe(true);
+    }
+  });
+
 });
