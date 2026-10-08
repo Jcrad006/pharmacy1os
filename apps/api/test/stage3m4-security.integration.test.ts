@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { db } from "../src/db.js";
 import { hashSecret } from "../src/security/sessions.js";
+import { checkAuthLoginThrottle, networkFingerprint } from "../src/security/securityMonitoring.js";
+import type { FastifyRequest } from "fastify";
 
 process.env.AUTH_MODE = "oidc";
 process.env.ALLOW_DEV_IDENTITY = "true";
@@ -201,5 +203,30 @@ describe("Stage 3M.4 security denial monitoring", () => {
     expect(admin.json().events.some((e: { kind: string }) => e.kind === "ACCESS_DENIED")).toBe(true);
     expect(JSON.stringify(admin.json())).not.toContain("networkHash");
     expect((await api(picId, "GET", "/api/security/events")).statusCode).toBe(403);
+  });
+});
+
+
+describe("Stage 3M.4 test-OIDC abuse monitoring", () => {
+  it("counts only pseudonymized peer fingerprints and blocks excess login starts", async () => {
+    const remote = "192.0.2." + (Math.floor(Math.random() * 200) + 1);
+    const fake = { ip: remote } as FastifyRequest;
+    const fingerprint = networkFingerprint(fake);
+    expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(fingerprint).not.toContain(remote);
+    try {
+      for (let i = 0; i < 10; i++) await checkAuthLoginThrottle(fake);
+      await expect(checkAuthLoginThrottle(fake))
+        .rejects.toMatchObject({ statusCode: 429 });
+      const records = await db.securityEvent.findMany({
+        where: { networkHash: fingerprint, kind: "AUTH_LOGIN_STARTED" },
+      });
+      expect(records).toHaveLength(10);
+      expect(JSON.stringify(records)).not.toContain(remote);
+    } finally {
+      await db.securityEvent.deleteMany({
+        where: { networkHash: fingerprint, kind: "AUTH_LOGIN_STARTED" },
+      });
+    }
   });
 });
