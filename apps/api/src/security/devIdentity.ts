@@ -2,6 +2,7 @@ import type { FastifyRequest } from "fastify";
 import type { User } from "@prisma/client";
 import { db } from "../db.js";
 import { roleHasPermission, type Permission, type Role } from "./roles.js";
+import { authenticateSession } from "./sessions.js";
 
 export class AccessError extends Error {
   constructor(
@@ -21,7 +22,12 @@ export async function resolveDevelopmentActor(
   request: FastifyRequest,
   permission?: Permission,
 ): Promise<User> {
-  if (process.env.ALLOW_DEV_IDENTITY !== "true") {
+  if (process.env.AUTH_MODE === "oidc") {
+    const authenticated = await authenticateSession(request, permission);
+    return authenticated.actor;
+  }
+  if (process.env.AUTH_MODE === "production" || process.env.NODE_ENV === "production" ||
+      process.env.ALLOW_DEV_IDENTITY !== "true") {
     throw new AccessError(503, "Development identity mode is disabled.");
   }
 
