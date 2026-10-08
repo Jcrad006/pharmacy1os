@@ -1,8 +1,12 @@
 # Pharmacy1OS
 
-Pharmacy1OS is an early-stage, Linux-friendly open-source pharmacy operations platform intended to become a secure, modular foundation for prescription processing and pharmacy workflow.
+**An Integrated Pharmacy Management and Information System**
 
-> **Development status:** prototype only. Do not use real patient information, protected health information (PHI), production credentials, or this software for live pharmacy operations.
+Pharmacy1OS is a modular, Linux-compatible pharmacy management and information system designed to integrate prescription processing, pharmacist verification, medication inventory management, insurance adjudication, dispensing workflows, prescription records, and point-of-sale operations within a unified information system.
+
+**Software classification:** Pharmacy Management System (PMS) / Pharmacy Information System (PIS), within healthcare information technology (Health IT). Pharmacy1OS is application software that runs on a host operating system; despite its name, it is not itself a computer operating system.
+
+> **Development status:** preproduction synthetic prototype only. Do not use real patient information, protected health information (PHI), production credentials, or this software for live pharmacy operations.
 
 ## Current synthetic dispensing prototype
 

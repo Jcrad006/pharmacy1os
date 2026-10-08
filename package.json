@@ -2,7 +2,7 @@
   "name": "pharmacy1os",
   "version": "0.1.0",
   "private": true,
-  "description": "Linux-friendly pharmacy operations platform",
+  "description": "Pharmacy1OS — An Integrated Pharmacy Management and Information System",
   "packageManager": "pnpm@10.17.1",
   "engines": {
     "node": ">=22"
