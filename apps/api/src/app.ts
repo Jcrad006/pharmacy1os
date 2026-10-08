@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { healthRoutes } from "./routes/health.js";
 import { developmentRoutes } from "./routes/development.js";
 import { authRoutes } from "./routes/auth.js";
+import { assertRuntimeSafetyConfiguration } from "./security/runtimeSafety.js";
 import { patientRoutes } from "./routes/patients.js";
 import { prescriberRoutes } from "./routes/prescribers.js";
 import { prescriptionRoutes } from "./routes/prescriptions.js";
@@ -53,6 +54,8 @@ async function isFile(path: string) {
 }
 
 export function buildApp(options: BuildAppOptions = {}) {
+  // Enforce this gate even for alternative server entrypoints/inject harnesses.
+  assertRuntimeSafetyConfiguration();
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-request-id",
