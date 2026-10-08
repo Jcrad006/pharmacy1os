@@ -53,7 +53,7 @@ export const rolePermissions: Record<Role, readonly Permission[]> = {
   ],
   INVENTORY_MANAGER: [
     "inventory:read", "inventory:write", "inventory:correct",
-    "product:compliance", "document:read", "audit:read",
+    "product:compliance",
   ],
   PHARMACIST: [
     "patient:read",
