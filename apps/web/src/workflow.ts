@@ -146,7 +146,7 @@ export function prioritizeQueueByStatus<
 
 export function canWriteInventory(user?: DevUser) {
   return Boolean(
-    user && ["ADMIN", "PHARMACIST", "TECHNICIAN", "INTERN"].includes(user.role),
+    user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "TECHNICIAN", "INVENTORY_MANAGER"].includes(user.role),
   );
 }
 
