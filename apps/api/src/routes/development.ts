@@ -3,7 +3,7 @@ import { db } from "../db.js";
 
 export async function developmentRoutes(app: FastifyInstance) {
   app.get("/dev/users", async (_request, reply) => {
-    if (process.env.ALLOW_DEV_IDENTITY !== "true") {
+    if (process.env.ALLOW_DEV_IDENTITY !== "true" || process.env.AUTH_MODE === "oidc" || process.env.NODE_ENV === "production") {
       return reply.code(404).send({ error: "Not found" });
     }
 
