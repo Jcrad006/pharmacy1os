@@ -172,6 +172,11 @@ export async function staffRoutes(app: FastifyInstance) {
           where: { userId: id, siteId: auth.actor.siteId, revokedAt: null },
           data: { revokedAt: now },
         });
+        await tx.privilegedAccessRequest.updateMany({
+          where: { siteId: auth.actor.siteId, targetUserId: id,
+            kind: "TEMP_PERMISSION", status: "APPROVED" },
+          data: { status: "CANCELLED", effectiveUntil: now },
+        });
         await writeAuditEvent(tx, {
           siteId: auth.actor.siteId, actorId: auth.actor.id,
           action: "STAFF_SITE_ROLE_CHANGED", entityType: "SiteRoleAssignment",
@@ -223,6 +228,11 @@ export async function staffRoutes(app: FastifyInstance) {
         const revoked = await tx.authSession.updateMany({
           where: { userId: id, siteId: auth.actor.siteId, revokedAt: null },
           data: { revokedAt: new Date() },
+        });
+        await tx.privilegedAccessRequest.updateMany({
+          where: { siteId: auth.actor.siteId, targetUserId: id,
+            kind: "TEMP_PERMISSION", status: "APPROVED" },
+          data: { status: "CANCELLED", effectiveUntil: new Date() },
         });
         await writeAuditEvent(tx, {
           siteId: auth.actor.siteId, actorId: auth.actor.id,
