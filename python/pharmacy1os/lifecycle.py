@@ -69,6 +69,8 @@ class LifecycleService:
                 if any(claim.status != "PAID_SYNTHETIC" for claim in claims):
                     raise WorkflowError("Claim is not reversible by the synthetic adapter")
                 for claim in claims:
+                    from .billing import record_reversal
+                    record_reversal(s, actor, claim, reason)
                     claim.status = "REVERSED_SYNTHETIC"
                 sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
                 for src in sources:

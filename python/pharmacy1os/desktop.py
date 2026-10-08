@@ -15,17 +15,19 @@ from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
 from .lifecycle import LifecycleService
 from .provider_directory import ProviderDirectory
+from .scheduling import SchedulingService
+from .billing import BillingService
 
 from sqlalchemy import select
 
-from .models import Claim, Drug, DUR, Fill, Patient, Prescriber, Product, Staff, Stock, WillCall
+from .models import Claim, Drug, DUR, Fill, Patient, Prescriber, Prescription, Product, Staff, Stock, WillCall
 from .service import Actor, PharmacyService
 
 
 VIEWS = [
     "Dashboard", "Exceptions", "Will Call", "New Prescription", "Patients",
     "Providers", "Drug / Product", "Receiving", "Inventory", "Third Party",
-    "Supply Chain",
+    "Supply Chain", "Future Fills",
 ]
 
 
@@ -53,6 +55,8 @@ def main() -> None:
     advanced_service = AdvancedInventoryService(service)
     lifecycle_service = LifecycleService(service)
     directory_service = ProviderDirectory(service)
+    scheduling_service = SchedulingService(service)
+    billing_service = BillingService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -199,6 +203,14 @@ def main() -> None:
                 self.action("Resolve Hold", self.resolve_stock_hold)
                 self.action("Adjust Stock", self.adjust_stock)
                 self.action("Stock Ledger", self.stock_ledger)
+            elif page == 9:
+                self.action("New Payer Rule Version", self.configure_payer)
+                self.action("Claim History", self.claim_history)
+            elif page == 11:
+                self.action("Schedule Fill", self.schedule_new)
+                self.action("Start Due Fill", self.schedule_start)
+                self.action("Cancel Schedule", self.schedule_cancel)
+                self.action("Begin Refill DUR", self.schedule_refill_review)
             elif page == 10:
                 self.action("Purchase Orders", self.manage_po)
                 self.action("Site Transfers", self.manage_transfer)
@@ -210,7 +222,12 @@ def main() -> None:
         def refresh(self):
             self.rows = []
             page = self.selected_view
-            if page == 10:
+            if page == 11:
+                headers = ["Rx", "Due", "Status", "Quantity"]
+                self.rows = [(x["id"], x["prescription_id"][:8], x["due_date"],
+                              x["status"], x["quantity"] or "Full")
+                             for x in scheduling_service.list(self.actor)]
+            elif page == 10:
                 headers = ["Type", "Identifier", "Status", "Detail"]
                 self.rows = [(x['id'], 'PO', x['reference'], x['status'], x['vendor'])
                              for x in advanced_service.purchase_orders(self.actor)]
@@ -232,11 +249,11 @@ def main() -> None:
                     if page == 1:
                         headers = ["Severity", "Code", "Resolved"]
                         self.rows = [(x.id, x.severity, x.code, str(x.resolved))
-                                     for x in s.scalars(select(DUR)).all()]
+                                     for x in s.scalars(select(DUR).join(Prescription, DUR.prescription_id == Prescription.id).where(Prescription.site_id == self.actor.site_id)).all()]
                     elif page == 2:
                         headers = ["Bag", "Bin", "Status"]
                         self.rows = [(x.id, x.bag_barcode, x.bin_name, x.status)
-                                     for x in s.scalars(select(WillCall)).all()]
+                                     for x in s.scalars(select(WillCall).join(Fill, WillCall.fill_id == Fill.id).join(Prescription, Fill.prescription_id == Prescription.id).where(Prescription.site_id == self.actor.site_id)).all()]
                     elif page == 3:
                         headers = ["Rx number", "Patient", "Status"]
                         self.rows = [(x["id"], x["rx_number"], x["patient"], x["status"])
@@ -261,7 +278,7 @@ def main() -> None:
                     else:
                         headers = ["Payer", "Sequence", "Status", "Billed qty"]
                         self.rows = [(x.id, x.payer, str(x.sequence), x.status, str(x.billed_quantity))
-                                     for x in s.scalars(select(Claim)).all()]
+                                     for x in s.scalars(select(Claim).join(Fill, Claim.fill_id == Fill.id).join(Prescription, Fill.prescription_id == Prescription.id).where(Prescription.site_id == self.actor.site_id)).all()]
             self.table.setColumnCount(len(headers))
             self.table.setHorizontalHeaderLabels(headers)
             self.table.setRowCount(len(self.rows))
@@ -270,6 +287,55 @@ def main() -> None:
                     self.table.setItem(i, j, QTableWidgetItem(str(value)))
             self.table.resizeColumnsToContents()
             self.message.setText(f"{len(self.rows)} records · {self.actor.role} · development")
+
+        def schedule_new(self):
+            rx_number = self.ask("Future fill", "Existing prescription number")
+            with service.sessions() as s:
+                rx = s.scalar(select(Prescription).where(Prescription.site_id == self.actor.site_id,
+                                                          Prescription.rx_number == rx_number))
+                if rx is None:
+                    raise ValueError("Prescription not found at this pharmacy")
+            due = self.ask("Future fill", "Due date YYYY-MM-DD")
+            qty = self.ask("Future fill", "Quantity or '-' for full", "-")
+            key = self.ask("Future fill", "Unique request reference / idempotency key")
+            scheduling_service.schedule(self.actor, rx.id, due, key,
+                                        None if qty == "-" else qty)
+
+        def schedule_start(self):
+            scheduling_service.start_due(self.actor, self.selected_id())
+
+        def schedule_cancel(self):
+            scheduling_service.cancel(self.actor, self.selected_id(),
+                                      self.ask("Future fill", "Cancellation reason"))
+
+        def schedule_refill_review(self):
+            rx_number = self.ask("Refill", "Existing sold prescription number")
+            with service.sessions() as s:
+                rx = s.scalar(select(Prescription).where(Prescription.site_id == self.actor.site_id,
+                                                          Prescription.rx_number == rx_number))
+                if rx is None:
+                    raise ValueError("Prescription not found at this pharmacy")
+            scheduling_service.begin_refill_review(self.actor, rx.id,
+                                                    self.ask("Refill", "Reason for new DUR review"))
+
+        def configure_payer(self):
+            payer = self.ask("Payer", "Payer name")
+            max_sources = int(self.ask("Payer", "Maximum physical sources (1-4)", "4"))
+            strategy = self.ask("Payer", "Sandbox NDC strategy: MAJORITY_NDC or FIRST_SCANNED",
+                                "MAJORITY_NDC")
+            reason = self.ask("Payer", "Document why this billing profile is being changed")
+            billing_service.update_profile(self.actor, payer, max_physical_sources=max_sources,
+                                           billing_ndc_strategy=strategy, reason=reason)
+
+        def claim_history(self):
+            with service.sessions() as s:
+                claim = s.get(Claim, self.selected_id())
+                if claim is None:
+                    raise ValueError("Select a claim record")
+                fill_id = claim.fill_id
+            history = billing_service.history(self.actor, fill_id)
+            QMessageBox.information(self, "Synthetic claim provenance",
+                                    json.dumps(history, indent=2))
 
         def fill_for_rx(self, rx_id):
             with service.sessions() as s:

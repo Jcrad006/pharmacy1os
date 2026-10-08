@@ -85,22 +85,43 @@ For each legacy module: preserve a documented API/domain contract; port edge cas
 5. The initial Python domain is **not** feature-equivalent with the TypeScript application. No old modules or old database tables have been removed; do not merge/replace the TypeScript application yet.
 6. Existing Python local tests cover the listed synthetic behavior; they do not establish clinical suitability, compliance, external claims or hardware readiness.
 
-## Third migration increment — advanced inventory operations (2026-10-08)
+## Third increment — Python inventory operations (synthetic)
 
-The Python rewrite now includes **synthetic development counterparts** for purchase orders, intersite inventory transfers, physical cycle counts and recalls in `pharmacy1os/inventory_advanced.py`, backed by SQLAlchemy tables and FastAPI/Qt interfaces. Legacy TypeScript code and the live-shaped Prisma schema remain untouched.
+A further isolated Python port implements purchase orders, cross-site transfers,
+cycle counts, and recall quarantine/follow-up. The authoritative TypeScript system
+still remains unchanged.
 
-### Converted functionality
+| Workstream | Implemented in Python | Important deferred parity |
+| --- | --- | --- |
+| Purchase orders | Unique per-site references, multiple product lines, partial receipts by lot/expiration, invoice records, over-receipt rejection, cancellation authority and audit | Wholesaler EDI, invoice matching, reorder policy, authoritative supplier catalog, robust retries/idempotency |
+| Transfers | Source shipment from uncommitted usable stock, in-transit record, destination receipt with lot/expiration, origin cancellation with ledger restoration, site-specific authorization | Two-person custody, shipping proof, serial/DSCSA trace linkage, actual carrier discrepancies, PostgreSQL concurrency drills |
+| Cycle counts | Physical count entry, submission, independent pharmacist reconciliation/rejection, movement-sequence stale-count rejection, transaction-atomic multi-line validation | Full count-session management, handheld hardware, stock-position segmentation, comprehensive scheduled reconciliation |
+| Recalls | NDC/product or specific-lot cases, automatic quarantine of usable stock and subsequently received/returned stock, pharmacist verification/sale/scan block, persistent quarantine after closure, synthetic sold-fill exposure links | Patient outreach tasks, recall notices from trading partners, DSCSA product-level verification, controlled clinical review |
 
-- **Purchase orders:** one or more unique products per order; partial and complete receipts by NDC/lot/expiration; invoice references and append-only receipt/movement/audit records; over-receipt prevention and pharmacist-only cancellation of remaining unreceived quantities. Canceling an order does not undo quantities already received.
-- **Site transfers:** pharmacist-controlled outgoing shipments and cancellations, technician receipt at the destination site, preservation of product/lot/expiration provenance, single terminal disposition, per-site audit and stock movements. Transfers cannot ship reserved, quarantined or recalled stock; a canceled in-transit shipment restores the source stock and re-quarantines affected units if a recall became active during transit.
-- **Cycle counts:** technician/inventory-staff counts, immutable baseline and movement-count capture, submitted review state, all-or-nothing pharmacist review, stale snapshot rejection, and explicit prohibition on reducing on-hand below reserved plus quarantined quantities.
-- **Product recalls:** NDC-wide or lot-specific site-scoped recall cases; quarantine of available stock; explicit blocking during Product Fill, final verification, and Ready-fill checkout; automatic quarantine of newly received, canceled-transfer and unsold returned units; pharmacist closure with quarantine retained until separately reviewed; historical READY/SOLD fill-exposure linkage.
-- **Qt workstation:** new F11 `Supply Chain` work area, with basic dialogs for orders, transfers, counts and recalls. Qt still requires hands-on graphical testing; compilation alone is not a working-hardware validation.
-- **FastAPI:** synthetic CRUD/workflow routes for these four domains. Production API remains blocked without real authentication; header-selected demo identities are not secure identities.
-- **Synthetic demo schema upgrade:** SQLite `create_schema()` now recognizes the one new nullable `py_inventory_holds.recall_id` column and upgrades a *synthetic-only* local database. No old Prisma/PostgreSQL schema is migrated.
+**Integrity boundary:** A stock transfer, PO receipt, quarantine action, or cycle-count
+reconciliation produces movements in the same transaction as its balance change.
+All protected mutations require the synthetic site/role permissions. Real
+multi-user concurrent safety is **not established** by SQLite tests; the SQLAlchemy
+select-for-update calls require a PostgreSQL target, DB-level idempotency,
+transaction isolation review, and race/load/fault tests before release.
 
-### Verification and gaps
+**Local demo schema compatibility:** `create_schema` creates new `py_` inventory
+tables and adds the nullable `recall_id` reference to an existing SQLite
+`py_inventory_holds` demo table if absent. This is a narrow synthetic upgrade,
+**not an Alembic migration or a conversion of any legacy Prisma data**. Never
+point it at a production pharmacy database. The initial Python schema and this
+version must ultimately be handled by reviewed, reversible Alembic changes.
 
-The synthetic Python regression suite has **32 passing tests** on this increment, covering order and transfer safety, stale counts, recall gating and exposure history, user/site isolation, API, and the earlier dispensing/document functionality. Python modules compile. **PySide6 was not installed in the build container**, so the native GUI has not received a runtime smoke test. No PostgreSQL concurrent-client/load or migration testing has been performed.
+**UI/API:** The F9 native Qt inventory screen exposes a supply-chain operations
+dialog (POs, transfers, cycle counts, recall cases). Matching FastAPI development
+routes are provided. The Qt window has passed Python compilation but not an
+interactive display/hardware smoke test in this environment.
 
-This is **not full parity** with the TypeScript inventory system: supplier receiving discrepancy workflows, locations/stock positions, FEFO planning, purchase-order idempotency, advanced custody event records, serialized DSCSA traceability, and all external/hardware integrations remain outstanding. In particular, SQLite demo transaction behavior does not establish race-free production operation or regulatory compliance. Use only synthetic data; do not merge over the working TypeScript application.
+**Verification:** `python -m pytest -q` ran 29 synthetic tests successfully
+(including 11 additional inventory tests). All Python source modules compiled.
+No live claim service, external eRx, prescribing legal rules, authentication,
+EPCS, DSCSA certification, shared-network deployment, or real PHI permitted.
+
+## Seventh Python increment — scheduled fills and synthetic payer profiles (2026-10-08)
+
+Ported transaction-bound scheduling/refill review, an explicit due-date/DUR safety gate, per-site schedule idempotency, versioned per-payer billing profiles, physical source/NDC claim snapshots, and append-only application-level synthetic paid/reversed claim events. New isolated Alembic revisions follow the provider-directory migration; FastAPI endpoints and Qt controls are included. This is **NOT** a full Python conversion or production release. See `PYTHON_SCHEDULING_BILLING.md` for functionality, limitations, and test evidence. Continue preserving the TypeScript reference and legacy Prisma records.

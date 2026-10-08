@@ -19,6 +19,10 @@ from .inventory_advanced import AdvancedInventoryService
 from .lifecycle import LifecycleService
 from .provider_api import make_provider_router
 from .provider_directory import ProviderDirectory
+from .scheduling import SchedulingService
+from .scheduling_api import make_schedule_router
+from .billing import BillingService
+from .billing_api import make_billing_router
 
 
 class PatientIn(BaseModel):
@@ -233,6 +237,8 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
 
     DemoActor = Annotated[Actor, Depends(staff_actor)]
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
+    app.include_router(make_schedule_router(SchedulingService(svc), staff_actor))
+    app.include_router(make_billing_router(BillingService(svc), staff_actor))
 
     @app.get("/health")
     def health():

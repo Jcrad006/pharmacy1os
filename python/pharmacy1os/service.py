@@ -87,6 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
+        from . import scheduling_models, billing_models  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -277,43 +278,52 @@ class PharmacyService:
             issue.resolved = True; issue.resolution = note.strip()
             self._audit(s, actor, "DUR_RESOLVED", issue.id, {"resolution": note.strip()})
 
+    def _start_fill_tx(self, s: Session, actor: Actor, rx: Prescription,
+                       dispense_quantity: str | None = None, *, effective_date: date | None = None,
+                       scheduled_id: str | None = None) -> str:
+        """Start a fill inside the caller's existing transaction (including scheduled starts)."""
+        if rx.status != "DUR_REVIEW":
+            raise WorkflowError("Prescription must pass Data Entry/DUR stage")
+        today = (effective_date or date.today()).isoformat()
+        if rx.expiration_date and rx.expiration_date < today:
+            raise WorkflowError("Prescription expired")
+        if rx.do_not_fill_before and rx.do_not_fill_before > today:
+            raise WorkflowError("Do-not-fill-before date not reached")
+        if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
+                    DUR.severity == "HIGH", DUR.resolved.is_(False))):
+            raise WorkflowError("Unresolved high-severity DUR issue")
+        from .scheduling_models import ScheduledFill
+        pending = s.scalar(select(ScheduledFill.id).where(
+            ScheduledFill.prescription_id == rx.id, ScheduledFill.status == "PENDING"))
+        if pending and pending != scheduled_id:
+            raise WorkflowError("A pending future fill must be started through its scheduled action")
+        active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
+        if any(f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"} for f in active):
+            raise WorkflowError("A fill is already active")
+        returned = next((f for f in sorted(active, key=lambda f: (f.fill_number, f.attempt), reverse=True)
+                         if f.status == "RETURNED"), None)
+        fillnum = returned.fill_number if returned else (max((f.fill_number for f in active), default=-1) + 1)
+        if fillnum > rx.refills_allowed:
+            raise WorkflowError("No refills remaining")
+        attempt = returned.attempt + 1 if returned else 1
+        qty = positive(dispense_quantity or rx.quantity)
+        if qty > rx.quantity:
+            raise WorkflowError("Cannot dispense more than authorized quantity")
+        f = Fill(prescription_id=rx.id, fill_number=fillnum, attempt=attempt,
+                 quantity=qty, billed_quantity=rx.quantity, status="PRODUCT_FILL")
+        s.add(f)
+        rx.status = "PRODUCT_FILL"
+        s.flush()
+        self._audit(s, actor, "FILL_STARTED", f.id,
+                    {"fill_number": f.fill_number, "dispense_qty": str(qty),
+                     "bill_qty": str(rx.quantity)})
+        return f.id
+
     def start_fill(self, actor: Actor, rx_id: str, dispense_quantity: str | None = None) -> str:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
             rx = self._site(s, Prescription, rx_id, actor)
-            if rx.status != "DUR_REVIEW":
-                raise WorkflowError("Prescription must pass Data Entry/DUR stage")
-            today = date.today().isoformat()
-            if rx.expiration_date and rx.expiration_date < today:
-                raise WorkflowError("Prescription expired")
-            if rx.do_not_fill_before and rx.do_not_fill_before > today:
-                raise WorkflowError("Do-not-fill-before date not reached")
-            if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
-                        DUR.severity == "HIGH", DUR.resolved.is_(False))):
-                raise WorkflowError("Unresolved high-severity DUR issue")
-            active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
-            if any(f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"} for f in active):
-                raise WorkflowError("A fill is already active")
-            returned = next((f for f in sorted(active, key=lambda f: (f.fill_number, f.attempt), reverse=True)
-                             if f.status == "RETURNED"), None)
-            fillnum = returned.fill_number if returned else (max((f.fill_number for f in active), default=-1) + 1)
-            if fillnum > rx.refills_allowed:
-                raise WorkflowError("No refills remaining")
-            attempt = returned.attempt + 1 if returned else 1
-            f = Fill(prescription_id=rx.id, fill_number=fillnum, attempt=attempt,
-                     quantity=rx.quantity, billed_quantity=rx.quantity,
-                     status="PRODUCT_FILL")
-            s.add(f)
-            qty = positive(dispense_quantity or rx.quantity)
-            if qty > rx.quantity:
-                raise WorkflowError("Cannot dispense more than authorized quantity")
-            f.quantity = qty
-            # Deliberately bill the full authorized quantity on a partial; sandbox only.
-            f.billed_quantity = rx.quantity
-            rx.status = "PRODUCT_FILL"; s.flush()
-            self._audit(s, actor, "FILL_STARTED", f.id,
-                        {"fill_number": f.fill_number, "dispense_qty": str(qty), "bill_qty": str(rx.quantity)})
-            return f.id
+            return self._start_fill_tx(s, actor, rx, dispense_quantity)
 
     def scan_source(self, actor: Actor, fill_id: str, barcode: str, lot: str,
                     expires: str, quantity: str) -> None:
@@ -380,8 +390,12 @@ class PharmacyService:
                 s.add(label)
                 labels.append(f"{prod.ndc} {src.quantity}/{f.quantity} — Bottle {index} of {len(sorted_sources)}")
             for seq, payer in enumerate(payers, start=1):
-                s.add(Claim(fill_id=f.id, payer=payer, sequence=seq,
-                            status="PAID_SYNTHETIC", billed_quantity=f.billed_quantity))
+                claim = Claim(fill_id=f.id, payer=payer, sequence=seq,
+                              status="PAID_SYNTHETIC", billed_quantity=f.billed_quantity)
+                s.add(claim)
+                s.flush()
+                from .billing import record_paid
+                record_paid(s, actor, claim, sources)
             f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
             self._audit(s, actor, "FILL_PREPARED", f.id,
                         {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX"})
@@ -475,6 +489,8 @@ class PharmacyService:
             for claim in s.scalars(select(Claim).where(Claim.fill_id == f.id)).all():
                 if claim.status != "PAID_SYNTHETIC":
                     raise WorkflowError("Claim reversal precondition failed")
+                from .billing import record_reversal
+                record_reversal(s, actor, claim, reason)
                 claim.status = "REVERSED_SYNTHETIC"
             for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
                 stock = s.get(Stock, src.stock_id)
