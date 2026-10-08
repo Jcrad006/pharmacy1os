@@ -7,6 +7,7 @@ import { healthRoutes } from "./routes/health.js";
 import { developmentRoutes } from "./routes/development.js";
 import { authRoutes } from "./routes/auth.js";
 import { staffRoutes } from "./routes/staff.js";
+import { privilegedAccessRoutes } from "./routes/privilegedAccess.js";
 import { assertRuntimeSafetyConfiguration } from "./security/runtimeSafety.js";
 import { patientRoutes } from "./routes/patients.js";
 import { prescriberRoutes } from "./routes/prescribers.js";
@@ -88,6 +89,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(healthRoutes);
   app.register(authRoutes, { prefix: "/api" });
   app.register(staffRoutes, { prefix: "/api" });
+  app.register(privilegedAccessRoutes, { prefix: "/api" });
   app.register(developmentRoutes, { prefix: "/api" });
   app.register(patientRoutes, { prefix: "/api" });
   app.register(prescriberRoutes, { prefix: "/api" });
