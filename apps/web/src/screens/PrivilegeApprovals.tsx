@@ -11,9 +11,10 @@ function display(value: string) {
   return value.split("_").map(v => v.charAt(0) + v.slice(1).toLowerCase()).join(" ");
 }
 
-export function PrivilegeApprovals({ user, onError }: {
+export function PrivilegeApprovals({ user, onError, onAccessChanged }: {
   user?: DevUser;
   onError: (value: string) => void;
+  onAccessChanged: () => Promise<void>;
 }) {
   const [requests, setRequests] = useState<PrivilegedAccessRequest[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
@@ -48,6 +49,7 @@ export function PrivilegeApprovals({ user, onError }: {
     try {
       await action();
       await refresh();
+      await onAccessChanged();
       setNotice(text);
     } catch (error) {
       await refresh().catch(() => undefined);
