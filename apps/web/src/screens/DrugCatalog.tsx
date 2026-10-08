@@ -275,7 +275,7 @@ export function DrugCatalog({
   }
 
   async function configureMedicationCompliance(medication: Medication) {
-    if (user?.role !== "PHARMACIST" && user?.role !== "ADMIN") return;
+    if (user?.role !== "PHARMACIST" && user?.role !== "PHARMACIST_IN_CHARGE" && user?.role !== "ADMIN") return;
 
     const nti = window.confirm(
       `Mark ${medication.genericName} ${medication.strength} as a North Carolina narrow therapeutic index medication?\n\nOK = NTI, Cancel = not NTI.`,
@@ -449,7 +449,7 @@ export function DrugCatalog({
                   >
                     Add NDC
                   </button>
-                  {(user?.role === "PHARMACIST" ||
+                  {(user?.role === "PHARMACIST" || user?.role === "PHARMACIST_IN_CHARGE" ||
                     user?.role === "ADMIN") && (
                     <button
                       className="secondary-button"
