@@ -231,6 +231,18 @@ describe("Stage 3M.3 two-person privileged authorization", () => {
       reason: "Unsafe self promotion request",
     });
     expect(unauthorized.statusCode).toBe(403);
+    process.env.ENABLE_SYNTHETIC_ROLE_GRANTS = "false";
+    try {
+      const disabled = await api(adminId, "POST", "/api/privileged/requests", {
+        kind: "ROLE_GRANT", targetUserId: technicianId,
+        requestedRole: "PHARMACIST",
+        expectedAssignmentUpdatedAt: grant.updatedAt.toISOString(),
+        reason: "Must not work when licensed role test gate is disabled",
+      });
+      expect(disabled.statusCode).toBe(503);
+    } finally {
+      process.env.ENABLE_SYNTHETIC_ROLE_GRANTS = "true";
+    }
     const created = await api(adminId, "POST", "/api/privileged/requests", {
       kind: "ROLE_GRANT", targetUserId: technicianId,
       requestedRole: "PHARMACIST", expectedAssignmentUpdatedAt: grant.updatedAt.toISOString(),
