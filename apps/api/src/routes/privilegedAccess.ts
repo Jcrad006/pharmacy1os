@@ -17,6 +17,11 @@ const REQUEST_TTL_MS = 10 * 60_000;
 const ELEVATION_TTL_MS = 15 * 60_000;
 const STEP_UP_WINDOW_MS = 5 * 60_000;
 
+function syntheticRoleGrantsEnabled() {
+  return process.env.ENABLE_SYNTHETIC_ROLE_GRANTS === "true" &&
+    process.env.NODE_ENV !== "production";
+}
+
 function oidcOnly() {
   if (process.env.AUTH_MODE !== "oidc" || process.env.NODE_ENV === "production") {
     throw new AccessError(404, "Not found.");
@@ -105,7 +110,8 @@ export async function privilegedAccessRoutes(app: FastifyInstance) {
         },
         orderBy: { createdAt: "desc" }, take: 100,
       });
-      return { requests: entries.map(publicRequest), temporaryPermissions };
+      return { requests: entries.map(publicRequest), temporaryPermissions,
+        syntheticRoleGrantsEnabled: syntheticRoleGrantsEnabled() };
     } catch (error) { return fail(reply, error); }
   });
 
@@ -141,6 +147,9 @@ export async function privilegedAccessRoutes(app: FastifyInstance) {
           throw new AccessError(403, "Temporary elevation can only be requested for yourself.");
         }
       } else if (input?.kind === "ROLE_GRANT" && isHighTrustRole(input.requestedRole)) {
+        if (!syntheticRoleGrantsEnabled()) {
+          throw new AccessError(503, "Synthetic privileged role grants are disabled.");
+        }
         kind = "ROLE_GRANT";
         requestedRole = input.requestedRole;
         targetUserId = identifier(input.targetUserId);
@@ -218,6 +227,9 @@ export async function privilegedAccessRoutes(app: FastifyInstance) {
         }
         const isManager = ["ADMIN", "PHARMACIST_IN_CHARGE"].includes(auth.actor.role);
         if (entry.kind === "ROLE_GRANT") {
+          if (!syntheticRoleGrantsEnabled()) {
+            throw new AccessError(503, "Synthetic privileged role grants are disabled.");
+          }
           if (!entry.requestedRole || !isHighTrustRole(entry.requestedRole) ||
               !mayApproveRole(auth.actor.role, entry.requestedRole)) {
             throw new AccessError(403, "An independent designated site leader must review this grant.");
