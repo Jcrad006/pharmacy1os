@@ -2341,3 +2341,20 @@ kbd {
     max-height: none;
   }
 }
+
+/* Stage 3M site staff workstation */
+.staff-panel { padding: 20px; margin-bottom: 18px; }
+.staff-panel h2, .staff-panel h3 { margin-bottom: 10px; }
+.staff-panel p { color: #4d6156; line-height: 1.5; margin-bottom: 12px; }
+.staff-form { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+.staff-form label, .staff-entry label { display: grid; gap: 6px; font-size: 13px; }
+.staff-form label { flex: 1 1 220px; }
+.staff-form input, .staff-form select, .staff-entry select {
+  padding: 9px; border-radius: 7px; border: 1px solid #b9cdc1; min-width: 0;
+}
+.staff-form button, .staff-entry button { border-radius: 7px; padding: 9px 12px; cursor: pointer; border: 1px solid #8eb6a0; background: #eaf4ed; color: #183f2c; }
+.staff-list { display: grid; gap: 12px; margin-top: 15px; }
+.staff-entry { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; padding: 14px; border: 1px solid #dfe8e3; border-radius: 9px; }
+.staff-entry > div:first-child { flex: 2 1 190px; }
+.staff-entry small { display: block; color: #64736d; margin-top: 5px; }
+.staff-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }

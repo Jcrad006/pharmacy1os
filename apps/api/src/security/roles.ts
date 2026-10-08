@@ -1,6 +1,8 @@
 export const roles = [
   "ADMIN",
   "PHARMACIST",
+  "PHARMACIST_IN_CHARGE",
+  "INVENTORY_MANAGER",
   "TECHNICIAN",
   "INTERN",
   "CASHIER",
@@ -39,6 +41,20 @@ export type Permission = (typeof permissions)[number];
 
 export const rolePermissions: Record<Role, readonly Permission[]> = {
   ADMIN: permissions,
+  PHARMACIST_IN_CHARGE: [
+    "patient:read", "patient:write",
+    "prescription:read", "prescription:enter", "prescription:edit",
+    "prescription:process", "prescription:verify", "prescription:sell",
+    "prescription:emergency", "clinical:document",
+    "document:read", "document:upload", "document:annotate",
+    "inventory:read", "inventory:write", "inventory:correct",
+    "thirdparty:read", "thirdparty:write", "thirdparty:override",
+    "product:compliance", "user:manage", "audit:read",
+  ],
+  INVENTORY_MANAGER: [
+    "inventory:read", "inventory:write", "inventory:correct",
+    "product:compliance",
+  ],
   PHARMACIST: [
     "patient:read",
     "patient:write",

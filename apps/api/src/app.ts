@@ -5,6 +5,13 @@ import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { healthRoutes } from "./routes/health.js";
 import { developmentRoutes } from "./routes/development.js";
+import { authRoutes } from "./routes/auth.js";
+import { staffRoutes } from "./routes/staff.js";
+import { privilegedAccessRoutes } from "./routes/privilegedAccess.js";
+import { workforceSecurityRoutes } from "./routes/workforceSecurity.js";
+import { protectedOffboardingRoutes } from "./routes/protectedOffboarding.js";
+import { registerSecurityMonitoring, securityMonitoringRoutes } from "./security/securityMonitoring.js";
+import { assertRuntimeSafetyConfiguration } from "./security/runtimeSafety.js";
 import { patientRoutes } from "./routes/patients.js";
 import { prescriberRoutes } from "./routes/prescribers.js";
 import { prescriptionRoutes } from "./routes/prescriptions.js";
@@ -52,11 +59,15 @@ async function isFile(path: string) {
 }
 
 export function buildApp(options: BuildAppOptions = {}) {
+  // Enforce this gate even for alternative server entrypoints/inject harnesses.
+  assertRuntimeSafetyConfiguration();
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-request-id",
     bodyLimit: 36 * 1024 * 1024,
   });
+
+  registerSecurityMonitoring(app);
 
   app.register(cors, {
     origin: process.env.WEB_ORIGIN ?? "http://localhost:5173",
@@ -81,6 +92,12 @@ export function buildApp(options: BuildAppOptions = {}) {
   });
 
   app.register(healthRoutes);
+  app.register(authRoutes, { prefix: "/api" });
+  app.register(staffRoutes, { prefix: "/api" });
+  app.register(privilegedAccessRoutes, { prefix: "/api" });
+  app.register(workforceSecurityRoutes, { prefix: "/api" });
+  app.register(protectedOffboardingRoutes, { prefix: "/api" });
+  app.register(securityMonitoringRoutes, { prefix: "/api" });
   app.register(developmentRoutes, { prefix: "/api" });
   app.register(patientRoutes, { prefix: "/api" });
   app.register(prescriberRoutes, { prefix: "/api" });

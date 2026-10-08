@@ -110,6 +110,11 @@ async function main() {
       update: { externalAuthId, displayName, role, active: true },
       create: { id, siteId: ids.site, externalAuthId, displayName, role },
     });
+    await db.siteRoleAssignment.upsert({
+      where: { userId_siteId: { userId: id, siteId: ids.site } },
+      update: { role, active: true },
+      create: { userId: id, siteId: ids.site, role },
+    });
   }
 
   const secondaryStaff = [
@@ -144,6 +149,11 @@ async function main() {
         displayName,
         role,
       },
+    });
+    await db.siteRoleAssignment.upsert({
+      where: { userId_siteId: { userId: id, siteId: ids.site2 } },
+      update: { role, active: true },
+      create: { userId: id, siteId: ids.site2, role },
     });
   }
 

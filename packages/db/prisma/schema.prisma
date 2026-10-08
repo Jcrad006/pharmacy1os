@@ -7,9 +7,36 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ProtectedOffboardingStatus {
+  PENDING
+  APPROVED
+  DENIED
+  CANCELLED
+}
+
+enum CredentialReviewStatus {
+  PENDING
+  TEST_ATTESTED
+  REJECTED
+}
+
+enum PrivilegedAccessKind {
+  ROLE_GRANT
+  TEMP_PERMISSION
+}
+
+enum PrivilegedAccessStatus {
+  PENDING
+  APPROVED
+  DENIED
+  CANCELLED
+}
+
 enum UserRole {
   ADMIN
   PHARMACIST
+  PHARMACIST_IN_CHARGE
+  INVENTORY_MANAGER
   TECHNICIAN
   INTERN
   CASHIER
@@ -391,6 +418,12 @@ model PharmacySite {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   users         User[]
+  siteRoleAssignments SiteRoleAssignment[]
+  authSessions  AuthSession[]
+  privilegedAccessRequests PrivilegedAccessRequest[]
+  credentialReviews StaffCredentialReview[]
+  protectedOffboardingRequests ProtectedOffboardingRequest[]
+  securityEvents SecurityEvent[]
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
@@ -436,11 +469,23 @@ model User {
   siteId            String
   site              PharmacySite       @relation(fields: [siteId], references: [id])
   externalAuthId    String?            @unique
+  oidcSubject       String?            @unique
   displayName       String
   role              UserRole
   active            Boolean            @default(true)
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
+  siteRoleAssignments SiteRoleAssignment[]
+  authSessions      AuthSession[]
+  privilegedAccessTargets PrivilegedAccessRequest[] @relation("PrivilegeTarget")
+  privilegedAccessRequests PrivilegedAccessRequest[] @relation("PrivilegeRequester")
+  privilegedAccessReviews PrivilegedAccessRequest[] @relation("PrivilegeReviewer")
+  credentialSubjectReviews StaffCredentialReview[] @relation("CredentialSubject")
+  credentialSubmittedReviews StaffCredentialReview[] @relation("CredentialSubmitter")
+  credentialCompletedReviews StaffCredentialReview[] @relation("CredentialReviewer")
+  protectedOffboardingTargets ProtectedOffboardingRequest[] @relation("OffboardingTarget")
+  protectedOffboardingRequests ProtectedOffboardingRequest[] @relation("OffboardingRequester")
+  protectedOffboardingReviews ProtectedOffboardingRequest[] @relation("OffboardingReviewer")
   auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
   interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
@@ -1984,4 +2029,147 @@ model AuditEvent {
 
   @@index([siteId, occurredAt])
   @@index([entityType, entityId])
+}
+
+
+// Stage 3M: staff grants are scoped to a site; legacy User.role remains
+// solely for the synthetic development workflow and historical records.
+model SiteRoleAssignment {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  siteId    String
+  site      PharmacySite @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  role      UserRole
+  active    Boolean      @default(true)
+  grantedAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([userId, siteId])
+  @@index([siteId, active, role])
+}
+
+// A random session secret exists only in the browser's HttpOnly cookie.
+// The database stores its SHA-256 hash, allowing immediate server revocation.
+model AuthSession {
+  id             String       @id @default(uuid())
+  sessionHash    String       @unique
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  siteId         String
+  site           PharmacySite @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  createdAt      DateTime     @default(now())
+  lastSeenAt     DateTime     @default(now())
+  idleExpiresAt  DateTime
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  mfaVerifiedAt  DateTime
+
+  @@index([userId, revokedAt])
+  @@index([siteId, expiresAt])
+}
+
+// One-time authorization-code state; never a bearer-session credential.
+model OidcLoginAttempt {
+  stateHash   String   @id
+  nonce       String
+  pkceVerifier String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  consumedAt  DateTime?
+}
+
+
+// Stage 3M.3: scoped, audited two-person authorizations. Not a credential
+// verification service. Never treat synthetic approvals as licensure evidence.
+model PrivilegedAccessRequest {
+  id                          String                 @id @default(uuid())
+  siteId                      String
+  site                        PharmacySite           @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  targetUserId                String
+  targetUser                  User                   @relation("PrivilegeTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+  requestedById               String
+  requestedBy                 User                   @relation("PrivilegeRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewedById                String?
+  reviewedBy                  User?                  @relation("PrivilegeReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  kind                        PrivilegedAccessKind
+  status                      PrivilegedAccessStatus @default(PENDING)
+  requestedRole               UserRole?
+  requestedPermission         String?
+  expectedAssignmentUpdatedAt DateTime?
+  reason                      String
+  reviewNote                  String?
+  createdAt                   DateTime               @default(now())
+  reviewDeadlineAt            DateTime
+  reviewedAt                  DateTime?
+  effectiveUntil              DateTime?
+
+  @@index([siteId, status, createdAt])
+  @@index([targetUserId, status, effectiveUntil])
+}
+
+// Stage 3M.4: double-reviewed, TEST-ONLY credential attestations. No automatic
+// license lookup. TEST_ATTESTED must never be represented as board verification.
+model StaffCredentialReview {
+  id           String                 @id @default(uuid())
+  siteId       String
+  site         PharmacySite           @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  targetUserId String
+  target       User                   @relation("CredentialSubject", fields: [targetUserId], references: [id], onDelete: Restrict)
+  submittedById String
+  submittedBy  User                   @relation("CredentialSubmitter", fields: [submittedById], references: [id], onDelete: Restrict)
+  reviewedById String?
+  reviewedBy   User?                  @relation("CredentialReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  role         UserRole
+  status       CredentialReviewStatus @default(PENDING)
+  authority    String
+  evidenceReference String
+  rationale    String
+  reviewNote   String?
+  expiresAt    DateTime
+  createdAt    DateTime               @default(now())
+  reviewedAt   DateTime?
+
+  @@index([siteId, status, createdAt])
+  @@index([targetUserId, role, status, expiresAt])
+}
+
+// Security events contain no PHI, session tokens, raw IPs or query strings.
+// Origin-bound HMACs allow short-lived correlation without storing network IDs.
+model SecurityEvent {
+  id          String   @id @default(uuid())
+  siteId      String?
+  site        PharmacySite? @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  kind        String
+  requestPath String
+  httpStatus  Int
+  networkHash String?
+  occurredAt  DateTime @default(now())
+
+  @@index([occurredAt, kind])
+  @@index([siteId, occurredAt])
+  @@index([networkHash, occurredAt])
+}
+
+// Stage 3M.5: globally suspending a protected professional/administrator
+// requires a separately MFA-authenticated approver with scoped site authority.
+model ProtectedOffboardingRequest {
+  id               String                     @id @default(uuid())
+  siteId           String
+  site             PharmacySite               @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  targetUserId     String
+  target           User                       @relation("OffboardingTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+  requestedById    String
+  requestedBy      User                       @relation("OffboardingRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewedById     String?
+  reviewedBy       User?                      @relation("OffboardingReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  status           ProtectedOffboardingStatus @default(PENDING)
+  reason           String
+  reviewNote       String?
+  createdAt        DateTime                   @default(now())
+  reviewDeadlineAt DateTime
+  reviewedAt       DateTime?
+
+  @@index([siteId, status, createdAt])
+  @@index([targetUserId, status, createdAt])
 }

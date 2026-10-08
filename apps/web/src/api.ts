@@ -65,6 +65,26 @@ import type {
   PrescriptionSourceType,
 } from "./types";
 
+let authCsrfToken: string | null = null;
+
+export function setAuthCsrfToken(token: string | null) {
+  authCsrfToken = token;
+}
+
+export async function getAuthStatus(): Promise<{ mode: "development" | "oidc" }> {
+  const response = await fetch("/api/auth/status");
+  if (!response.ok) throw new Error("Unable to determine authentication mode.");
+  return response.json();
+}
+
+export async function getAuthenticatedUser() {
+  return request<{ user: DevUser; csrfToken: string }>("/api/auth/me");
+}
+
+export async function endAuthenticatedSession(action: "logout" | "lock") {
+  return request<{ locked: boolean }>("/api/auth/" + action, { method: "POST" });
+}
+
 type ApiOptions = RequestInit & {
   devUser?: string;
 };
@@ -73,8 +93,11 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
 
-  if (options.devUser) {
+  if (options.devUser && options.devUser !== "authenticated") {
     headers.set("x-dev-user", options.devUser);
+  }
+  if (authCsrfToken && !["GET", "HEAD", "OPTIONS"].includes((options.method ?? "GET").toUpperCase())) {
+    headers.set("x-csrf-token", authCsrfToken);
   }
 
   const response = await fetch(path, { ...options, headers });
@@ -89,13 +112,242 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
 
 async function requestBlob(path: string, devUser: string) {
   const headers = new Headers();
-  headers.set("x-dev-user", devUser);
+  if (devUser !== "authenticated") headers.set("x-dev-user", devUser);
   const response = await fetch(path, { headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error ?? `Request failed with status ${response.status}`);
   }
   return response.blob();
+}
+
+
+export type PrivilegedAccessKind = "ROLE_GRANT" | "TEMP_PERMISSION";
+export type PrivilegedAccessStatus = "PENDING" | "APPROVED" | "DENIED" | "CANCELLED";
+export type PrivilegedAccessRequest = {
+  id: string;
+  siteId: string;
+  targetUserId: string;
+  requestedById: string;
+  reviewedById: string | null;
+  kind: PrivilegedAccessKind;
+  status: PrivilegedAccessStatus;
+  requestedRole: import("./types").UserRole | null;
+  requestedPermission: string | null;
+  reason: string;
+  reviewNote: string | null;
+  createdAt: string;
+  reviewDeadlineAt: string;
+  reviewedAt: string | null;
+  effectiveUntil: string | null;
+};
+
+export async function listPrivilegedRequests() {
+  return request<{
+    requests: PrivilegedAccessRequest[];
+    temporaryPermissions: string[];
+    syntheticRoleGrantsEnabled: boolean;
+  }>("/api/privileged/requests");
+}
+
+export async function createPrivilegedRequest(input: {
+  kind: PrivilegedAccessKind;
+  reason: string;
+  targetUserId?: string;
+  requestedRole?: "PHARMACIST" | "PHARMACIST_IN_CHARGE" | "ADMIN";
+  requestedPermission?: "inventory:correct" | "thirdparty:override";
+  expectedAssignmentUpdatedAt?: string;
+}) {
+  return request<{ request: PrivilegedAccessRequest }>("/api/privileged/requests", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function reviewPrivilegedRequest(
+  id: string,
+  decision: "APPROVED" | "DENIED",
+  note: string,
+) {
+  return request<{ request: PrivilegedAccessRequest }>(
+    "/api/privileged/requests/" + encodeURIComponent(id) + "/review", {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    },
+  );
+}
+
+export async function cancelPrivilegedRequest(id: string) {
+  return request<{ request: PrivilegedAccessRequest }>(
+    "/api/privileged/requests/" + encodeURIComponent(id) + "/cancel", {
+      method: "POST", body: JSON.stringify({}),
+    },
+  );
+}
+
+export type ProtectedOffboardingRequest = {
+  id: string;
+  siteId: string;
+  targetUserId: string;
+  requestedById: string;
+  reviewedById: string | null;
+  status: "PENDING" | "APPROVED" | "DENIED" | "CANCELLED";
+  reason: string;
+  reviewNote: string | null;
+  createdAt: string;
+  reviewDeadlineAt: string;
+  reviewedAt: string | null;
+};
+
+export async function listProtectedOffboarding() {
+  return request<{ requests: ProtectedOffboardingRequest[] }>("/api/protected-offboarding");
+}
+
+export async function requestProtectedOffboarding(targetUserId: string, reason: string) {
+  return request<{ request: ProtectedOffboardingRequest }>("/api/protected-offboarding", {
+    method: "POST", body: JSON.stringify({ targetUserId, reason }),
+  });
+}
+
+export async function reviewProtectedOffboarding(
+  id: string, decision: "APPROVED" | "DENIED", note: string,
+) {
+  return request<{ request: ProtectedOffboardingRequest;
+    revokedSessions: number; disabledSites: number; cancelledPrivileges: number }>(
+    "/api/protected-offboarding/" + encodeURIComponent(id) + "/review", {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    },
+  );
+}
+
+export async function cancelProtectedOffboarding(id: string) {
+  return request<{ request: ProtectedOffboardingRequest }>(
+    "/api/protected-offboarding/" + encodeURIComponent(id) + "/cancel", {
+      method: "POST", body: JSON.stringify({}),
+    },
+  );
+}
+
+export type CredentialReview = {
+  id: string;
+  targetUserId: string;
+  submittedById: string;
+  reviewedById: string | null;
+  role: "PHARMACIST" | "PHARMACIST_IN_CHARGE";
+  status: "PENDING" | "TEST_ATTESTED" | "REJECTED";
+  authority: string;
+  rationale: string;
+  reviewNote: string | null;
+  expiresAt: string;
+  createdAt: string;
+  reviewedAt: string | null;
+};
+
+export type SecurityIncident = {
+  id: string;
+  kind: string;
+  requestPath: string;
+  httpStatus: number;
+  occurredAt: string;
+};
+
+export async function suspendStaffGlobally(memberId: string, reason: string) {
+  return request<{
+    globallySuspended: boolean; affectedSites: number;
+    revokedSessions: number; cancelledPrivileges: number;
+  }>("/api/staff/" + encodeURIComponent(memberId) + "/global-suspend", {
+    method: "POST", body: JSON.stringify({ reason }),
+  });
+}
+
+export async function listCredentialReviews() {
+  return request<{ reviews: CredentialReview[]; automaticAuthorityVerification: boolean }>(
+    "/api/credentials/reviews",
+  );
+}
+
+export async function submitCredentialReview(input: {
+  targetUserId: string;
+  role: "PHARMACIST" | "PHARMACIST_IN_CHARGE";
+  authority: string;
+  evidenceReference: string;
+  rationale: string;
+  expiresAt: string;
+}) {
+  return request<{ review: CredentialReview }>("/api/credentials/reviews", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export async function decideCredentialReview(
+  id: string, decision: "TEST_ATTESTED" | "REJECTED", note: string,
+) {
+  return request<{ review: CredentialReview }>(
+    "/api/credentials/reviews/" + encodeURIComponent(id) + "/decision", {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    },
+  );
+}
+
+export async function listSecurityEvents() {
+  return request<{
+    windowHours: number; siteFailures: number;
+    unattributedLoginFailures: number;
+    events: SecurityIncident[]; note: string;
+  }>("/api/security/events");
+}
+
+export type RoutineStaffRole =
+  | "TECHNICIAN" | "INTERN" | "CASHIER" | "AUDITOR" | "INVENTORY_MANAGER";
+
+export type StaffMember = {
+  id: string;
+  displayName: string;
+  role: import("./types").UserRole;
+  active: boolean;
+  accountActive: boolean;
+  provisioned: boolean;
+  assignmentId: string;
+  updatedAt: string;
+};
+
+export async function listStaff() {
+  return request<{ staff: StaffMember[]; assignableRoles: RoutineStaffRole[] }>("/api/staff");
+}
+
+export async function provisionStaff(input: {
+  displayName: string; oidcSubject: string; role: RoutineStaffRole;
+}) {
+  return request<{ staff: StaffMember }>("/api/staff", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export async function changeStaffSiteRole(member: StaffMember, role: RoutineStaffRole) {
+  return request<{ assignment: { updatedAt: string } }>(
+    "/api/staff/" + encodeURIComponent(member.id) + "/role", {
+      method: "PATCH", body: JSON.stringify({
+        role, expectedUpdatedAt: member.updatedAt,
+      }),
+    },
+  );
+}
+
+export async function setStaffSiteAccess(member: StaffMember, active: boolean) {
+  return request<{ assignment: { updatedAt: string } }>(
+    "/api/staff/" + encodeURIComponent(member.id) + "/site-access", {
+      method: "PATCH", body: JSON.stringify({
+        active, expectedUpdatedAt: member.updatedAt,
+      }),
+    },
+  );
+}
+
+export async function revokeStaffSiteSessions(member: StaffMember) {
+  return request<{ revokedSessions: number }>(
+    "/api/staff/" + encodeURIComponent(member.id) + "/sessions/revoke", {
+      method: "POST", body: JSON.stringify({}),
+    },
+  );
 }
 
 export async function getDevelopmentUsers() {
