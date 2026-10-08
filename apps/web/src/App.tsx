@@ -344,8 +344,8 @@ export function App() {
             <>
               <strong>{selectedUser?.displayName}</strong>
               <small>Authenticated staff · {selectedUser?.siteName}</small>
-              <button onClick={() => void endSession("lock").catch(setMessage)}>Lock workstation</button>
-              <button onClick={() => void endSession("logout").catch(setMessage)}>Sign out</button>
+              <button onClick={() => void endSession("lock").catch((error) => setMessage(error instanceof Error ? error.message : "Unable to end session."))}>Lock workstation</button>
+              <button onClick={() => void endSession("logout").catch((error) => setMessage(error instanceof Error ? error.message : "Unable to end session."))}>Sign out</button>
             </>
           )}
           <div className="shortcut-hint">
