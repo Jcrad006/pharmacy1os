@@ -65,6 +65,26 @@ import type {
   PrescriptionSourceType,
 } from "./types";
 
+let authCsrfToken: string | null = null;
+
+export function setAuthCsrfToken(token: string | null) {
+  authCsrfToken = token;
+}
+
+export async function getAuthStatus(): Promise<{ mode: "development" | "oidc" }> {
+  const response = await fetch("/api/auth/status");
+  if (!response.ok) throw new Error("Unable to determine authentication mode.");
+  return response.json();
+}
+
+export async function getAuthenticatedUser() {
+  return request<{ user: DevUser; csrfToken: string }>("/api/auth/me");
+}
+
+export async function endAuthenticatedSession(action: "logout" | "lock") {
+  return request<{ locked: boolean }>("/api/auth/" + action, { method: "POST" });
+}
+
 type ApiOptions = RequestInit & {
   devUser?: string;
 };
@@ -73,8 +93,11 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
 
-  if (options.devUser) {
+  if (options.devUser && options.devUser !== "authenticated") {
     headers.set("x-dev-user", options.devUser);
+  }
+  if (authCsrfToken && !["GET", "HEAD", "OPTIONS"].includes((options.method ?? "GET").toUpperCase())) {
+    headers.set("x-csrf-token", authCsrfToken);
   }
 
   const response = await fetch(path, { ...options, headers });
@@ -89,7 +112,7 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
 
 async function requestBlob(path: string, devUser: string) {
   const headers = new Headers();
-  headers.set("x-dev-user", devUser);
+  if (devUser !== "authenticated") headers.set("x-dev-user", devUser);
   const response = await fetch(path, { headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
