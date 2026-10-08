@@ -109,7 +109,9 @@ test("browser drives a paid synthetic claim and label through pharmacist verific
   await card.getByRole("button", { name: "Confirm Staging" }).click();
   await expect(card.getByText(bagBarcode)).toBeVisible();
 
-  await card.getByRole("button", { name: "Open Pickup" }).click();
+  // The staged card uses Checkout; Open Pickup is the scan-results action.
+  await card.getByRole("button", { name: "Checkout", exact: true }).click();
+  await card.getByLabel("Scan Will Call bag").fill(bagBarcode);
   await card.getByLabel("Patient date of birth").fill(dob);
   await card.getByLabel("Electronic signature").fill("Browser Journey");
   await card.locator("label").filter({ hasText: "Payment method" }).locator("select").selectOption("CASH");
