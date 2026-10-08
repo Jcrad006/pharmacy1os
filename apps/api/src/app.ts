@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth.js";
 import { staffRoutes } from "./routes/staff.js";
 import { privilegedAccessRoutes } from "./routes/privilegedAccess.js";
 import { workforceSecurityRoutes } from "./routes/workforceSecurity.js";
+import { protectedOffboardingRoutes } from "./routes/protectedOffboarding.js";
 import { registerSecurityMonitoring, securityMonitoringRoutes } from "./security/securityMonitoring.js";
 import { assertRuntimeSafetyConfiguration } from "./security/runtimeSafety.js";
 import { patientRoutes } from "./routes/patients.js";
@@ -95,6 +96,7 @@ export function buildApp(options: BuildAppOptions = {}) {
   app.register(staffRoutes, { prefix: "/api" });
   app.register(privilegedAccessRoutes, { prefix: "/api" });
   app.register(workforceSecurityRoutes, { prefix: "/api" });
+  app.register(protectedOffboardingRoutes, { prefix: "/api" });
   app.register(securityMonitoringRoutes, { prefix: "/api" });
   app.register(developmentRoutes, { prefix: "/api" });
   app.register(patientRoutes, { prefix: "/api" });
