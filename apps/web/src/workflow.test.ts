@@ -65,3 +65,28 @@ describe("Stage 3M site role workstation capability hints", () => {
     expect(canCorrectInventory(staff("INTERN"))).toBe(false);
   });
 });
+
+
+describe("Stage 3M.3 elevated inventory controls", () => {
+  const technician = {
+    externalAuthId: "authenticated", id: "user-tech",
+    displayName: "Synthetic technician", role: "TECHNICIAN" as const,
+    siteId: "site-demo-001", siteName: "Demo",
+  };
+  it("exposes an approved temporary correction only before its expiry", () => {
+    const granted = {
+      ...technician,
+      temporaryPermissions: ["inventory:correct"],
+      temporaryPermissionExpiresAt: {
+        "inventory:correct": new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+    expect(canCorrectInventory(technician)).toBe(false);
+    expect(canCorrectInventory(granted)).toBe(true);
+    expect(canCorrectInventory({
+      ...granted, temporaryPermissionExpiresAt: {
+        "inventory:correct": new Date(Date.now() - 60_000).toISOString(),
+      },
+    })).toBe(false);
+  });
+});
