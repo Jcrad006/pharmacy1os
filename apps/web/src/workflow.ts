@@ -120,7 +120,7 @@ export function prescriptionCanBeEdited(status: PrescriptionStatus) {
 }
 
 export function canDocumentClinical(user?: DevUser) {
-  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+  return Boolean(user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE"].includes(user.role));
 }
 
 
@@ -152,5 +152,5 @@ export function canWriteInventory(user?: DevUser) {
 
 
 export function canCorrectInventory(user?: DevUser) {
-  return Boolean(user && ["ADMIN", "PHARMACIST"].includes(user.role));
+  return Boolean(user && ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE", "INVENTORY_MANAGER"].includes(user.role));
 }
