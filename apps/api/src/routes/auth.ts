@@ -118,8 +118,33 @@ export async function authRoutes(app: FastifyInstance) {
       const site = await db.pharmacySite.findUnique({
         where: { id: auth.actor.siteId }, select: { name: true },
       });
+      const now = new Date();
+      const ageMs = now.getTime() - auth.mfaVerifiedAt.getTime();
+      const elevations = ageMs >= -60_000 && ageMs <= 15 * 60_000
+        ? await db.privilegedAccessRequest.findMany({
+            where: {
+              siteId: auth.actor.siteId, targetUserId: auth.actor.id,
+              kind: "TEMP_PERMISSION", status: "APPROVED",
+              effectiveUntil: { gt: now },
+              reviewedBy: {
+                active: true,
+                siteRoleAssignments: {
+                  some: { siteId: auth.actor.siteId, active: true,
+                    role: { in: ["ADMIN", "PHARMACIST_IN_CHARGE"] } },
+                },
+              },
+            },
+            select: { requestedPermission: true, effectiveUntil: true },
+          })
+        : [];
+      const temporaryPermissionExpiresAt = Object.fromEntries(
+        elevations.filter(e => e.requestedPermission && e.effectiveUntil)
+          .map(e => [e.requestedPermission, e.effectiveUntil!.toISOString()]),
+      );
       return {
         user: {
+          temporaryPermissions: Object.keys(temporaryPermissionExpiresAt),
+          temporaryPermissionExpiresAt,
           id: auth.actor.id, externalAuthId: "authenticated", displayName: auth.actor.displayName,
           role: auth.actor.role, siteId: auth.actor.siteId, siteName: site?.name ?? "",
         },
