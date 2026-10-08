@@ -77,6 +77,13 @@ beforeAll(async () => {
   }
 });
 afterAll(async () => {
+  await db.privilegedAccessRequest.deleteMany({
+    where: { OR: [
+      { targetUserId: { in: users } },
+      { requestedById: { in: users } },
+      { reviewedById: { in: users } },
+    ] },
+  });
   await db.protectedOffboardingRequest.deleteMany({
     where: { OR: [{ targetUserId: { in: users } }, { requestedById: { in: users } }] },
   });
@@ -195,12 +202,28 @@ describe("Stage 3M.5 protected organization-wide offboarding", () => {
       where: { userId_siteId: { userId: pic, siteId: b } },
       data: { active: true },
     });
+    // The departing principal may have been a previous reviewer for an
+    // outstanding elevation; cancellation must prevent trust from surviving.
+    const elevated = await db.privilegedAccessRequest.create({
+      data: {
+        siteId: b, targetUserId: outside, requestedById: outside,
+        reviewedById: target, kind: "TEMP_PERMISSION", status: "APPROVED",
+        requestedPermission: "inventory:correct",
+        reason: "Legacy synthetic permission approved before departure",
+        reviewNote: "Temporary grant subject to approver departure",
+        reviewedAt: now(), reviewDeadlineAt: new Date(Date.now() + 5 * 60000),
+        effectiveUntil: new Date(Date.now() + 10 * 60000),
+      },
+    });
     const approved = await api(pic, "POST", "/api/protected-offboarding/" + id + "/review",
       review("APPROVED"));
     expect(approved.statusCode).toBe(200);
     expect(approved.json()).toMatchObject({
       request: { status: "APPROVED" }, revokedSessions: 2, disabledSites: 2,
+      cancelledPrivileges: 1,
     });
+    expect((await db.privilegedAccessRequest.findUniqueOrThrow({ where: { id: elevated.id } })).status)
+      .toBe("CANCELLED");
     const user = await db.user.findUniqueOrThrow({ where: { id: target } });
     expect(user.active).toBe(false);
     expect((await db.siteRoleAssignment.findMany({ where: { userId: target } }))
