@@ -52,4 +52,38 @@ describe("Stage 3L.3 adversarial workflow concurrency", () => {
     });
     expect(auditCount).toBe(1);
   });
+  it("serializes simultaneous attempts to create the same authorized fill number", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/prescriptions", headers: staff,
+      payload: {
+        patientId: "patient-demo-001", prescriberId: "prescriber-demo-001",
+        medicationId: "medication-demo-lisinopril-10",
+        rxNumber: "FILL-RACE-" + randomUUID(),
+        sig: "Take once daily", quantityWritten: 30, refillsAllowed: 2,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().prescription.id as string;
+    const reviewed = await app.inject({
+      method: "PATCH", url: `/api/prescriptions/${id}/status`,
+      headers: staff, payload: { status: "DUR_REVIEW" },
+    });
+    expect(reviewed.statusCode).toBe(200);
+
+    const responses = await Promise.all(Array.from({ length: 3 }, () => app.inject({
+      method: "POST", url: `/api/prescriptions/${id}/fills`,
+      headers: staff, payload: { quantity: 30, daysSupply: 30 },
+    })));
+    expect(responses.filter(x => x.statusCode === 201)).toHaveLength(1);
+    expect(responses.filter(x => x.statusCode === 409)).toHaveLength(2);
+    const fills = await db.prescriptionFill.findMany({ where: { prescriptionId: id } });
+    expect(fills).toHaveLength(1);
+    expect(fills[0]?.fillNumber).toBe(0);
+    expect(fills[0]?.partNumber).toBe(1);
+    expect((await db.prescription.findUniqueOrThrow({ where: { id } })).status).toBe("PRODUCT_FILL");
+    expect(await db.auditEvent.count({
+      where: { entityType: "PrescriptionFill", action: "PRESCRIPTION_FILL_CREATED", entityId: fills[0]!.id },
+    })).toBe(1);
+  });
+
 });

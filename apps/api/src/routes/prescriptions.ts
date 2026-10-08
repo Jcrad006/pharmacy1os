@@ -1546,6 +1546,22 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       if (returnedRefillConsumingFill) {
         const latestFill = returnedRefillConsumingFill;
         const result = await db.$transaction(async (tx) => {
+          await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Prescription" WHERE "id" = ${id} FOR UPDATE`);
+          const locked = await tx.prescription.findUnique({
+            where: { id },
+            select: {
+              status: true,
+              fills: { select: { id: true, status: true } },
+            },
+          });
+          if (
+            !locked ||
+            locked.status !== "DUR_REVIEW" ||
+            locked.fills.some((item) => ["SCHEDULED", "IN_PROGRESS", "READY"].includes(item.status)) ||
+            !locked.fills.some((item) => item.id === latestFill.id && item.status === "RETURNED_TO_STOCK")
+          ) {
+            throw new InventoryError(409, "FILL_STATE_CHANGED", "Another workstation changed this prescription fill; refresh.");
+          }
           const reprocessed = await tx.prescriptionFill.update({
             where: { id: latestFill.id },
             data: {
@@ -1623,6 +1639,21 @@ export async function prescriptionRoutes(app: FastifyInstance) {
       }
 
       const result = await db.$transaction(async (tx) => {
+        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Prescription" WHERE "id" = ${id} FOR UPDATE`);
+        const locked = await tx.prescription.findUnique({
+          where: { id },
+          select: {
+            status: true,
+            fills: { select: { id: true, status: true } },
+          },
+        });
+        if (
+          !locked ||
+          locked.status !== "DUR_REVIEW" ||
+          locked.fills.some((item) => ["SCHEDULED", "IN_PROGRESS", "READY"].includes(item.status))
+        ) {
+          throw new InventoryError(409, "FILL_STATE_CHANGED", "Another workstation created or changed a fill; refresh.");
+        }
         const created = await tx.prescriptionFill.create({
           data: {
             prescriptionId: prescription.id,

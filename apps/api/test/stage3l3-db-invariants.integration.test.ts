@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { db } from "../src/db.js";
 
 afterAll(async () => { await db.$disconnect(); });
 
 // A probe always rolls back, even if a safety constraint unexpectedly permits the write.
-async function expectRejectedProbe(work: Parameters<Parameters<typeof db.$transaction>[0]>[0] extends never ? never : (tx: any) => Promise<unknown>) {
+async function expectRejectedProbe(work: (tx: Prisma.TransactionClient) => Promise<unknown>) {
   let rejected = false;
   try {
     await db.$transaction(async (tx) => {
@@ -45,10 +46,10 @@ describe("Stage 3L.3 validated database invariants", () => {
   it("blocks negative stock and over-reservation, leaving ledger intact", async () => {
     const id = "inventory-demo-lisinopril-a1";
     const before = await db.inventoryBalance.findUniqueOrThrow({ where: { id } });
-    await expectRejectedProbe(async (tx: any) => {
+    await expectRejectedProbe(async (tx) => {
       await tx.$executeRaw`UPDATE "InventoryBalance" SET "onHandQuantity" = -1 WHERE "id" = ${id}`;
     });
-    await expectRejectedProbe(async (tx: any) => {
+    await expectRejectedProbe(async (tx) => {
       await tx.$executeRaw`UPDATE "InventoryBalance" SET "reservedQuantity" = "onHandQuantity" + 1 WHERE "id" = ${id}`;
     });
     const after = await db.inventoryBalance.findUniqueOrThrow({ where: { id } });
@@ -60,14 +61,14 @@ describe("Stage 3L.3 validated database invariants", () => {
     await db.patient.create({
       data: { id: otherSitePatientId, siteId: "site-demo-002", firstName: "Other", lastName: "Site" },
     });
-    await expectRejectedProbe(async (tx: any) => {
+    await expectRejectedProbe(async (tx) => {
       await tx.$executeRaw`UPDATE "Prescription" SET "patientId" = ${otherSitePatientId} WHERE "id" = 'rx-demo-001'`;
     });
   });
 
   it("rejects cross-site physical stock location despite separate valid foreign keys", async () => {
     const location = await db.inventoryLocation.findFirstOrThrow({ where: { siteId: "site-demo-002" } });
-    await expectRejectedProbe(async (tx: any) => {
+    await expectRejectedProbe(async (tx) => {
       await tx.inventoryStockPosition.create({
         data: {
           inventoryBalanceId: "inventory-demo-lisinopril-a1",
