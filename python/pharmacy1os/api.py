@@ -27,6 +27,8 @@ from .willcall import WillCallService
 from .willcall_api import make_willcall_router
 from .pos import PosService
 from .pos_api import make_pos_router
+from .patient_directory import PatientDirectory
+from .patient_api import make_patient_router
 
 
 class PatientIn(BaseModel):
@@ -245,6 +247,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_billing_router(BillingService(svc), staff_actor))
     app.include_router(make_willcall_router(WillCallService(svc), staff_actor))
     app.include_router(make_pos_router(PosService(svc), staff_actor))
+    app.include_router(make_patient_router(PatientDirectory(svc), staff_actor))
 
     @app.get("/health")
     def health():

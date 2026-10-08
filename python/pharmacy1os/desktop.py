@@ -19,6 +19,7 @@ from .scheduling import SchedulingService
 from .billing import BillingService
 from .willcall import WillCallService
 from .pos import PosService
+from .patient_directory import PatientDirectory
 
 from sqlalchemy import select
 
@@ -61,6 +62,7 @@ def main() -> None:
     billing_service = BillingService(service)
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
+    patient_directory = PatientDirectory(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -172,7 +174,7 @@ def main() -> None:
                 widget = self.toolbar.takeAt(0).widget()
                 if widget:
                     widget.deleteLater()
-            self.search.setVisible(page == 0)
+            self.search.setVisible(page in (0, 4))
             if page == 0:
                 self.action("Advance → DUR", self.advance)
                 self.action("Start Fill", self.start_fill)
@@ -270,8 +272,8 @@ def main() -> None:
                                      for x in service.queue(self.actor)]
                     elif page == 4:
                         headers = ["Last", "First", "DOB", "Phone"]
-                        self.rows = [(x.id, x.last_name, x.first_name, x.date_of_birth or "", x.phone or "")
-                                     for x in s.scalars(select(Patient).where(Patient.site_id == self.actor.site_id)).all()]
+                        self.rows = [(x["id"], x["last_name"], x["first_name"], x["date_of_birth"] or "", x["phone"] or "")
+                                     for x in patient_directory.search(self.actor, query=self.search.text())]
                     elif page == 5:
                         headers = ["Last", "First", "Credential", "NPI"]
                         self.rows = [(x.id, x.last_name, x.first_name, x.practice_level, x.npi or "")
