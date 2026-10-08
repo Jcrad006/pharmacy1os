@@ -23,6 +23,7 @@ import { Receiving } from "./screens/Receiving";
 import { Inventory } from "./screens/Inventory";
 import { ThirdParty } from "./screens/ThirdParty";
 import { StaffAdministration } from "./screens/StaffAdministration";
+import { WorkforceSecurity } from "./screens/WorkforceSecurity";
 import { PrivilegeApprovals } from "./screens/PrivilegeApprovals";
 import type { DevUser, ExceptionSummary, Patient, Prescriber, PrescriptionQueueItem } from "./types";
 import { roleLabel } from "./workflow";
@@ -40,6 +41,7 @@ type View =
   | "third-party"
   | "staff"
   | "privileges"
+  | "security"
   | "detail";
 
 const viewTitles: Record<View, string> = {
@@ -55,6 +57,7 @@ const viewTitles: Record<View, string> = {
   "third-party": "Third Party / COB",
   staff: "Staff Administration",
   privileges: "Access Approvals",
+  security: "Workforce Security",
   detail: "Prescription Detail",
 };
 
@@ -351,6 +354,10 @@ export function App() {
             <button className={view === "privileges" ? "nav-item active" : "nav-item"} onClick={() => navigate("privileges")}>Access Approvals</button>
           )}
           {authMode === "oidc" && ["ADMIN", "PHARMACIST_IN_CHARGE"].includes(selectedUser?.role ?? "") && (
+            <button className={view === "security" ? "nav-item active" : "nav-item"}
+              onClick={() => navigate("security")}>Workforce Security</button>
+          )}
+          {authMode === "oidc" && ["ADMIN", "PHARMACIST_IN_CHARGE"].includes(selectedUser?.role ?? "") && (
             <button className={view === "staff" ? "nav-item active" : "nav-item"} onClick={() => navigate("staff")}>Staff Administration</button>
           )}
           <button className="nav-item" disabled>Reports</button>
@@ -524,6 +531,10 @@ export function App() {
         {view === "privileges" && authMode === "oidc" && (
           <PrivilegeApprovals user={selectedUser} onError={setMessage}
             onAccessChanged={refreshAuthenticatedIdentity} />
+        )}
+
+        {view === "security" && authMode === "oidc" && (
+          <WorkforceSecurity user={selectedUser} onError={setMessage} />
         )}
 
         {view === "staff" && authMode === "oidc" && (
