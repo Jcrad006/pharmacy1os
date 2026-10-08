@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -437,8 +437,13 @@ class PharmacyService:
             self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "READY" or not bin_name.strip() or not bag_barcode.strip():
                 raise WorkflowError("Only a Ready fill can be staged with a bin and bag barcode")
-            s.add(WillCall(fill_id=f.id, bag_barcode=bag_barcode,
-                           bin_name=bin_name, status="STAGED"))
+            from .willcall import _barcode, _bin, record_stage
+            normalized_barcode, normalized_bin = _barcode(bag_barcode), _bin(bin_name)
+            if s.scalar(select(WillCall.id).where(WillCall.fill_id == f.id)):
+                raise WorkflowError("Fill already has a Will Call package")
+            record_stage(s, actor, f, normalized_barcode, normalized_bin)
+            s.add(WillCall(fill_id=f.id, bag_barcode=normalized_barcode,
+                           bin_name=normalized_bin, status="STAGED"))
             self._audit(s, actor, "WILL_CALL_STAGED", f.id,
                         {"bin": bin_name, "bag": bag_barcode})
 
@@ -471,6 +476,8 @@ class PharmacyService:
             s.add(Sale(fill_id=f.id, verified_identity=True, signature_attested=True,
                        tender=tender, amount=Decimal(amount)))
             if bag:
+                from .willcall import record_closed
+                record_closed(s, actor, f, "SOLD", "Pickup completed with verified identity and signature")
                 bag.status = "SOLD"
             f.status = "SOLD"; rx.status = "SOLD"
             if f.fill_number > 0:
@@ -501,6 +508,8 @@ class PharmacyService:
                 quarantine_recalled_receipt(s, actor, stock, src.quantity)
             bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
             if bag:
+                from .willcall import record_closed
+                record_closed(s, actor, f, "RETURNED", reason)
                 bag.status = "RETURNED"
             f.status = "RETURNED"; rx.status = "DUR_REVIEW"
             self._audit(s, actor, "FILL_RETURNED_TO_STOCK", f.id, {"reason": reason})

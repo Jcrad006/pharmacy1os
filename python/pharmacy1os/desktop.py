@@ -17,6 +17,7 @@ from .lifecycle import LifecycleService
 from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
 from .billing import BillingService
+from .willcall import WillCallService
 
 from sqlalchemy import select
 
@@ -57,6 +58,7 @@ def main() -> None:
     directory_service = ProviderDirectory(service)
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
+    will_call_service = WillCallService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -182,6 +184,10 @@ def main() -> None:
                 self.action("Resume Rx", self.resume_rx)
                 self.action("Cancel Rx", self.cancel_rx)
                 self.action("Rx Documents", self.document_window)
+            elif page == 2:
+                self.action("Rebag / Retire Old Barcode", self.rebag_will_call)
+                self.action("Relocate Package", self.relocate_will_call)
+                self.action("Custody History", self.will_call_history)
             elif page == 3:
                 self.action("Enter New Prescription", self.new_rx)
             elif page == 4:
@@ -336,6 +342,31 @@ def main() -> None:
             history = billing_service.history(self.actor, fill_id)
             QMessageBox.information(self, "Synthetic claim provenance",
                                     json.dumps(history, indent=2))
+
+        def selected_will_call_fill(self):
+            with service.sessions() as session:
+                bag = session.get(WillCall, self.selected_id())
+                if bag is None:
+                    raise ValueError("Select a Will Call package first")
+                return bag.fill_id
+
+        def rebag_will_call(self):
+            fill_id = self.selected_will_call_fill()
+            barcode = self.ask("Rebag Will Call", "New unique bag barcode")
+            reason = self.ask("Rebag Will Call", "Reason for replacing physical bag")
+            will_call_service.rebag(self.actor, fill_id, barcode, reason)
+
+        def relocate_will_call(self):
+            fill_id = self.selected_will_call_fill()
+            bin_name = self.ask("Move Will Call", "New bin/location label")
+            reason = self.ask("Move Will Call", "Document reason for move")
+            will_call_service.relocate(self.actor, fill_id, bin_name, reason)
+
+        def will_call_history(self):
+            fill_id = self.selected_will_call_fill()
+            events = will_call_service.history(self.actor, fill_id)
+            QMessageBox.information(self, "Will Call custody (synthetic)",
+                                    json.dumps(events, indent=2))
 
         def fill_for_rx(self, rx_id):
             with service.sessions() as s:

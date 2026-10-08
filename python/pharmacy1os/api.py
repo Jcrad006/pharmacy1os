@@ -23,6 +23,8 @@ from .scheduling import SchedulingService
 from .scheduling_api import make_schedule_router
 from .billing import BillingService
 from .billing_api import make_billing_router
+from .willcall import WillCallService
+from .willcall_api import make_willcall_router
 
 
 class PatientIn(BaseModel):
@@ -239,6 +241,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
     app.include_router(make_schedule_router(SchedulingService(svc), staff_actor))
     app.include_router(make_billing_router(BillingService(svc), staff_actor))
+    app.include_router(make_willcall_router(WillCallService(svc), staff_actor))
 
     @app.get("/health")
     def health():
