@@ -6,6 +6,7 @@ The GUI is an early rewrite workbench, not feature-parity with React yet.
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from .documents import DocumentService
 from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
 from .lifecycle import LifecycleService
+from .provider_directory import ProviderDirectory
 
 from sqlalchemy import select
 
@@ -50,6 +52,7 @@ def main() -> None:
     inventory_service = InventoryService(service)
     advanced_service = AdvancedInventoryService(service)
     lifecycle_service = LifecycleService(service)
+    directory_service = ProviderDirectory(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -181,6 +184,10 @@ def main() -> None:
                 self.action("Register Patient", self.add_patient)
             elif page == 5:
                 self.action("Register Provider", self.add_provider)
+                self.action("Add Identifier", self.provider_add_identifier)
+                self.action("Add Phone / Fax", self.provider_add_contact)
+                self.action("Add Address", self.provider_add_address)
+                self.action("View Directory", self.provider_detail)
             elif page == 6:
                 self.action("Add Drug", self.add_drug)
                 self.action("Add Product / NDC", self.add_product)
@@ -326,6 +333,39 @@ def main() -> None:
         def add_provider(self):
             service.add_prescriber(self.actor, self.ask("Provider", "First name"),
                                    self.ask("Provider", "Last name"), self.ask("Provider", "Practice level (MD/NP/etc)") )
+
+        def provider_add_identifier(self):
+            prescriber_id = self.selected_id()
+            kind = self.ask("Provider identifier", "Type: NPI, DEA, STATE_ID, OTHER", "NPI")
+            number = self.ask("Provider identifier", "Registration / identifier number")
+            jurisdiction = self.ask("Provider identifier", "Jurisdiction or '-' for none", "-")
+            primary = QMessageBox.question(self, "Provider identifier", "Set as primary identifier?")
+            directory_service.add_identifier(self.actor, prescriber_id, kind, number,
+                                             "" if jurisdiction == "-" else jurisdiction,
+                                             primary == QMessageBox.StandardButton.Yes)
+
+        def provider_add_contact(self):
+            prescriber_id = self.selected_id()
+            kind = self.ask("Provider contact", "Type: PHONE or FAX", "PHONE")
+            number = self.ask("Provider contact", "Phone / fax number")
+            label = self.ask("Provider contact", "Label", "Office")
+            primary = QMessageBox.question(self, "Provider contact", "Set as primary contact of this type?")
+            directory_service.add_contact(self.actor, prescriber_id, kind, number, label=label,
+                                          is_primary=primary == QMessageBox.StandardButton.Yes)
+
+        def provider_add_address(self):
+            prescriber_id = self.selected_id()
+            line1 = self.ask("Provider address", "Street address")
+            city = self.ask("Provider address", "City")
+            state = self.ask("Provider address", "State", "NC")
+            postal = self.ask("Provider address", "Postal code")
+            primary = QMessageBox.question(self, "Provider address", "Set as primary practice address?")
+            directory_service.add_address(self.actor, prescriber_id, line1, city, state, postal,
+                                          is_primary=primary == QMessageBox.StandardButton.Yes)
+
+        def provider_detail(self):
+            detail = directory_service.details(self.actor, self.selected_id())
+            QMessageBox.information(self, "Provider directory — synthetic", json.dumps(detail, indent=2))
 
         def add_drug(self):
             service.add_drug(self.actor, self.ask("Drug", "Name"), self.ask("Drug", "Strength"),
