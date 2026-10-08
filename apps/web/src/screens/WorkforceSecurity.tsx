@@ -1,8 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   decideCredentialReview, listCredentialReviews, listSecurityEvents,
-  listStaff, submitCredentialReview,
+  listStaff, submitCredentialReview, listProtectedOffboarding,
+  requestProtectedOffboarding, reviewProtectedOffboarding, cancelProtectedOffboarding,
   type CredentialReview, type SecurityIncident, type StaffMember,
+  type ProtectedOffboardingRequest,
 } from "../api";
 import type { DevUser } from "../types";
 
@@ -15,6 +17,10 @@ export function WorkforceSecurity({ user, onError }: {
   user?: DevUser; onError: (message: string) => void;
 }) {
   const [reviews, setReviews] = useState<CredentialReview[]>([]);
+  const [offboarding, setOffboarding] = useState<ProtectedOffboardingRequest[]>([]);
+  const [offboardingTarget, setOffboardingTarget] = useState("");
+  const [offboardingReason, setOffboardingReason] = useState("");
+  const [offboardingNote, setOffboardingNote] = useState("");
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [events, setEvents] = useState<SecurityIncident[]>([]);
   const [failures, setFailures] = useState<number | null>(null);
@@ -29,12 +35,14 @@ export function WorkforceSecurity({ user, onError }: {
   const [notice, setNotice] = useState("");
 
   async function refresh() {
-    const [credentialResult, staffResult, securityResult] = await Promise.all([
+    const [credentialResult, staffResult, securityResult, offboardingResult] = await Promise.all([
       listCredentialReviews(),
       listStaff(),
       user?.role === "ADMIN" ? listSecurityEvents() : Promise.resolve(null),
+      listProtectedOffboarding(),
     ]);
     setReviews(credentialResult.reviews);
+    setOffboarding(offboardingResult.requests);
     setStaff(staffResult.staff);
     if (securityResult) {
       setEvents(securityResult.events);
@@ -152,6 +160,85 @@ export function WorkforceSecurity({ user, onError }: {
             </div>
           ))}
           {reviews.length === 0 && <p>No credential review records at this site.</p>}
+        </div>
+      </section>
+      <section className="panel staff-panel">
+        <h3>Protected-account offboarding</h3>
+        <p>Administrators may request global suspension of professional and leadership accounts. A separate pharmacist-in-charge must authorize the decision at every affected pharmacy. The last active administrator or PIC cannot be disabled; all affected sessions are revoked after approval.</p>
+        {isAdmin && (
+          <form className="staff-form" onSubmit={event => {
+            event.preventDefault();
+            void mutate(async () => {
+              await requestProtectedOffboarding(offboardingTarget, offboardingReason);
+              setOffboardingTarget("");
+              setOffboardingReason("");
+            }, "Protected staff offboarding submitted for independent PIC review.");
+          }}>
+            <label>Protected staff account
+              <select required value={offboardingTarget}
+                onChange={event => setOffboardingTarget(event.target.value)}>
+                <option value="">Select account</option>
+                {staff.filter(s =>
+                  ["ADMIN", "PHARMACIST", "PHARMACIST_IN_CHARGE"].includes(s.role) &&
+                  s.accountActive && s.active && s.id !== user?.id,
+                ).map(s => <option key={s.id} value={s.id}>
+                  {s.displayName} — {roleTitle(s.role)}
+                </option>)}
+              </select>
+            </label>
+            <label>Documented offboarding reason
+              <input required minLength={10} maxLength={500}
+                value={offboardingReason} onChange={e => setOffboardingReason(e.target.value)} />
+            </label>
+            <button type="submit" disabled={busy || !offboardingTarget || offboardingReason.trim().length < 10}>
+              Request second-person offboarding
+            </button>
+          </form>
+        )}
+        {isPic && <label>Independent offboarding review note (10–500 characters)
+          <input value={offboardingNote} minLength={10} maxLength={500}
+            onChange={e => setOffboardingNote(e.target.value)} />
+        </label>}
+        <div className="staff-list">
+          {offboarding.map(entry => {
+            const pending = entry.status === "PENDING" &&
+              new Date(entry.reviewDeadlineAt).getTime() > Date.now();
+            const mayReview = isPic && pending &&
+              entry.requestedById !== user?.id && entry.targetUserId !== user?.id;
+            const mayCancel = pending && entry.requestedById === user?.id;
+            return (
+              <div className="staff-entry" key={entry.id}>
+                <div>
+                  <strong>{staff.find(s => s.id === entry.targetUserId)?.displayName ?? entry.targetUserId}</strong>
+                  <small>{entry.status === "PENDING" && !pending ? "EXPIRED" : entry.status}
+                    {" · "}Requested {new Date(entry.createdAt).toLocaleString()}</small>
+                  <small>Reason: {entry.reason}</small>
+                  {entry.reviewNote && <small>Decision: {entry.reviewNote}</small>}
+                </div>
+                <div className="staff-entry-actions">
+                  {mayReview && (
+                    <>
+                      <button disabled={busy || offboardingNote.trim().length < 10}
+                        onClick={() => void mutate(
+                          () => reviewProtectedOffboarding(entry.id, "APPROVED", offboardingNote),
+                          "Protected account suspended across approved sites.",
+                        )}>Approve suspension</button>
+                      <button disabled={busy || offboardingNote.trim().length < 10}
+                        onClick={() => void mutate(
+                          () => reviewProtectedOffboarding(entry.id, "DENIED", offboardingNote),
+                          "Offboarding request denied.",
+                        )}>Deny</button>
+                    </>
+                  )}
+                  {mayCancel && <button disabled={busy} onClick={() => void mutate(
+                    () => cancelProtectedOffboarding(entry.id),
+                    "Protected offboarding request cancelled.",
+                  )}>Cancel request</button>}
+                </div>
+              </div>
+            );
+          })}
+          {offboarding.length === 0 && <p>No protected staff offboarding requests at this pharmacy.</p>}
         </div>
       </section>
       {isAdmin && (
