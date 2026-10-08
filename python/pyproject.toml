@@ -7,7 +7,7 @@ name = "pharmacy1os"
 version = "0.1.0"
 description = "Pharmacy1OS Python-native migration (synthetic development only)"
 requires-python = ">=3.12"
-dependencies = ["SQLAlchemy>=2.0,<3", "FastAPI>=0.115,<1", "uvicorn>=0.30,<1", "pydantic>=2,<3"]
+dependencies = ["SQLAlchemy>=2.0,<3", "FastAPI>=0.115,<1", "uvicorn>=0.30,<1", "pydantic>=2,<3", "cryptography>=43,<47"]
 
 [project.optional-dependencies]
 desktop = ["PySide6>=6.8,<7"]

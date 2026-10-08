@@ -1,6 +1,6 @@
 # Python-native Pharmacy1OS migration
 
-**Status: initial runnable synthetic migration slice. Not a full port or production release.**
+**Status: multi-module Python synthetic rewrite underway; no feature parity or production release.**
 
 The current TypeScript/React/Fastify/Prisma system remains the authoritative implementation until module-by-module equivalence is shown. This Python implementation is an isolated replacement track; it does not modify existing records. No patient PHI, live dispensing, controlled-substance processing, claim transport, or real-world pharmacy use is permitted.
 
@@ -28,9 +28,9 @@ The current TypeScript/React/Fastify/Prisma system remains the authoritative imp
 ## **Still missing; DO NOT claim parity**
 
 1. **Database compatibility:** migration of all Prisma schema tables (including legacy data preservation, constraints, indexes, triggers, site scoping) into SQLAlchemy/Alembic; correct transactional locking and multi-client PostgreSQL behavior.
-2. **Full user flows:** scheduled refills, holds/resume/cancellation/transfer, nuanced emergency/partial completion, return-to-stock exceptions, clinician notes, sophisticated inventory operations (POs, recalls, transfers, cycle counts, quarantine, traceability, inventory planning), label printing hardware, GS1 parsing and scan device service.
+2. **Full user flows:** basic hold/resume/cancellation and quarantine/ledger now partly ported; still missing scheduled refills, transfer, nuanced emergency/partial completion, return-to-stock exceptions, clinician notes, advanced inventory (POs, recalls, transfers, cycle counts, traceability, planning), label printing hardware, GS1 parsing and scan device service.
 3. **Financial integration:** payor profile versioning, actual NCPDP transport, payer reversal acknowledgments, multiple-payor COB ordering nuances, reconciliation, real POS tender and payments, refunds/voids/accounting.
-4. **Documents:** immutable prescription vault, encryption/hashes, provenance-rich visual annotations, fax/eRx message ingestion/rendering, durable backup/restore and retention.
+4. **Documents:** core immutable vault, optional authenticated encryption, hashes, versioned visual annotation/provenance and simple synthetic SVG rendering are now partly ported; still missing structured change apply/review parity, scanner/PDF/TIFF UI, actual fax/eRx ingest, coordinated backup/restore, retention and complete multi-site durability.
 5. **Production identity:** secure OIDC/MFA, site-scoped roles, sessions/revocation, staff lifecycle, two-person approvals, audit integrity, rate limits/TLS/secrets/monitoring.
 6. **Clinical/compliance:** policy-engine validation and human professional review, EPCS, controlled inventory, North Carolina-specific legal rules, DSCSA, production claims/legal readiness.
 7. **Formal engineering:** security threat model, dependency locking/SBOM, GUI automation, fault/concurrency load testing, packaging/installer code-signing, migration verification, deployment/restore drills.
@@ -61,3 +61,26 @@ The API listens only on `127.0.0.1:8008` and is disabled unless the explicit dev
 ## Release gates for replacing legacy modules
 
 For each legacy module: preserve a documented API/domain contract; port edge cases including negative paths; compare synthetic results against the existing implementation; run database, GUI and concurrency tests; conduct pharmacist review of safety-sensitive transitions; migrate/rollback data on a disposable PostgreSQL copy. Only then remove the corresponding TypeScript/React code. Keep the existing app intact until all covered workflows pass.
+
+## Second migration increment — documents, inventory ledger and lifecycle (2026-10-08)
+
+**Synthetic Python implementation added on the same migration branch:**
+
+- Native Python prescription source vault (`documents.py`): size/MIME allowlist, filesystem-exclusive original writes, source SHA-256, optional AES-256-GCM using the legacy `P1DV1` binary envelope (`magic + nonce + auth tag + ciphertext`), site authorization and checked reads; failures in metadata insertion remove newly created source files. Source files are NEVER rewritten by annotations.
+- Separate `DocumentAnnotation` and `DocumentChange` tables, normalized opaque rectangle coordinates, required visual text plus change type/what/why, communication and prescriber provenance, and immutable historical rows with explicit `ACTIVE`/`SUPERSEDED` version state. **The annotation does not yet apply structured prescription changes.** The port does not claim complete equivalence with the existing TS prescription-change apply/review workflow.
+- HTML-escaped synthetic electronic-prescription SVG rendering from structured fields, without live eRx transport, signature validation or source authentication. Direct arbitrary SVG uploads are blocked.
+- New per-stock append-only `InventoryMovement` records with before/after snapshots and atomic inventory mutations during receiving, Product Fill reservation, pharmacist verification, return-to-stock, manual pharmacist adjustment, quarantine and release/disposal.
+- Technician quarantine with a required reason; pharmacist-only release or disposal; hold disposition history and site checks. These are initial counterparts, **not a port of the original comprehensive recall/DSCSA/purchase-order/cycle-count/transfer services**.
+- Synthetically safe prescription hold/resume/cancel transitions, including reservation release, reversals of synthetic claims, and return of unsold verified inventory when cancelled. Live payer reversals and regulated cancellation rules remain out of scope.
+- New FastAPI endpoints for document upload/read/history/annotations, inventory movements/holds/adjustments and prescription hold/resume/cancel. The API remains disabled except in explicitly opted-in synthetic mode.
+- Desktop buttons and a native Qt graphics-view annotation prototype for image/SVG formats, with drag-to-select opaque rectangles and separate prompted provenance. PDFs and TIFFs remain securely stored but do **not** have native page-annotation preview in the Python UI. PySide6 graphical testing remains outstanding.
+- Dedicated negative-path tests for bad keys, tampered originals, tenant isolation, version supersession, unauthorized staff actions, over-reservation, irreversible stock disposal and claim reversal. **18 Python tests pass locally** (previous 7 plus 11 added).
+
+### Explicit migration and deployment caveats
+
+1. The SQLAlchemy `py_` tables are a distinct *prototype schema*. `create_all()` can create newly added tables on a synthetic database, but no Alembic migration or legacy Prisma data import has been performed. No use with real PHI.
+2. Filesystem and SQL commits are not a distributed atomic transaction. Failed SQL writes perform best-effort file cleanup; crash-reconciliation, coordinated backup/restore, retention, orphan detection and a write lease are **not** implemented. Keep the original TypeScript coordinated-vault backup subsystem until equivalent durability is demonstrated.
+3. Optional encryption without a configured key is only a synthetic demonstration setting. A production design must require encryption, controlled key management and tested recovery. Legacy on-disk `P1DV1` envelope compatibility is format-level only; a cross-language round-trip fixture has not been executed.
+4. SQLite stock locking, multi-workstation concurrency, idempotent commands, service restart behavior, and direct cross-site relational constraints have not been demonstrated as production safe. Current balance checks do not replace PostgreSQL locking, triggers and independent concurrency tests.
+5. The initial Python domain is **not** feature-equivalent with the TypeScript application. No old modules or old database tables have been removed; do not merge/replace the TypeScript application yet.
+6. Existing Python local tests cover the listed synthetic behavior; they do not establish clinical suitability, compliance, external claims or hardware readiness.

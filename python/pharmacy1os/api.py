@@ -13,6 +13,9 @@ from sqlalchemy.exc import IntegrityError
 
 from .models import Staff
 from .service import AccessDenied, Actor, PharmacyService, WorkflowError
+from .documents import DocumentService, decode_base64
+from .inventory_ops import InventoryService
+from .lifecycle import LifecycleService
 
 
 class PatientIn(BaseModel):
@@ -109,9 +112,44 @@ class ResolutionIn(BaseModel):
     note: str
 
 
+
+class SourceDocumentIn(BaseModel):
+    base64_data: str
+    mime_type: str
+    source_type: str = "SCAN"
+    filename: str | None = None
+
+
+class AnnotationIn(BaseModel):
+    text: str
+    x: float
+    y: float
+    width: float
+    height: float
+    change: dict[str, str | None]
+
+
+class HoldIn(BaseModel):
+    stock_id: str
+    quantity: str
+    reason: str
+
+
+class ResolveHoldIn(BaseModel):
+    disposition: str
+    reason: str
+
+
+class AdjustmentIn(BaseModel):
+    delta: str
+    reason: str
+
 def create_app(service: PharmacyService | None = None, *, synthetic_enabled: bool = False) -> FastAPI:
     app = FastAPI(title="Pharmacy1OS Python migration — synthetic only", version="0.1.0")
     svc = service or PharmacyService(os.getenv("PHARMACY1OS_PY_DATABASE_URL", "sqlite+pysqlite:///pharmacy1os_demo.sqlite3"))
+    docs = DocumentService.from_demo_env(svc)
+    stock_ops = InventoryService(svc)
+    lifecycle = LifecycleService(svc)
 
     @app.middleware("http")
     async def guarded(request, call_next):
@@ -234,6 +272,81 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     @app.post("/api/fills/{fill_id}/return-to-stock")
     def return_to_stock(fill_id: str, payload: ReasonIn, actor: DemoActor):
         svc.return_to_stock(actor, fill_id, payload.reason)
+        return {"ok": True}
+
+    @app.post("/api/prescriptions/{rx_id}/hold")
+    def hold_rx(rx_id: str, payload: ReasonIn, actor: DemoActor):
+        lifecycle.hold(actor, rx_id, payload.reason)
+        return {"ok": True}
+
+    @app.post("/api/prescriptions/{rx_id}/resume")
+    def resume_rx(rx_id: str, payload: ReasonIn, actor: DemoActor):
+        lifecycle.resume(actor, rx_id, payload.reason)
+        return {"ok": True}
+
+    @app.post("/api/prescriptions/{rx_id}/cancel")
+    def cancel_rx(rx_id: str, payload: ReasonIn, actor: DemoActor):
+        lifecycle.cancel(actor, rx_id, payload.reason)
+        return {"ok": True}
+
+    @app.get("/api/prescriptions/{rx_id}/documents")
+    def documents(rx_id: str, actor: DemoActor):
+        return {"documents": docs.list_sources(actor, rx_id)}
+
+    @app.post("/api/prescriptions/{rx_id}/documents/original")
+    def document_upload(rx_id: str, payload: SourceDocumentIn, actor: DemoActor):
+        return {"document": docs.create_source(actor, rx_id, decode_base64(payload.base64_data),
+               payload.mime_type, payload.source_type, payload.filename)}
+
+    @app.post("/api/prescriptions/{rx_id}/documents/electronic-render")
+    def electronic_render(rx_id: str, actor: DemoActor, message_id: str = "SYNTHETIC"):
+        return {"document": docs.render_erx(actor, rx_id, message_id)}
+
+    @app.get("/api/documents/{document_id}/content")
+    def document_content(document_id: str, actor: DemoActor):
+        from fastapi import Response
+        bytes_, mime = docs.read_source(actor, document_id)
+        # Attachment, rather than a live inline SVG, avoids active content in this demo API.
+        return Response(bytes_, media_type=mime,
+               headers={"Content-Disposition": "attachment; filename=prescription-source",
+                        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+    @app.get("/api/documents/{document_id}/annotations")
+    def annotations(document_id: str, actor: DemoActor):
+        return {"annotations": docs.list_annotations(actor, document_id)}
+
+    @app.post("/api/documents/{document_id}/annotations")
+    def annotate(document_id: str, payload: AnnotationIn, actor: DemoActor):
+        return {"id": docs.annotate(actor, document_id, **payload.model_dump())}
+
+    @app.post("/api/annotations/{annotation_id}/supersede")
+    def supersede(annotation_id: str, document_id: str, payload: AnnotationIn, actor: DemoActor):
+        return {"id": docs.annotate(actor, document_id, **payload.model_dump(), supersedes_id=annotation_id)}
+
+    @app.get("/api/documents/integrity/problems")
+    def integrity(actor: DemoActor):
+        return {"problems": docs.verify_integrity(actor)}
+
+    @app.get("/api/inventory/stock/{stock_id}/ledger")
+    def inventory_ledger(stock_id: str, actor: DemoActor):
+        return {"movements": stock_ops.ledger(actor, stock_id)}
+
+    @app.get("/api/inventory/holds")
+    def inventory_holds(actor: DemoActor):
+        return {"holds": stock_ops.active_holds(actor)}
+
+    @app.post("/api/inventory/holds")
+    def quarantine(payload: HoldIn, actor: DemoActor):
+        return {"id": stock_ops.create_hold(actor, **payload.model_dump())}
+
+    @app.post("/api/inventory/holds/{hold_id}/resolve")
+    def resolve_hold(hold_id: str, payload: ResolveHoldIn, actor: DemoActor):
+        stock_ops.resolve_hold(actor, hold_id, **payload.model_dump())
+        return {"ok": True}
+
+    @app.post("/api/inventory/stock/{stock_id}/adjust")
+    def adjust_inventory(stock_id: str, payload: AdjustmentIn, actor: DemoActor):
+        stock_ops.adjust(actor, stock_id, **payload.model_dump())
         return {"ok": True}
 
     return app

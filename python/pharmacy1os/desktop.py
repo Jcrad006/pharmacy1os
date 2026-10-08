@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from decimal import Decimal
+
+from .documents import DocumentService
+from .inventory_ops import InventoryService
+from .lifecycle import LifecycleService
 
 from sqlalchemy import select
 
@@ -24,10 +29,10 @@ def main() -> None:
     if os.getenv("PHARMACY1OS_SYNTHETIC_DEMO") != "1":
         raise SystemExit("Native workstation disabled by default. Set PHARMACY1OS_SYNTHETIC_DEMO=1 for synthetic data.")
     try:
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QKeySequence, QShortcut
+        from PySide6.QtCore import Qt, QRectF
+        from PySide6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
         from PySide6.QtWidgets import (
-            QApplication, QComboBox, QFormLayout, QHBoxLayout, QInputDialog,
+            QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
             QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
             QWidget,
@@ -39,6 +44,9 @@ def main() -> None:
     base.mkdir(parents=True, exist_ok=True)
     service = PharmacyService(f"sqlite+pysqlite:///{base / 'pharmacy1os.sqlite3'}")
     service.create_schema()
+    document_service = DocumentService.from_demo_env(service)
+    inventory_service = InventoryService(service)
+    lifecycle_service = LifecycleService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
@@ -160,6 +168,10 @@ def main() -> None:
                 self.action("Stage Will Call", self.stage)
                 self.action("Sell / Pickup", self.sell)
                 self.action("Return To Stock", self.return_stock)
+                self.action("Hold Rx", self.hold_rx)
+                self.action("Resume Rx", self.resume_rx)
+                self.action("Cancel Rx", self.cancel_rx)
+                self.action("Rx Documents", self.document_window)
             elif page == 3:
                 self.action("Enter New Prescription", self.new_rx)
             elif page == 4:
@@ -172,6 +184,11 @@ def main() -> None:
                 self.action("Register Barcode", self.register_barcode)
             elif page == 7:
                 self.action("Receive Scanned Product", self.receive)
+            elif page == 8:
+                self.action("Quarantine", self.quarantine_stock)
+                self.action("Resolve Hold", self.resolve_stock_hold)
+                self.action("Adjust Stock", self.adjust_stock)
+                self.action("Stock Ledger", self.stock_ledger)
             self.action("Refresh", self.refresh)
             self.refresh()
 
@@ -311,6 +328,188 @@ def main() -> None:
             service.receive(self.actor, self.ask("Receiving", "Barcode"),
                             self.ask("Receiving", "Lot"), self.ask("Receiving", "Expiry YYYY-MM-DD"),
                             self.ask("Receiving", "Quantity"))
+
+        def hold_rx(self):
+            lifecycle_service.hold(self.actor, self.selected_id(), self.ask("Hold Rx", "Reason"))
+
+        def resume_rx(self):
+            lifecycle_service.resume(self.actor, self.selected_id(), self.ask("Resume Rx", "Reason"))
+
+        def cancel_rx(self):
+            lifecycle_service.cancel(self.actor, self.selected_id(), self.ask("Cancel Rx", "Reason"))
+
+        def quarantine_stock(self):
+            stock_id = self.selected_id()
+            inventory_service.create_hold(self.actor, stock_id,
+                    self.ask("Quarantine", "Quantity"), self.ask("Quarantine", "Reason"))
+
+        def resolve_stock_hold(self):
+            holds = [h for h in inventory_service.active_holds(self.actor) if h["status"] == "ACTIVE"]
+            if not holds:
+                raise ValueError("No active holds at this location")
+            names = [f"{h['id'][:8]} - {h['quantity']} - {h['reason']}" for h in holds]
+            selection, ok = QInputDialog.getItem(self, "Inventory holds", "Select active hold", names, 0, False)
+            if not ok:
+                raise ValueError("Selection cancelled")
+            option, ok = QInputDialog.getItem(self, "Disposition", "Disposition", ["RELEASED", "DISPOSED"], 0, False)
+            if not ok:
+                raise ValueError("Selection cancelled")
+            inventory_service.resolve_hold(self.actor, holds[names.index(selection)]["id"], option,
+                    self.ask("Disposition", "Reason for resolution"))
+
+        def adjust_stock(self):
+            inventory_service.adjust(self.actor, self.selected_id(),
+                    self.ask("Stock adjustment", "Signed change (+/- qty)"),
+                    self.ask("Stock adjustment", "Reason"))
+
+        def stock_ledger(self):
+            movements = inventory_service.ledger(self.actor, self.selected_id())
+            details = "\n".join(f"{m['kind']}: on-hand {m['on_hand_delta']}, reserved {m['reserved_delta']}, held {m['quarantined_delta']}" for m in movements)
+            QMessageBox.information(self, "Synthetic stock ledger", details or "No movements")
+
+        def document_window(self):
+            rx_id = self.selected_id()
+            # Real Qt dialog and graphics canvas; no browser, JavaScript or API proxy.
+            class SourceCanvas(QGraphicsView):
+                def __init__(self):
+                    super().__init__()
+                    self.setScene(QGraphicsScene(self))
+                    self.rectangle = None
+                    self._start = None
+                    self._bounds = QRectF()
+                    self._preview = None
+
+                def load_source(self, data, mime):
+                    self.scene().clear()
+                    self.rectangle = None
+                    self._start = None
+                    image = QImage.fromData(data)
+                    if image.isNull() and mime == "image/svg+xml":
+                        try:
+                            from PySide6.QtSvg import QSvgRenderer
+                            from PySide6.QtCore import QByteArray
+                            renderer = QSvgRenderer(QByteArray(data))
+                            if renderer.isValid():
+                                image = QImage(900, 900, QImage.Format.Format_ARGB32)
+                                image.fill(Qt.GlobalColor.white)
+                                painter = QPainter(image)
+                                renderer.render(painter)
+                                painter.end()
+                        except ImportError:
+                            pass
+                    if image.isNull():
+                        self._bounds = QRectF()
+                        self.scene().addText("Preview unavailable for this document format. Source is preserved in the vault.")
+                        return
+                    pixmap = QPixmap.fromImage(image)
+                    self.scene().addPixmap(pixmap)
+                    self._bounds = QRectF(pixmap.rect())
+                    self.setSceneRect(self._bounds)
+                    self.fitInView(self._bounds, Qt.AspectRatioMode.KeepAspectRatio)
+
+                def mousePressEvent(self, event):
+                    if event.button() == Qt.MouseButton.LeftButton and not self._bounds.isEmpty():
+                        self._start = self.mapToScene(event.position().toPoint())
+                    super().mousePressEvent(event)
+
+                def mouseReleaseEvent(self, event):
+                    if self._start is not None and not self._bounds.isEmpty():
+                        end = self.mapToScene(event.position().toPoint())
+                        rectangle = QRectF(self._start, end).normalized().intersected(self._bounds)
+                        if self._preview is not None:
+                            self.scene().removeItem(self._preview)
+                            self._preview = None
+                        if rectangle.width() > 0 and rectangle.height() > 0:
+                            self.rectangle = (str(rectangle.left() / self._bounds.width()),
+                                str(rectangle.top() / self._bounds.height()),
+                                str(rectangle.width() / self._bounds.width()),
+                                str(rectangle.height() / self._bounds.height()))
+                            self._preview = self.scene().addRect(rectangle, QPen(QColor("#245f96")), QBrush(QColor("#ffffff")))
+                        self._start = None
+                    super().mouseReleaseEvent(event)
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Prescription source & change provenance — SYNTHETIC")
+            dialog.resize(920, 700)
+            layout = QVBoxLayout(dialog)
+            sources = QComboBox()
+            canvas = SourceCanvas()
+            layout.addWidget(QLabel("Choose source, then drag a rectangle over the original to add a visual note."))
+            layout.addWidget(sources)
+            layout.addWidget(canvas, 1)
+            actions = QHBoxLayout()
+            upload_btn = QPushButton("Upload immutable original")
+            render_btn = QPushButton("Generate synthetic eRx visual")
+            annotate_btn = QPushButton("Save text box + provenance")
+            history_btn = QPushButton("Show version history")
+            actions.addWidget(upload_btn); actions.addWidget(render_btn)
+            actions.addWidget(annotate_btn); actions.addWidget(history_btn)
+            layout.addLayout(actions)
+            def populate():
+                sources.clear()
+                for entry in document_service.list_sources(self.actor, rx_id):
+                    sources.addItem(f"{entry['source_type']} — {entry['original_filename'] or entry['id'][:8]}", entry["id"])
+            def show_source():
+                ident = sources.currentData()
+                if ident:
+                    data, mime = document_service.read_source(self.actor, ident)
+                    canvas.load_source(data, mime)
+            def upload():
+                name, _ = QFileDialog.getOpenFileName(dialog, "Select synthetic source file", "",
+                            "Prescription files (*.png *.jpg *.jpeg *.webp *.tif *.tiff *.pdf)")
+                if not name:
+                    return
+                ext = Path(name).suffix.lower()
+                mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".webp": "image/webp", ".tif": "image/tiff", ".tiff": "image/tiff", ".pdf": "application/pdf"}[ext]
+                document_service.create_source(self.actor, rx_id, Path(name).read_bytes(), mime,
+                                               "UPLOAD", Path(name).name)
+                populate()
+            def render():
+                document_service.render_erx(self.actor, rx_id, self.ask("Synthetic eRx", "Message reference"))
+                populate()
+            def annotate():
+                if not sources.currentData() or canvas.rectangle is None:
+                    raise ValueError("Choose a previewable source and drag an annotation rectangle first")
+                text = self.ask("Visual annotation", "Visible text for opaque box")
+                kind, ok = QInputDialog.getItem(dialog, "Change type", "Type",
+                         ["OTHER", "SIG", "QUANTITY", "REFILLS", "DRUG", "STRENGTH", "DOSAGE_FORM", "DAW", "PRESCRIBER", "WRITTEN_DATE"], 0, False)
+                if not ok:
+                    return
+                what = self.ask("Provenance", "What changed? (separate from visible text)")
+                why = self.ask("Provenance", "Why was the change made?")
+                communication, ok = QInputDialog.getItem(dialog, "Communication", "Method",
+                                ["PHONE", "FAX", "ELECTRONIC", "IN_PERSON", "OTHER"], 0, False)
+                if not ok:
+                    return
+                contact = self.ask("Provenance", "Who was contacted?", "Synthetic office")
+                authorizer = self.ask("Provenance", "Authorizing prescriber", "Synthetic prescriber")
+                change = dict(change_type=kind, what_changed=what, reason=why,
+                              communication_method=communication, contacted_party=contact,
+                              authorizing_prescriber=authorizer)
+                document_service.annotate(self.actor, sources.currentData(), text, *canvas.rectangle, change)
+                QMessageBox.information(dialog, "Saved", "Opaque visual box and separate provenance saved. Source unchanged.")
+                show_source()
+            def history():
+                if not sources.currentData():
+                    return
+                rows = document_service.list_annotations(self.actor, sources.currentData())
+                lines = [f"{a['status']} {a['id'][:8]}: {a['text']} — {a['change']['what_changed']} — {a['change']['reason']}" for a in rows]
+                QMessageBox.information(dialog, "Annotation provenance history", "\n".join(lines) or "None")
+            def guard(fn):
+                def call(*_):
+                    try:
+                        fn()
+                    except Exception as exc:
+                        QMessageBox.warning(dialog, "Document action blocked", str(exc))
+                return call
+            sources.currentIndexChanged.connect(guard(show_source))
+            upload_btn.clicked.connect(guard(upload))
+            render_btn.clicked.connect(guard(render))
+            annotate_btn.clicked.connect(guard(annotate))
+            history_btn.clicked.connect(guard(history))
+            populate()
+            dialog.exec()
 
         def new_rx(self):
             with service.sessions() as s:

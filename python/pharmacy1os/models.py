@@ -212,3 +212,101 @@ class Audit(Base):
     subject_id: Mapped[str] = mapped_column(String(36))
     detail: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Document(Base):
+    """Immutable source metadata; original bytes live in the local vault."""
+    __tablename__ = "py_documents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("py_patients.id"))
+    prescription_id: Mapped[str] = mapped_column(ForeignKey("py_prescriptions.id"), index=True)
+    source_type: Mapped[str] = mapped_column(String(25))
+    mime_type: Mapped[str] = mapped_column(String(100))
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_key: Mapped[str] = mapped_column(String(180), unique=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    encrypted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (CheckConstraint("byte_size > 0 AND byte_size <= 26214400"),)
+
+
+class DocumentAnnotation(Base):
+    __tablename__ = "py_document_annotations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("py_documents.id"), index=True)
+    prescription_id: Mapped[str] = mapped_column(ForeignKey("py_prescriptions.id"), index=True)
+    text: Mapped[str] = mapped_column(Text)
+    x: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    y: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    width: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    height: Mapped[Decimal] = mapped_column(Numeric(9, 6))
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey("py_document_annotations.id"), nullable=True, unique=True)
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (
+        CheckConstraint("x >= 0 AND y >= 0 AND width >= 0.01 AND height >= 0.01"),
+        CheckConstraint("x + width <= 1.000001 AND y + height <= 1.000001"),
+        CheckConstraint("status IN ('ACTIVE', 'SUPERSEDED')"),
+    )
+
+
+class DocumentChange(Base):
+    """Separate legal/provenance record; DOES NOT mutate prescription fields."""
+    __tablename__ = "py_document_changes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    prescription_id: Mapped[str] = mapped_column(ForeignKey("py_prescriptions.id"), index=True)
+    annotation_id: Mapped[str] = mapped_column(ForeignKey("py_document_annotations.id"), unique=True)
+    change_type: Mapped[str] = mapped_column(String(30))
+    what_changed: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    communication_method: Mapped[str | None] = mapped_column(String(20))
+    contacted_party: Mapped[str | None] = mapped_column(String(200))
+    authorizing_prescriber: Mapped[str | None] = mapped_column(String(200))
+    note: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey("py_document_changes.id"), nullable=True, unique=True)
+    changed_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (CheckConstraint("status IN ('ACTIVE', 'SUPERSEDED')"),)
+
+
+class InventoryMovement(Base):
+    """Append-only synthetic per-stock inventory movement history."""
+    __tablename__ = "py_inventory_movements"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    stock_id: Mapped[str] = mapped_column(ForeignKey("py_stock.id"), index=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    kind: Mapped[str] = mapped_column(String(35))
+    on_hand_delta: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal('0'))
+    reserved_delta: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal('0'))
+    quarantined_delta: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal('0'))
+    before_snapshot: Mapped[str] = mapped_column(Text)
+    after_snapshot: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class InventoryHold(Base):
+    __tablename__ = "py_inventory_holds"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), index=True)
+    stock_id: Mapped[str] = mapped_column(ForeignKey("py_stock.id"), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(25), default="ACTIVE")
+    resolution_reason: Mapped[str | None] = mapped_column(Text)
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"))
+    resolved_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        CheckConstraint("quantity > 0"),
+        CheckConstraint("status IN ('ACTIVE','RELEASED','DISPOSED')"),
+    )

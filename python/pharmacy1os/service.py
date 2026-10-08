@@ -205,8 +205,9 @@ class PharmacyService:
                               lot=lot, expires=expires, on_hand=Decimal("0"),
                               reserved=Decimal("0"), quarantined=Decimal("0"))
                 s.add(stock)
-            stock.on_hand += qty
             s.flush()
+            from .inventory_ops import record_movement
+            record_movement(s, actor, stock, "RECEIVE", on_hand=qty)
             self._audit(s, actor, "INVENTORY_RECEIVE", stock.id, {"quantity": str(qty)})
             return stock.id
 
@@ -327,7 +328,8 @@ class PharmacyService:
                 raise WorkflowError("Scanned quantity exceeds actual fill quantity")
             if stock.on_hand - stock.reserved - stock.quarantined < qty:
                 raise WorkflowError("Insufficient available stock")
-            stock.reserved += qty
+            from .inventory_ops import record_movement
+            record_movement(s, actor, stock, "FILL_RESERVE", reserved=qty)
             s.add(FillSource(fill_id=f.id, stock_id=stock.id, quantity=qty))
             self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
                         {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
@@ -387,7 +389,9 @@ class PharmacyService:
                 stock = s.get(Stock, src.stock_id)
                 if stock.expires <= date.today().isoformat() or stock.reserved < src.quantity:
                     raise WorkflowError("Source expired or reservation invalid")
-                stock.on_hand -= src.quantity; stock.reserved -= src.quantity
+                from .inventory_ops import record_movement
+                record_movement(s, actor, stock, "FILL_DISPENSE",
+                                on_hand=-src.quantity, reserved=-src.quantity)
             f.status = "READY"; rx.status = "READY"
             self._audit(s, actor, "PHARMACIST_VERIFIED", f.id, {"quantity": str(f.quantity)})
 
@@ -449,7 +453,9 @@ class PharmacyService:
                 claim.status = "REVERSED_SYNTHETIC"
             for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
                 stock = s.get(Stock, src.stock_id)
-                stock.on_hand += src.quantity
+                from .inventory_ops import record_movement
+                record_movement(s, actor, stock, "RETURN_TO_STOCK", on_hand=src.quantity,
+                                reason=reason.strip())
             bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
             if bag:
                 bag.status = "RETURNED"
