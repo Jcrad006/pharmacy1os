@@ -11,3 +11,7 @@ Stage 3L.3 initial security gates:
 7. Generate a new lockfile only through a controlled dependency update PR; test exact versions before merging. Keep runtime security controls separate from synthetic development identities.
 
 None of these measures establish that a regulated pharmacy product is production-safe.
+
+## Stage 3L.3 security finding and resolution
+
+The new high-severity audit detected GHSA-ggr8-5vv4-36mx via `@prisma/client → prisma → @prisma/config → deepmerge-ts` (7.1.5). Prisma v6.19.3 pins this transitive dependency, so the repository explicitly overrides `deepmerge-ts` to the patched 8.0.2-compatible range while retaining Prisma 6. The version override crosses a major version; it requires clean Prisma generation, validation, migration, complete tests, build, and vulnerability audit in CI. Reassess and remove the override when Prisma fixes the dependency itself; do not dismiss the advisory by relaxing the gate.
