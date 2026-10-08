@@ -111,6 +111,51 @@ describe("Stage 3M first security boundary", () => {
     expect(crossSite.statusCode).toBe(403);
   });
 
+  it("immediately denies disabled staff, revoked site grants and idle-expired sessions", async () => {
+    const key = { userId_siteId: { userId, siteId } };
+    await db.siteRoleAssignment.update({ where: key, data: { active: false } });
+    expect((await app.inject({ method: "GET", url: "/api/auth/me", headers: cookie })).statusCode).toBe(403);
+    await db.siteRoleAssignment.update({ where: key, data: { active: true } });
+
+    await db.user.update({ where: { id: userId }, data: { active: false } });
+    expect((await app.inject({ method: "GET", url: "/api/auth/me", headers: cookie })).statusCode).toBe(401);
+    await db.user.update({ where: { id: userId }, data: { active: true } });
+
+    await db.authSession.update({
+      where: { id: sessionId }, data: { idleExpiresAt: new Date(Date.now() - 60_000) },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/auth/me", headers: cookie })).statusCode).toBe(401);
+    await db.authSession.update({
+      where: { id: sessionId }, data: { idleExpiresAt: new Date(Date.now() + 15 * 60_000) },
+    });
+  });
+
+  it("uses the role granted at the current site, without inheriting primary-site privileges", async () => {
+    await db.siteRoleAssignment.create({
+      data: { userId, siteId: "site-demo-002", role: "CASHIER" },
+    });
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: cookie });
+    const csrf = me.json().csrfToken as string;
+    const switched = await app.inject({
+      method: "POST", url: "/api/auth/site",
+      headers: { ...cookie, "x-csrf-token": csrf },
+      payload: { siteId: "site-demo-002" },
+    });
+    expect(switched.statusCode).toBe(200);
+    expect(switched.json().role).toBe("CASHIER");
+    const atSite2 = await app.inject({ method: "GET", url: "/api/auth/me", headers: cookie });
+    expect(atSite2.json().user).toMatchObject({ siteId: "site-demo-002", role: "CASHIER" });
+    const view = await app.inject({ method: "GET", url: "/api/patients", headers: cookie });
+    expect(view.statusCode).toBe(200);
+    expect(view.json().patients.every((p: { siteId: string }) => p.siteId === "site-demo-002")).toBe(true);
+    const switchBack = await app.inject({
+      method: "POST", url: "/api/auth/site",
+      headers: { ...cookie, "x-csrf-token": csrf },
+      payload: { siteId },
+    });
+    expect(switchBack.statusCode).toBe(200);
+  });
+
   it("invalidates a locked or revoked session server-side", async () => {
     const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: cookie });
     const locked = await app.inject({
