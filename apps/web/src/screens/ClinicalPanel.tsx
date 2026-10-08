@@ -28,7 +28,7 @@ export function ClinicalPanel({
   user?: DevUser;
   onChanged: (message: string) => Promise<void>;
   onError: (message: string | null) => void;
-  onBlockersChanged?: (count: number) => void;
+  onBlockersChanged?: (count: number | null) => void;
 }) {
   const [issues, setIssues] = useState<DurIssue[]>([]);
   const [interventions, setInterventions] = useState<InterventionNote[]>([]);
@@ -45,10 +45,12 @@ export function ClinicalPanel({
   const documentAllowed = canDocumentClinical(user);
   const editAllowed = canEditPrescription(user);
 
-  async function load() {
+  async function load(isCurrent: () => boolean = () => true) {
     if (!devUser) return;
     try {
       const result = await getClinicalRecord(devUser, prescription.id);
+      // Responses for an older identity/Rx must never authorize the current user.
+      if (!isCurrent()) return;
       setIssues(result.issues);
       setInterventions(result.interventions);
       onBlockersChanged?.(
@@ -57,11 +59,17 @@ export function ClinicalPanel({
         ).length,
       );
     } catch (error) {
-      onError(error instanceof Error ? error.message : "Unable to load clinical record.");
+      if (isCurrent()) {
+        onError(error instanceof Error ? error.message : "Unable to load clinical record.");
+      }
     }
   }
 
   useEffect(() => {
+    let current = true;
+    // Fail closed during the clinical refresh; the verifier cannot advance
+    // until the clinical record for this Rx and identity has returned.
+    onBlockersChanged?.(null);
     setExpirationDate(
       prescription.expirationDate
         ? prescription.expirationDate.slice(0, 10)
@@ -72,7 +80,10 @@ export function ClinicalPanel({
         ? ""
         : String(prescription.minimumDaysBetweenFills),
     );
-    void load();
+    void load(() => current);
+    return () => {
+      current = false;
+    };
   }, [prescription.id, prescription.updatedAt, devUser]);
 
   async function saveRules(event: FormEvent) {
