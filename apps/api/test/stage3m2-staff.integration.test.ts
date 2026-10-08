@@ -43,6 +43,7 @@ function request(method: "GET" | "POST" | "PATCH", url: string, payload?: unknow
     method, url,
     headers: {
       ...adminCookie,
+      ...(method !== "GET" ? { "content-type": "application/json" } : {}),
       ...(method !== "GET" ? { "x-csrf-token": csrf } : {}),
     },
     ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }),
