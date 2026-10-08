@@ -56,9 +56,9 @@ test("browser drives a paid synthetic claim and label through pharmacist verific
   await page.locator("#staff").selectOption("dev-technician");
   await page.getByRole("button", { name: "New Prescription" }).click();
   await expect(page.getByRole("heading", { name: "Create prescription" })).toBeVisible();
-  await page.getByLabel("Patient", { exact: true }).selectOption(patientId);
-  await page.getByLabel("Prescriber", { exact: true }).selectOption("prescriber-demo-001");
-  await page.getByLabel("Drug", { exact: true }).selectOption("medication-demo-lisinopril-10");
+  await page.locator("form.form-grid select").nth(0).selectOption(patientId);
+  await page.locator("form.form-grid select").nth(1).selectOption("prescriber-demo-001");
+  await page.locator("form.form-grid select").nth(2).selectOption("medication-demo-lisinopril-10");
   await page.getByLabel("Rx number").fill(rxNumber);
   await page.getByLabel("Directions / Sig").fill("Take one tablet once daily");
   await page.getByRole("button", { name: "Create synthetic prescription" }).click();
@@ -98,7 +98,7 @@ test("browser drives a paid synthetic claim and label through pharmacist verific
   await card.getByRole("button", { name: "Open Pickup" }).click();
   await card.getByLabel("Patient date of birth").fill(dob);
   await card.getByLabel("Electronic signature").fill("Browser Journey");
-  await card.getByLabel("Payment method").selectOption("CASH");
+  await card.locator("label").filter({ hasText: "Payment method" }).locator("select").selectOption("CASH");
   await card.getByRole("button", { name: "Confirm Pickup" }).click();
 
   await expect.poll(async () => (await db.prescription.findUniqueOrThrow({ where: { id: rx.id } })).status).toBe("SOLD");
