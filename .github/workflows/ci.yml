@@ -71,3 +71,55 @@ jobs:
         run: pnpm audit --prod --audit-level high
       - name: Build
         run: pnpm build
+
+  browser-e2e:
+    needs: verify
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pharmacy1os
+          POSTGRES_PASSWORD: pharmacy1os_dev
+          POSTGRES_DB: pharmacy1os
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pharmacy1os -d pharmacy1os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CI: "true"
+      NODE_ENV: development
+      DATABASE_URL: postgresql://pharmacy1os:pharmacy1os_dev@localhost:5432/pharmacy1os?schema=public
+      WEB_ORIGIN: http://localhost:5173
+      ALLOW_DEV_IDENTITY: "true"
+      CLAIM_SANDBOX_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm db:deploy
+      - run: pnpm db:seed
+      - name: Install Chromium and required Linux libraries
+        run: pnpm --filter @pharmacy1os/api exec playwright install --with-deps chromium
+      - name: Full browser dispensing and paid-claim POS journey
+        run: pnpm --filter @pharmacy1os/api test:e2e
+      - name: Upload E2E debugging artifacts if tests fail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-failures
+          path: |
+            apps/api/playwright-report/
+            apps/api/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
