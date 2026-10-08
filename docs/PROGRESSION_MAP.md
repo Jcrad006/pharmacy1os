@@ -10,7 +10,7 @@
 ## Progression at a glance
 
 ```text
-Merged foundation through 3L.2
+Merged foundation through 3L.3 (PR #41)
          |
          v
 3L.3 Engineering reliability and deterministic builds
@@ -188,7 +188,7 @@ The display is the recommended **default implementation sequence**, not a claim 
 
 ## Cross-stage dependency and execution notes
 
-- **Immediate next stage is 3L.3**, followed by 3M identity/security, 3N disaster recovery, then 3O policy. This priority overrides the prior tendency to postpone security and recovery until Phase 5.
+- **Immediate next stage is 3M**, followed by 3N disaster recovery, then 3O policy. Stage 3L.3 engineering gates were delivered in PR #41. This priority overrides the prior tendency to postpone security and recovery until Phase 5.
 - **3P and 3Q** can be developed in parallel once 3O and relevant identity/inventory controls are stable, but both require independent domain-specific readiness reviews.
 - **3R–3V** rely on durable audit, identity, fault recovery, and rules. Hardware can be prototyped independently, but live regulated integrations must not be enabled early.
 - Some tasks require outside parties: identity hosting/infrastructure, pharmacy-law review, live payers, EPCS audit/certification, DSCSA trading partners, card processors, equipment, and pharmacy-site validation. In-repository scaffolding does not complete those obligations.

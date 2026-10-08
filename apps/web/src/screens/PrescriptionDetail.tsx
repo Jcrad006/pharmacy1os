@@ -158,7 +158,8 @@ export function PrescriptionDetail({
     try {
       const next = await getPrescription(devUser, prescriptionId);
       setRx(next);
-      setOpenHighClinicalIssues(null);
+      // The clinical panel owns DUR gate loading/results. Do not reset it here:
+      // this fetch may complete after the newer clinical fetch during staff changes.
       setQuantity(String(next.quantityWritten ?? ""));
       if (!editing) setEditState(editStateFromRx(next));
       if (canReadAudit(user)) {

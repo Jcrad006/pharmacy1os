@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "start": "node dist/server.js",
-    "backup": "tsx src/backupCli.ts"
+    "backup": "tsx src/backupCli.ts",
+    "test:e2e": "playwright test -c playwright.config.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.1.0",
@@ -20,6 +21,7 @@
     "@types/node": "^22.18.6",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@playwright/test": "1.56.1"
   }
 }

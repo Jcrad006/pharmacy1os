@@ -24,5 +24,10 @@
     "backup:scan": "pnpm --filter @pharmacy1os/api backup scan",
     "backup:verify": "pnpm --filter @pharmacy1os/api backup verify",
     "backup:restore": "pnpm --filter @pharmacy1os/api backup restore"
+  },
+  "pnpm": {
+    "overrides": {
+      "deepmerge-ts": "^8.0.2"
+    }
   }
 }

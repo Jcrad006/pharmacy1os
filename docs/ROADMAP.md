@@ -1,6 +1,6 @@
 # Pharmacy1OS Roadmap
 
-> **Development progression:** The agreed post-3L.2 development sequence, dependencies, stage exit gates, and production-readiness blockers are maintained in [Pharmacy1OS Progression Map](PROGRESSION_MAP.md). The next recommended stage is **3L.3 — Engineering reliability and deterministic builds**, followed by 3M production identity/security and 3N operational resilience. This checklist remains the implementation-status ledger; the progression map is the sequencing reference.
+> **Development progression:** The agreed post-3L.2 development sequence, dependencies, stage exit gates, and production-readiness blockers are maintained in [Pharmacy1OS Progression Map](PROGRESSION_MAP.md). Stage **3L.3 — Engineering reliability and deterministic builds** is completed by PR #41. The next recommended stage is **3M — Production identity, RBAC, and security**, followed by 3N operational resilience. This checklist remains the implementation-status ledger; the progression map is the sequencing reference.
 
 ## Phase 0 — Foundation
 - [x] Monorepo layout
@@ -379,7 +379,24 @@
 - [ ] Comprehensive DUR/clinical data model and external drug-knowledge integration
 - [ ] Post-sale POS refund/void/card-terminal integration
 - [ ] Real-time workstation conflict notifications and broader optimistic-concurrency coverage
-- [ ] Deterministic committed pnpm lockfile, browser E2E, fuzz/property tests, and broader SAST/SBOM gates
+- [x] Deterministic committed pnpm lockfile, browser E2E, property tests, and SAST/SBOM (Stage 3L.3; see below)
+
+## Phase 3L.3 — Engineering reliability and deterministic builds
+
+**Engineering stage completed:** PR [#41](https://github.com/Jcrad006/pharmacy1os/pull/41), after all required code, browser and security checks passed on the final implementation. This is a development-stage result, **not clinical, security, or regulatory approval for production use**.
+
+- [x] Reviewed/pinned pnpm lockfile and frozen CI installation with unchanged-lockfile verification
+- [x] SPDX-JSON SBOM generation, CodeQL extended JavaScript/TypeScript SAST, production high/critical dependency audit and [vulnerability handling policy](DEPENDENCY_SECURITY_POLICY.md)
+- [x] Playwright Chromium full synthetic browser journey: Data Entry → Product Fill → paid claim sandbox → labels → Pharmacist Review → READY → staged Will Call → barcode-verified pickup → POS settlement
+- [x] Deterministic GS1/check-digit, idempotency fingerprint, status-transition and precise decimal/rounding property tests
+- [x] Race tests for status transition/duplicate fill-number creation, physical duplicate scans, duplicate inventory receipt, duplicate POS sale and crash-like interrupted inventory transaction rollback
+- [x] PostgreSQL quantity/status checks, validated composite same-site keys on critical relationships, stock-position site guard and rejection tests against invalid/cross-site writes
+- [x] Corrected the identity-change/DUR verification UI race; stale clinical responses cannot replace the current pharmacist's status, and verification fails closed while clinical data loads
+- [x] Documented [database invariants](STAGE_3L3_DATABASE_AUDIT.md) and [stage verification](STAGE_3L3_RELIABILITY.md), including intentionally deferred areas
+
+**Verified code head:** `e6974655a97ca36dcb9282996d92a116c0a026df`. [CI run 37797738593](https://github.com/Jcrad006/pharmacy1os/actions/runs/37797738593) passed both verify and browser-e2e. [CodeQL run 37797738564](https://github.com/Jcrad006/pharmacy1os/actions/runs/37797738564) succeeded. The stage-documentation-only commit is subject to the same checks.
+
+**Carried forward, not waived:** Production identity/MFA and session lifecycle (3M), off-server backup/restore drills (3N), independent clinical/jurisdiction rules (3O), controlled-substance/EPCS audit, full DSCSA support, live claims/network reconciliation, external data and device integrations, comprehensive tenant isolation review, and real-world pharmacy validation.
 
 ## Phase 3 — Pharmacy utilities
 - [x] Core inventory ledger
