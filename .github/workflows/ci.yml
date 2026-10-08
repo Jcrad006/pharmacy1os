@@ -112,7 +112,31 @@ jobs:
       - name: Install Chromium and required Linux libraries
         run: pnpm --filter @pharmacy1os/api exec playwright install --with-deps chromium
       - name: Full browser dispensing and paid-claim POS journey
-        run: pnpm --filter @pharmacy1os/api test:e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @pharmacy1os/api dev > /tmp/pharmacy1os-api-e2e.log 2>&1 &
+          api_pid=$!
+          pnpm --filter @pharmacy1os/web dev --host 127.0.0.1 > /tmp/pharmacy1os-web-e2e.log 2>&1 &
+          web_pid=$!
+          trap 'kill "$api_pid" "$web_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 75); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3001/health &&
+               curl -fsS -o /dev/null http://127.0.0.1:5173; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::Synthetic API or Vite webserver failed to start"
+            cat /tmp/pharmacy1os-api-e2e.log
+            cat /tmp/pharmacy1os-web-e2e.log
+            exit 1
+          fi
+          pnpm --filter @pharmacy1os/api test:e2e
+
       - name: Upload E2E debugging artifacts if tests fail
         if: failure()
         uses: actions/upload-artifact@v4

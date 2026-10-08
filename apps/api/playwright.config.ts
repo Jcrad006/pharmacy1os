@@ -15,15 +15,4 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  webServer: {
-    command: "pnpm -C ../.. dev",
-    url: "http://127.0.0.1:5173",
-    timeout: 120_000,
-    reuseExistingServer: !process.env.CI,
-    env: {
-      ALLOW_DEV_IDENTITY: "true",
-      CLAIM_SANDBOX_ENABLED: "true",
-      WEB_ORIGIN: "http://localhost:5173",
-    },
-  },
 });
