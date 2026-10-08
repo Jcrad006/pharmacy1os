@@ -196,6 +196,7 @@ export async function staffRoutes(app: FastifyInstance) {
       const body = request.body as { active?: unknown; expectedUpdatedAt?: unknown } | null;
       if (id === auth.actor.id) throw new AccessError(403, "You cannot change your own site access.");
       if (typeof body?.active !== "boolean") throw new AccessError(400, "active must be boolean.");
+      const nextActive = body.active as boolean;
       const expectedUpdatedAt = validatedExpectedDate(body.expectedUpdatedAt);
       const result = await db.$transaction(async (tx) => {
         const grant = await tx.siteRoleAssignment.findUnique({
@@ -207,14 +208,14 @@ export async function staffRoutes(app: FastifyInstance) {
         if (!isRoutineRole(grant.role)) {
           throw new AccessError(403, "Privileged site access changes require independent authorization.");
         }
-        if (grant.active === body.active) throw new AccessError(409, "Site access already has this status.");
+        if (grant.active === nextActive) throw new AccessError(409, "Site access already has this status.");
         const user = await tx.user.findUniqueOrThrow({ where: { id } });
-        if (body.active && !user.active) {
+        if (nextActive && !user.active) {
           throw new AccessError(403, "The staff account is globally disabled.");
         }
         const changed = await tx.siteRoleAssignment.updateMany({
           where: { id: grant.id, updatedAt: expectedUpdatedAt },
-          data: { active: body.active },
+          data: { active: nextActive },
         });
         if (changed.count !== 1) throw new AccessError(409, "Site access changed. Refresh and retry.");
         // Always revoke affected sessions on any access change: no stale
@@ -225,7 +226,7 @@ export async function staffRoutes(app: FastifyInstance) {
         });
         await writeAuditEvent(tx, {
           siteId: auth.actor.siteId, actorId: auth.actor.id,
-          action: body.active ? "STAFF_SITE_ACCESS_RESTORED" : "STAFF_SITE_ACCESS_REVOKED",
+          action: nextActive ? "STAFF_SITE_ACCESS_RESTORED" : "STAFF_SITE_ACCESS_REVOKED",
           entityType: "SiteRoleAssignment", entityId: grant.id,
           requestId: request.id,
           metadata: { revokedSessions: revoked.count },
