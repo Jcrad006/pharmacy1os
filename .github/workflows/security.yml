@@ -1,0 +1,26 @@
+name: Static security analysis (CodeQL)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 8 * * 3"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize security analysis
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+          build-mode: none
+      - name: Analyze application source
+        uses: github/codeql-action/analyze@v4
