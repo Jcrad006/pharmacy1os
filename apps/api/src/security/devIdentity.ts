@@ -26,7 +26,8 @@ export async function resolveDevelopmentActor(
     const authenticated = await authenticateSession(request, permission);
     return authenticated.actor;
   }
-  if (process.env.AUTH_MODE === "production" || process.env.NODE_ENV === "production" ||
+  if ((process.env.AUTH_MODE && process.env.AUTH_MODE !== "development") ||
+      process.env.NODE_ENV === "production" ||
       process.env.ALLOW_DEV_IDENTITY !== "true") {
     throw new AccessError(503, "Development identity mode is disabled.");
   }
