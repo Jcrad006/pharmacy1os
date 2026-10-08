@@ -82,9 +82,19 @@ test("browser drives a paid synthetic claim and label through pharmacist verific
   await expect.poll(() => db.prescriptionLabel.count({ where: { fillId: fill.id } })).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: /Product prepared.*Pharmacist Review/ }).click();
+  // Do not change staff while the prior mutation is still refreshing the Rx.
+  // In the actual UI this is an asynchronous request with a second workspace reload.
+  await expect.poll(
+    async () => (await db.prescription.findUniqueOrThrow({ where: { id: rx.id } })).status,
+    { message: "Product Fill should enter Pharmacist Review before changing staff identity" },
+  ).toBe("PHARMACIST_REVIEW");
+  await expect(page.getByText(/Product prepared → Pharmacist Review|Current action/).first()).toBeVisible();
   await page.locator("#staff").selectOption("dev-pharmacist");
-  await expect(page.getByRole("button", { name: /Verify prescription.*Ready/ })).toBeEnabled();
-  await page.getByRole("button", { name: /Verify prescription.*Ready/ }).click();
+  const verify = page.locator(".verification-gate button.primary-button");
+  await expect(verify).toBeVisible();
+  await expect(verify).toHaveText("Verify prescription → Ready");
+  await expect(verify).toBeEnabled();
+  await verify.click();
   await expect.poll(async () => (await db.prescription.findUniqueOrThrow({ where: { id: rx.id } })).status).toBe("READY");
 
   await page.getByRole("button", { name: /Will Call/ }).first().click();
