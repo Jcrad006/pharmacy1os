@@ -235,7 +235,24 @@ export function App() {
     localStorage.setItem("pharmacy1os.devUser", value);
   }
 
+  async function refreshAuthenticatedIdentity() {
+    if (authMode !== "oidc" || !authReady) return;
+    try {
+      const result = await getAuthenticatedUser();
+      setAuthCsrfToken(result.csrfToken);
+      setUsers([result.user]);
+    } catch {
+      // Never continue to display privileged workstation controls
+      // against a missing, revoked, or expired server session.
+      setAuthCsrfToken(null);
+      setUsers([]);
+      setSelectedExternalId("");
+      setAuthReady(false);
+    }
+  }
+
   function navigate(next: View) {
+    if (authMode === "oidc") void refreshAuthenticatedIdentity();
     setMessage(null);
     if (next !== "detail") setSelectedPrescriptionId(null);
     setView(next);
@@ -505,7 +522,8 @@ export function App() {
         )}
 
         {view === "privileges" && authMode === "oidc" && (
-          <PrivilegeApprovals user={selectedUser} onError={setMessage} />
+          <PrivilegeApprovals user={selectedUser} onError={setMessage}
+            onAccessChanged={refreshAuthenticatedIdentity} />
         )}
 
         {view === "staff" && authMode === "oidc" && (
