@@ -1,6 +1,8 @@
 export type UserRole =
   | "ADMIN"
   | "PHARMACIST"
+  | "PHARMACIST_IN_CHARGE"
+  | "INVENTORY_MANAGER"
   | "TECHNICIAN"
   | "INTERN"
   | "CASHIER"
@@ -98,6 +100,7 @@ export type DurSeverity = "INFO" | "WARNING" | "HIGH";
 export type DurIssueStatus = "OPEN" | "RESOLVED";
 
 export type DevUser = {
+  id?: string;
   externalAuthId: string;
   displayName: string;
   role: UserRole;
