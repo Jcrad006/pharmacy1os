@@ -7,6 +7,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum PrivilegedAccessKind {
+  ROLE_GRANT
+  TEMP_PERMISSION
+}
+
+enum PrivilegedAccessStatus {
+  PENDING
+  APPROVED
+  DENIED
+  CANCELLED
+}
+
 enum UserRole {
   ADMIN
   PHARMACIST
@@ -395,6 +407,7 @@ model PharmacySite {
   users         User[]
   siteRoleAssignments SiteRoleAssignment[]
   authSessions  AuthSession[]
+  privilegedAccessRequests PrivilegedAccessRequest[]
   patients      Patient[]
   prescribers   Prescriber[]
   prescriptions Prescription[]
@@ -448,6 +461,9 @@ model User {
   updatedAt         DateTime           @updatedAt
   siteRoleAssignments SiteRoleAssignment[]
   authSessions      AuthSession[]
+  privilegedAccessTargets PrivilegedAccessRequest[] @relation("PrivilegeTarget")
+  privilegedAccessRequests PrivilegedAccessRequest[] @relation("PrivilegeRequester")
+  privilegedAccessReviews PrivilegedAccessRequest[] @relation("PrivilegeReviewer")
   auditEvents       AuditEvent[]       @relation("ActorAuditEvents")
   resolvedDurIssues DurIssue[]         @relation("ResolvedDurIssues")
   interventionNotes     InterventionNote[]     @relation("InterventionAuthors")
@@ -2039,4 +2055,33 @@ model OidcLoginAttempt {
   createdAt   DateTime @default(now())
   expiresAt   DateTime
   consumedAt  DateTime?
+}
+
+
+// Stage 3M.3: scoped, audited two-person authorizations. Not a credential
+// verification service. Never treat synthetic approvals as licensure evidence.
+model PrivilegedAccessRequest {
+  id                          String                 @id @default(uuid())
+  siteId                      String
+  site                        PharmacySite           @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  targetUserId                String
+  targetUser                  User                   @relation("PrivilegeTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+  requestedById               String
+  requestedBy                 User                   @relation("PrivilegeRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewedById                String?
+  reviewedBy                  User?                  @relation("PrivilegeReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  kind                        PrivilegedAccessKind
+  status                      PrivilegedAccessStatus @default(PENDING)
+  requestedRole               UserRole?
+  requestedPermission         String?
+  expectedAssignmentUpdatedAt DateTime?
+  reason                      String
+  reviewNote                  String?
+  createdAt                   DateTime               @default(now())
+  reviewDeadlineAt            DateTime
+  reviewedAt                  DateTime?
+  effectiveUntil              DateTime?
+
+  @@index([siteId, status, createdAt])
+  @@index([targetUserId, status, effectiveUntil])
 }
