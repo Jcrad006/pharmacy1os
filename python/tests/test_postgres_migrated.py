@@ -140,3 +140,46 @@ def test_postgres_communication_task_integrity_and_events(tmp_path):
             assert [e.sequence for e in events] == [1, 2, 3]
     finally:
         pharmacy.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"), reason="requires isolated PostgreSQL CI service")
+def test_postgres_structured_prescription_change_persists(tmp_path):
+    """Verify real PG 17 constraints, revision, immutable document and audit record."""
+    from pharmacy1os.documents import DocumentService
+    from pharmacy1os.models import DocumentChange, Prescription
+    from pharmacy1os.structured_changes import StructuredChangeService, StructuredChangeApplication
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("PostgreSQL integration requires the psycopg driver")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        actors = svc.bootstrap_demo()["actors"]
+        tech, pharm = actors["TECHNICIAN"], actors["PHARMACIST"]
+        patient = svc.add_patient(tech, "Structured", "DemoPatient")
+        doctor = svc.add_prescriber(tech, "Structured", "DemoProvider", "MD")
+        drug = svc.add_drug(pharm, "STRUCTURED-TEST-MED", "5 mg", "tablet")
+        rx = svc.add_prescription(tech, patient, doctor, drug, "CHANGE-PG-001", "once daily", "30")
+        documents = DocumentService(svc, tmp_path / "structured-vault")
+        doc = documents.create_source(tech, rx, b"unchanging synthetic PDF", "application/pdf")
+        ann = documents.annotate(tech, doc["id"], "Prescriber called", ".1", ".1", ".3", ".2",
+            {"change_type": "SIG", "what_changed": "Frequency clarified",
+             "reason": "Synthetic prescriber phone clarification", "communication_method": "PHONE",
+             "contacted_party": "Prescriber office", "authorizing_prescriber": "Demo Provider"})
+        with svc.sessions() as session:
+            change_id = session.scalar(select(DocumentChange).where(DocumentChange.annotation_id == ann)).id
+        applied = StructuredChangeService(svc, documents).apply(
+            pharm, change_id, "twice daily",
+            "Verified with fictional prescriber in synthetic test", expected_version=0)
+        with svc.sessions() as session:
+            prescription = session.get(Prescription, rx)
+            assert prescription.sig == "twice daily" and prescription.version == 1
+            event = session.scalar(select(StructuredChangeApplication).where(
+                StructuredChangeApplication.change_record_id == change_id))
+            assert event is not None and event.document_sha256 == doc["sha256"]
+            assert event.version_after == 1 and event.version_before == 0
+        assert applied["after"] == "twice daily"
+        assert documents.read_source(tech, doc["id"])[0] == b"unchanging synthetic PDF"
+    finally:
+        svc.engine.dispose()
