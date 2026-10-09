@@ -545,6 +545,8 @@ class PharmacyService:
             if (len(payers) > 4 or
                     any(not isinstance(name, str) or not name.strip() for name in payers)):
                 raise WorkflowError("Maximum four named COB payers")
+            from .claim_transactions import require_no_open_test_rejections
+            require_no_open_test_rejections(s, actor, f)
             from .fill_completion import FillCompletion
             is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
             if is_completion and payers:
@@ -571,6 +573,8 @@ class PharmacyService:
                 if selected_coverages is not None:
                     from .insurance import snapshot_paid_coverage
                     snapshot_paid_coverage(s, actor, f, claim, selected_coverages[seq - 1])
+                from .claim_transactions import record_test_paid
+                record_test_paid(s, actor, claim)
             from .label_printing import enqueue_label_jobs
             enqueue_label_jobs(s, actor, f)
             f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
