@@ -1,18 +1,18 @@
 """Read-only Python exception board across synthetic clinical and scheduling data.
 
-The original program also has emergency follow-ups, biologic communications and
-completion fills; these are intentionally not displayed until their data models
-are ported. Do not interpret a short exception list as proof of clinical safety.
+Other legacy exception categories and external clinical integrations remain unported.
+An incomplete exception list must not be interpreted as proof of clinical safety.
 """
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy import select
 from .models import DUR, Drug, Patient, Prescription
 from .scheduling_models import ScheduledFill
+from .emergency_supply import EmergencySupply
 from .service import Actor, PharmacyService, WorkflowError
 
-KINDS = {"CLINICAL_ISSUE", "ON_HOLD", "PHARMACIST_REVIEW", "SCHEDULED_FILL"}
+KINDS = {"CLINICAL_ISSUE", "ON_HOLD", "PHARMACIST_REVIEW", "SCHEDULED_FILL", "EMERGENCY_FOLLOW_UP"}
 SEVERITY = {"HIGH": 3, "WARNING": 2, "INFO": 1}
 
 
@@ -78,5 +78,19 @@ class ExceptionService:
                     if rx:
                         add("SCHEDULED_FILL",item.id,rx,"Future fill pending",
                             "Scheduled for "+item.due_date,"INFO",item.due_date)
+            if not kind or kind == "EMERGENCY_FOLLOW_UP":
+                pending = s.scalars(select(EmergencySupply).where(
+                    EmergencySupply.site_id == actor.site_id,
+                    EmergencySupply.status == "OPEN")).all()
+                for task in pending:
+                    rx = by_id.get(task.prescription_id)
+                    if rx:
+                        raw = task.follow_up_due_at
+                        due_utc = (raw.replace(tzinfo=timezone.utc) if raw.tzinfo is None
+                                   else raw.astimezone(timezone.utc))
+                        severity = "HIGH" if due_utc <= datetime.now(timezone.utc) else "WARNING"
+                        add("EMERGENCY_FOLLOW_UP", task.id, rx,
+                            "Emergency supply follow-up required",
+                            task.reason, severity, due_utc.isoformat())
             results.sort(key=lambda x:(-SEVERITY.get(x["severity"],0),x["due_at"] or "9999-12-31",x["id"]))
             return results[:limit]
