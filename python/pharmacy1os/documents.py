@@ -221,6 +221,10 @@ class DocumentService:
                 previous_change = s.scalar(select(DocumentChange).where(DocumentChange.annotation_id == previous.id))
                 if not previous_change or previous_change.status != "ACTIVE":
                     raise DocumentError("Prior provenance record is not active")
+                from .structured_changes import StructuredChangeApplication
+                if s.scalar(select(StructuredChangeApplication.id).where(
+                        StructuredChangeApplication.change_record_id == previous_change.id)):
+                    raise DocumentError("An applied change cannot be superseded; enter a new documented change")
                 previous.status = "SUPERSEDED"
                 previous_change.status = "SUPERSEDED"
             annotation = DocumentAnnotation(site_id=actor.site_id, document_id=doc.id,

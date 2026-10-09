@@ -22,11 +22,12 @@ from .pos import PosService
 from .patient_directory import PatientDirectory
 from .exceptions import ExceptionService
 from .communications import CommunicationService
+from .structured_changes import StructuredChangeService
 from .date_rules import DateRulesService
 
 from sqlalchemy import select
 
-from .models import Claim, Drug, DUR, Fill, Patient, Prescriber, Prescription, Product, Staff, Stock, WillCall
+from .models import Claim, DocumentChange, Drug, DUR, Fill, Patient, Prescriber, Prescription, Product, Staff, Stock, WillCall
 from .service import Actor, PharmacyService
 
 
@@ -68,6 +69,7 @@ def main() -> None:
     patient_directory = PatientDirectory(service)
     exception_service = ExceptionService(service)
     communication_service = CommunicationService(service, document_service)
+    structured_changes = StructuredChangeService(service, document_service)
     date_rules_service = DateRulesService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
@@ -860,8 +862,10 @@ def main() -> None:
             render_btn = QPushButton("Generate synthetic eRx visual")
             annotate_btn = QPushButton("Save text box + provenance")
             history_btn = QPushButton("Show version history")
+            apply_btn = QPushButton("Pharmacist: apply documented change")
             actions.addWidget(upload_btn); actions.addWidget(render_btn)
             actions.addWidget(annotate_btn); actions.addWidget(history_btn)
+            actions.addWidget(apply_btn)
             layout.addLayout(actions)
             def populate():
                 sources.clear()
@@ -914,6 +918,39 @@ def main() -> None:
                 rows = document_service.list_annotations(self.actor, sources.currentData())
                 lines = [f"{a['status']} {a['id'][:8]}: {a['text']} — {a['change']['what_changed']} — {a['change']['reason']}" for a in rows]
                 QMessageBox.information(dialog, "Annotation provenance history", "\n".join(lines) or "None")
+            def apply_change():
+                with service.sessions() as session:
+                    rx = service._site(session, Prescription, rx_id, self.actor)
+                    version = rx.version
+                    candidates = session.scalars(select(DocumentChange).where(
+                        DocumentChange.site_id == self.actor.site_id,
+                        DocumentChange.prescription_id == rx_id,
+                        DocumentChange.status == "ACTIVE")).all()
+                    applied = {x["change_record_id"] for x in structured_changes.history(self.actor, rx_id)}
+                    candidates = [x for x in candidates
+                                  if x.change_type in StructuredChangeService.FIELDS and x.id not in applied]
+                    labels = [f"{x.change_type} — {x.what_changed[:55]} ({x.id[:8]})"
+                              for x in candidates]
+                if not labels:
+                    raise ValueError("No unapplied, active, supported structured changes on this prescription")
+                label, ok = QInputDialog.getItem(dialog, "Documented change", "Select provenance record",
+                                                labels, 0, False)
+                if not ok:
+                    return
+                record = candidates[labels.index(label)]
+                entered_value = self.ask("Structured Rx change", f"New {record.change_type} value (IDs for drug/prescriber)")
+                if record.change_type == "REFILLS":
+                    entered_value = int(entered_value)
+                note = self.ask("Pharmacist approval", "Describe authorization you independently verified")
+                confirmation = QMessageBox.question(dialog, "Apply synthetic change",
+                    f"Apply {record.change_type} change to structured Rx version {version}? "
+                    "This is NOT a verified prescriber signature.")
+                if confirmation != QMessageBox.StandardButton.Yes:
+                    return
+                result = structured_changes.apply(self.actor, record.id, entered_value,
+                                                  note, expected_version=version)
+                QMessageBox.information(dialog, "Structured change recorded",
+                                        json.dumps(result, indent=2))
             def guard(fn):
                 def call(*_):
                     try:
@@ -926,6 +963,7 @@ def main() -> None:
             render_btn.clicked.connect(guard(render))
             annotate_btn.clicked.connect(guard(annotate))
             history_btn.clicked.connect(guard(history))
+            apply_btn.clicked.connect(guard(apply_change))
             populate()
             dialog.exec()
 

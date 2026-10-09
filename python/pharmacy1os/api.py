@@ -35,6 +35,8 @@ from .date_rules import DateRulesService
 from .date_rules_api import make_date_rules_router
 from .communications import CommunicationService
 from .communications_api import make_communications_router
+from .structured_changes import StructuredChangeService
+from .structured_changes_api import make_structured_changes_router
 
 
 class PatientIn(BaseModel):
@@ -257,6 +259,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_exceptions_router(ExceptionService(svc), staff_actor))
     app.include_router(make_date_rules_router(DateRulesService(svc), staff_actor))
     app.include_router(make_communications_router(CommunicationService(svc, docs), staff_actor))
+    app.include_router(make_structured_changes_router(StructuredChangeService(svc, docs), staff_actor))
 
     @app.get("/health")
     def health():
