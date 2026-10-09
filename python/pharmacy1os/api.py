@@ -19,6 +19,8 @@ from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .inventory_planning_api import make_planning_router
 from .lifecycle import LifecycleService
+from .emergency_supply import EmergencySupplyService
+from .emergency_supply_api import make_emergency_supply_router
 from .fill_completion import FillCompletionService
 from .fill_completion_api import make_fill_completion_router
 from .provider_api import make_provider_router
@@ -279,6 +281,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
     app.include_router(make_planning_router(InventoryPlanningService(svc), staff_actor))
     app.include_router(make_fill_completion_router(FillCompletionService(svc), staff_actor))
+    app.include_router(make_emergency_supply_router(EmergencySupplyService(svc), staff_actor))
     app.include_router(make_schedule_router(SchedulingService(svc), staff_actor))
     app.include_router(make_billing_router(BillingService(svc), staff_actor))
     app.include_router(make_willcall_router(WillCallService(svc), staff_actor))
