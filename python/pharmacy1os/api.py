@@ -536,7 +536,9 @@ def main() -> None:
         raise SystemExit("Demo API only supports isolated SQLite. PostgreSQL migration is not yet ready.")
     svc = PharmacyService(url)
     svc.create_schema()
-    uvicorn.run(create_app(svc, synthetic_enabled=True,\n                           auth_mode=os.getenv("PHARMACY1OS_API_AUTH_MODE", "demo")),\n                host="127.0.0.1", port=8008)
+    uvicorn.run(create_app(svc, synthetic_enabled=True,
+                           auth_mode=os.getenv("PHARMACY1OS_API_AUTH_MODE", "demo")),
+                host="127.0.0.1", port=8008)
 
 
 if __name__ == "__main__":
