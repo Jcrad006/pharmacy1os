@@ -76,3 +76,8 @@ No legacy Prisma data has been imported or altered.
   label output, or live fax/eRx interoperability is asserted.
 - The environment still relies on synthetic identity, isolated tables,
   development databases and tests rather than clinical validation.
+
+
+### Owed quantity on the clinical exceptions screen
+
+An OPEN physical-fill obligation becomes a site-scoped PARTIAL_OWED exception once an original physical part has actually been sold and quantity remains owed. Its details show the exact Decimal balance. Severity is WARNING while no completion is active, INFO when a completion is in progress, and the exception disappears after all physical quantity has been sold. **No due date is inferred.** This supplements, but does not replace, the original TypeScript scheduled completion and stock-demand system.
