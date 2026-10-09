@@ -204,3 +204,8 @@ See [PYTHON_PARITY_PROGRESS_INCREMENT_23.md](PYTHON_PARITY_PROGRESS_INCREMENT_23
 ## Twenty-fourth Python increment — physical fill allocation lineage
 
 See [PYTHON_PARITY_PROGRESS_INCREMENT_24.md](PYTHON_PARITY_PROGRESS_INCREMENT_24.md). Adds fill-source-to-position `InventoryAllocation` records and an append-only transition ledger. Explicit physical location scans reserve identified bins; pharmacist verification consumes the exact allocation; cancellation and partial interruption release their originally scanned reservations and preserve history. The additive migration `f7a42b6d9f10` follows `f29a4d5c38a1`. Old untracked fills intentionally have no fabricated allocation. **Automatic FEFO selection, full inventory demand, receiving discrepancy and inventory exceptions are still unported.**
+
+
+## Twenty-fifth Python increment — demand and backorder parity
+
+See [PYTHON_PARITY_PROGRESS_INCREMENT_25.md](PYTHON_PARITY_PROGRESS_INCREMENT_25.md). A site-scoped inventory demand/backorder database now tracks physical fill requirements, manual and reorder stock needs, conservatively reconciled availability (without double-counting between patient demands), pharmacist fulfillment, partial-fill target changes and cancellation with append-only audit events. Stock movement updates its advisory snapshots. Migration `a5e618d4b92f` follows `f7a42b6d9f10` and does not fabricate old patient demand. **READY is not a stock reservation, FEFO allocation or production dispensing authorization.** Receiving discrepancies, persisted exceptions and historical as-of projections remain future parity work.
