@@ -206,3 +206,57 @@ def test_emergency_api_explicitly_disabled_without_opt_in(env):
     response = client.post(f"/api/emergency-supplies/{fill}/follow-up/complete",
         headers=head, json={"note": "Premature"})
     assert response.status_code == 409
+
+
+def test_emergency_rechecks_changed_drug_and_refill_rules_at_every_transition(env):
+    svc, actors, _, rx, drug, stock, exp, original, due = env
+    pharm, tech = actors["PHARMACIST"], actors["TECHNICIAN"]
+    flow = EmergencySupplyService(svc)
+    fid = flow.authorize(pharm, rx, "5", "Documented temporary need", due)
+
+    with svc.sessions.begin() as s:
+        s.get(Drug, drug).controlled = True
+    with pytest.raises(WorkflowError, match="controlled"):
+        svc.scan_source(tech, fid, "EMERG-BAR", "EMERGLOT", exp, "5")
+    with svc.sessions() as s:
+        assert s.get(Stock, stock).reserved == 0
+    with svc.sessions.begin() as s:
+        s.get(Drug, drug).controlled = False
+
+    svc.scan_source(tech, fid, "EMERG-BAR", "EMERGLOT", exp, "5")
+    with svc.sessions.begin() as s:
+        s.get(Prescription, rx).refills_allowed = 1
+    with pytest.raises(WorkflowError, match="Authorized refills are now available"):
+        svc.prepare_for_review(tech, fid, [])
+    with svc.sessions.begin() as s:
+        s.get(Prescription, rx).refills_allowed = 0
+
+    svc.prepare_for_review(tech, fid, [])
+    with svc.sessions.begin() as s:
+        s.get(Drug, drug).controlled = True
+    with pytest.raises(WorkflowError, match="controlled"):
+        svc.verify(pharm, fid)
+    with svc.sessions.begin() as s:
+        s.get(Drug, drug).controlled = False
+    svc.verify(pharm, fid)
+
+    with svc.sessions.begin() as s:
+        s.get(Drug, drug).controlled = True
+    with pytest.raises(WorkflowError, match="controlled"):
+        svc.sell(tech, fid, True, True, "0", "CASH")
+    with pytest.raises(WorkflowError, match="controlled"):
+        PosService(svc).checkout(actors["CASHIER"],
+            lines=[{"fill_id": fid, "amount": "0.00"}], tenders=[],
+            scanned_bags={}, recipient_name="Synthetic Recipient",
+            identity_method="DATE_OF_BIRTH", signature_method="PAPER",
+            signature_attested=True, idempotency_key="STALE-EMERGENCY",
+            mode="IMMEDIATE")
+    with svc.sessions() as s:
+        assert s.get(Fill, fid).status == "READY"
+        assert s.get(Prescription, rx).refills_used == 0
+    with svc.sessions.begin() as s:
+        s.get(Drug, drug).controlled = False
+    svc.sell(tech, fid, True, True, "0", "CASH")
+    with svc.sessions() as s:
+        assert s.get(Fill, fid).status == "SOLD"
+        assert len(s.scalars(select(Claim)).all()) == 1
