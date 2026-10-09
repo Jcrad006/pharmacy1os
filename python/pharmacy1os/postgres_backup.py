@@ -142,7 +142,7 @@ def create_postgres_backup(database_url: str, vault: Path, backup_root: Path, *,
         # A separate pg_dump connection imports this precise metadata snapshot.
         with psycopg.connect(**opts, autocommit=True) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             revision, docs = _read_pg_metadata(conn)
             with conn.cursor() as cursor:
                 cursor.execute("SELECT pg_export_snapshot()")

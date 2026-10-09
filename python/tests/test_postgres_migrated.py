@@ -196,7 +196,7 @@ def test_pg_exported_snapshot_matches_python_backup_metadata():
     options, _public = _connection_settings(os.environ["PHARMACY1OS_PG_CI_URL"])
     with psycopg.connect(**options, autocommit=True) as primary:
         with primary.cursor() as cursor:
-            cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ ONLY")
+            cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         revision, documents = _read_pg_metadata(primary)
         assert isinstance(revision, str) and revision
         assert isinstance(documents, list)
@@ -208,7 +208,7 @@ def test_pg_exported_snapshot_matches_python_backup_metadata():
         # Use the exported snapshot on a second PG transaction, just as pg_dump does.
         with psycopg.connect(**options, autocommit=True) as follower:
             with follower.cursor() as cursor:
-                cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ ONLY")
+                cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
                 cursor.execute(sql.SQL("SET TRANSACTION SNAPSHOT {}").format(sql.Literal(snapshot)))
             observed_revision, observed_documents = _read_pg_metadata(follower)
             assert observed_revision == revision
