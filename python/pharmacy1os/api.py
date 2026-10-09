@@ -8,7 +8,7 @@ import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from .models import Drug, Prescription, Product, Staff
@@ -73,9 +73,10 @@ from .auth_api import make_auth_router
 
 
 class PatientIn(BaseModel):
-    first: str
-    last: str
-    dob: str | None = None
+    # Accept both existing Python field names and original Fastify camelCase.
+    first: str = Field(validation_alias=AliasChoices("first", "firstName"))
+    last: str = Field(validation_alias=AliasChoices("last", "lastName"))
+    dob: str | None = Field(default=None, validation_alias=AliasChoices("dob", "dateOfBirth"))
     phone: str | None = None
     email: str | None = None
 
@@ -382,9 +383,21 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def audit(actor: DemoActor):
         return svc.audit_log(actor)
 
-    @app.post("/api/patients")
+    @app.post("/api/patients", status_code=201)
     def add_patient(payload: PatientIn, actor: DemoActor):
-        return {"id": svc.add_patient(actor, **payload.model_dump())}
+        directory = PatientDirectory(svc)
+        pid = directory.create(actor, payload.first, payload.last,
+            dob=payload.dob, phone=payload.phone, email=payload.email)
+        # The id preserves existing Python callers; patient mirrors the
+        # original Fastify response envelope without claiming full field parity.
+        with svc.sessions() as s:
+            from .models import Patient
+            created = svc._site(s, Patient, pid, actor)
+            return {"id": pid, "patient": {
+                "id": created.id, "siteId": created.site_id,
+                "firstName": created.first_name, "lastName": created.last_name,
+                "dateOfBirth": created.date_of_birth,
+                "phone": created.phone, "email": created.email}}
 
     @app.post("/api/prescribers")
     def add_prescriber(payload: PrescriberIn, actor: DemoActor):
