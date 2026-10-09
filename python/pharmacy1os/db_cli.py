@@ -20,7 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.schema import ForeignKeyConstraint
 
 from .models import Base
-from . import provider_directory, scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models  # noqa: F401 -- register all mapped extensions
+from . import provider_directory, scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models, inventory_demand_models  # noqa: F401 -- register all mapped extensions
 
 
 class MigrationSafetyError(RuntimeError):
