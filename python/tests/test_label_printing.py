@@ -184,3 +184,22 @@ def test_original_manufacturer_container_status_frozen_into_label_preview(env):
                for item in previews)
     assert all("ORIGINAL_CONTAINER_MANUFACTURER_EXPIRATION_APPLIES" in item
                for item in previews)
+
+
+def test_bottle_snapshot_preserves_distinct_expirations_for_same_fill(env):
+    svc, a, outsider, rx, fill, sources, exp, printer = env
+    late_exp = (date.today() + timedelta(days=320)).isoformat()
+    svc.receive(a["TECHNICIAN"], sources[1][0], sources[1][1],
+        late_exp, "80")
+    svc.scan_source(a["TECHNICIAN"], fill,
+        sources[0][0], sources[0][1], exp, "60")
+    svc.scan_source(a["TECHNICIAN"], fill,
+        sources[1][0], sources[1][1], late_exp, "30")
+    svc.prepare_for_review(a["TECHNICIAN"], fill, [])
+    jobs = printer.list(a["TECHNICIAN"], fill)
+    first = printer.preview(a["TECHNICIAN"], jobs[0]["id"])
+    second = printer.preview(a["TECHNICIAN"], jobs[1]["id"])
+    assert f"MANUFACTURER EXP: {exp}" in first
+    assert f"MANUFACTURER EXP: {late_exp}" not in first
+    assert f"MANUFACTURER EXP: {late_exp}" in second
+    assert f"MANUFACTURER EXP: {exp}" not in second
