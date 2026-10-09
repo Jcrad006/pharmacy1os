@@ -93,7 +93,8 @@ def reconcile_tx(s: Session, actor: Actor, drug_id: str, *,
         InventoryDemand.site_id == actor.site_id,
         InventoryDemand.drug_id == drug_id,
         InventoryDemand.status.in_(("OPEN", "READY")))
-        .order_by(InventoryDemand.needed_by.asc(),
+        .order_by(InventoryDemand.needed_by.is_(None).asc(),
+                  InventoryDemand.needed_by.asc(),
                   InventoryDemand.created_at.asc(), InventoryDemand.id.asc())
         .with_for_update()).all()
     for row in rows:
