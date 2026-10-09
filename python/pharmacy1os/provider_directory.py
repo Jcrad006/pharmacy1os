@@ -112,7 +112,10 @@ class ProviderDirectory:
             raise WorkflowError("Jurisdiction too long")
         with self.pharmacy.sessions.begin() as s:
             self.pharmacy._authorized(s, actor, "correct")
-            self.pharmacy._site(s, Prescriber, prescriber_id, actor)
+            provider = self.pharmacy._site(s, Prescriber, prescriber_id, actor)
+            if (kind == "NPI" and provider.npi
+                    and _normalized_identifier(provider.npi) != normalized):
+                raise WorkflowError("NPI conflicts with the existing provider identity")
             # Original TypeScript registration permits only one NPI. Enforce
             # the same invariant for later directory edits, not just create.
             if kind == "NPI" and s.scalar(select(ProviderIdentifier.id).where(
