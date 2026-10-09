@@ -141,6 +141,8 @@ class EmergencySupplyService:
                 EmergencySupply.prescription_id == rx.id)):
                 raise WorkflowError("An emergency supply is already documented for this prescription")
             from .fill_completion import guard_new_logical_fill
+            from .prescription_transfer import require_no_pending_transfer
+            require_no_pending_transfer(s, rx)
             guard_new_logical_fill(s, rx)
             from .date_rules import require_date_eligible
             require_date_eligible(s, rx)
