@@ -15,6 +15,8 @@ from .models import Drug, Prescription, Product, Staff
 from .service import AccessDenied, Actor, PharmacyService, WorkflowError
 from .documents import DocumentService, decode_base64
 from .inventory_ops import InventoryService
+from .inventory_locations import InventoryLocationService
+from .inventory_locations_api import make_inventory_location_router
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .inventory_planning_api import make_planning_router
@@ -319,6 +321,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
         app.include_router(make_auth_router(authentication, staff_actor))
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
     app.include_router(make_planning_router(InventoryPlanningService(svc), staff_actor))
+    app.include_router(make_inventory_location_router(InventoryLocationService(svc), staff_actor))
     app.include_router(make_fill_completion_router(FillCompletionService(svc), staff_actor))
     app.include_router(make_transfer_router(TransferService(svc), staff_actor))
     app.include_router(make_label_print_router(LabelPrintService(svc), staff_actor))
