@@ -382,7 +382,8 @@ class InventoryLocationService:
             available = []
             for stock, pos, loc in rows:
                 expires = date.fromisoformat(stock.expires)
-                if (expires - date.today()).days < minimum_shelf_life_days:
+                if (expires <= date.today() or
+                        (expires - date.today()).days < minimum_shelf_life_days):
                     continue
                 available.append({
                     "stock_id": stock.id, "location_id": loc.id, "location_code": loc.code,
