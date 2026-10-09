@@ -159,6 +159,11 @@ class SourceIn(BaseModel):
     location_id: str | None = None
 
 
+class PackagingIn(BaseModel):
+    dispensed_in_original_container: bool
+    note: str = Field(min_length=12, max_length=2000)
+
+
 class SourceCorrectionIn(BaseModel):
     reason: str = Field(min_length=12, max_length=2000)
 
@@ -484,6 +489,10 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def scan(fill_id: str, payload: SourceIn, actor: DemoActor):
         svc.scan_source(actor, fill_id, **payload.model_dump())
         return {"ok": True}
+
+    @app.put("/api/fills/{fill_id}/packaging")
+    def set_packaging(fill_id: str, payload: PackagingIn, actor: DemoActor):
+        return svc.set_fill_packaging(actor, fill_id, **payload.model_dump())
 
     @app.get("/api/fills/{fill_id}/product-sources")
     def scanned_sources(fill_id: str, actor: DemoActor):
