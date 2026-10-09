@@ -88,7 +88,7 @@ def test_original_clinical_dur_routes_and_permissions(env):
     assert response.status_code == 201
     issue_id = response.json()["issue"]["id"]
     assert api.get(f"/api/prescriptions/{rx}/clinical", headers=tech).json()["issues"][0]["title"] == payload["title"]
-    resolve = f"/api/prescriptions/dur/issues/{issue_id}/resolve"
+    resolve = f"/api/dur/issues/{issue_id}/resolve"
     assert api.patch(resolve, headers=tech, json={"note": "Technician not authorized"}).status_code == 403
     done = api.patch(resolve, headers=pharm,
         json={"note": "Pharmacist reviewed and documented resolution"})

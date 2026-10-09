@@ -50,3 +50,16 @@ def make_clinical_record_router(directory: ClinicalRecordService,
             actor, prescription_id, payload.note)}
 
     return router
+
+
+def make_dur_resolution_router(directory: ClinicalRecordService,
+                               actor_dependency: Callable) -> APIRouter:
+    """Preserve the original Fastify /api/dur/issues/:id/resolve path."""
+    router = APIRouter(prefix="/api/dur", tags=["synthetic-clinical"])
+
+    @router.patch("/issues/{issue_id}/resolve")
+    def resolve_issue(issue_id: str, payload: DurResolveIn,
+                      actor: Actor = Depends(actor_dependency)):
+        return {"issue": directory.resolve_issue(actor, issue_id, payload.note)}
+
+    return router
