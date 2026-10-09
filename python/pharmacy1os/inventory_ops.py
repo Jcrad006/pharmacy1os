@@ -52,6 +52,18 @@ def record_movement(s, actor: Actor, stock: Stock, kind: str,
             after_snapshot=json.dumps(snapshot(stock), sort_keys=True), reason=reason)
     s.add(movement)
     s.flush()
+    # Every stock change invalidates prior demand-availability snapshots. Update
+    # existing open demand in the same transaction without inventing stock holds.
+    from .inventory_demand_models import InventoryDemand
+    from .models import Product
+    drug_id = s.scalar(select(Product.drug_id).where(Product.id == stock.product_id))
+    if drug_id is not None and s.scalar(select(InventoryDemand.id).where(
+        InventoryDemand.site_id == actor.site_id,
+        InventoryDemand.drug_id == drug_id,
+        InventoryDemand.status.in_(("OPEN", "READY"))).limit(1)) is not None:
+        from .inventory_demands import reconcile_tx
+        reconcile_tx(s, actor, drug_id,
+                     reason=f"Stock movement {kind} changed available inventory")
     return movement.id
 
 
