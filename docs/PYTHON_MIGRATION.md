@@ -134,3 +134,10 @@ Added `pharmacy1os/date_rules.py` and a separate audited, site-scoped date-polic
 Additive Alembic revision `84a672dc47f0` creates only Python-owned `py_*` tables. Data in the original TypeScript/Prisma application is untouched. Local pure-rule validation passed; full GitHub Python/PostgreSQL regression checks are required. See `PYTHON_DATE_RULES.md`.
 
 **Not full parity or safe for clinical production**: native desktop UI has not passed hands-on GUI validation, clocks/timezones need pharmacy-local policy design, old data must be migrated/validated, and no legal/payer or controlled-substance refill timing is inferred. Production identity, dispensing concurrency, hardware, eRx, payer communications, and regulated backup/recovery remain unfinished.
+
+
+## Python offline synthetic backup and vault integrity (2026-10-08)
+
+Implemented a **new, offline-only** Python CLI for isolated SQLite test databases and immutable prescription document sources. It captures a SQLite backup-API snapshot, verifies and copies raw stored vault payloads, produces and HMAC-signs a manifest, and only publishes the stage after self-verification. It refuses corrupted/missing/orphaned documents, unexpected links, and ambiguous/invalid source metadata; encrypted sources remain encrypted in the backup. The CLI requires a signing secret and explicit operator confirmation that application writers are stopped.
+
+**This does not implement production recovery**, online/write-coordinated backups, PostgreSQL `pg_dump`, offsite key custody, a restore operation or a live HTTP backup route. Never point it at real pharmacy data. See `docs/PYTHON_BACKUP_INTEGRITY.md` for operator usage, data boundaries, and limitations.
