@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -421,6 +421,8 @@ class PharmacyService:
                 s.flush()
                 from .billing import record_paid
                 record_paid(s, actor, claim, sources)
+            from .label_printing import enqueue_label_jobs
+            enqueue_label_jobs(s, actor, f)
             f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
             self._audit(s, actor, "FILL_PREPARED", f.id,
                         {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX"})
@@ -553,6 +555,8 @@ class PharmacyService:
             void_unissued_obligation(s, actor, f, reason)
             was_emergency = void_unsold_emergency(s, actor, f, reason)
             linked_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id))
+            from .label_printing import void_label_jobs
+            void_label_jobs(s, actor, f.id, reason)
             f.status = "RETURNED"; rx.status = "SOLD" if (linked_completion or was_emergency) else "DUR_REVIEW"
             self._audit(s, actor, "FILL_RETURNED_TO_STOCK", f.id, {"reason": reason})
 
