@@ -157,30 +157,100 @@ class PharmacyService:
             return p.id
 
     def add_drug(self, actor: Actor, name: str, strength: str, dosage_form: str,
-                 controlled: bool = False) -> str:
+                 controlled: bool = False, *, brand_name: str | None = None,
+                 route: str | None = None, controlled_substance_schedule: str | None = None,
+                 nc_narrow_therapeutic_index: bool = False, is_biological: bool = False,
+                 has_fda_interchangeable_biologic_alternative: bool = False,
+                 requires_cold_chain: bool = False, active: bool = True) -> str:
+        def optional(value, field, limit):
+            if value is None:
+                return None
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise WorkflowError(f"Invalid {field}")
+            return value.strip() or None
+        n = optional(name, "drug name", 200)
+        st = optional(strength, "strength", 70)
+        form = optional(dosage_form, "dosage form", 70)
+        if not n or not st or not form:
+            raise WorkflowError("Drug name, strength and form required")
+        schedule = controlled_substance_schedule or ("UNCLASSIFIED" if controlled else "NONE")
+        if schedule not in {"NONE", "II", "III", "IV", "V", "UNCLASSIFIED"}:
+            raise WorkflowError("Unsupported controlled substance schedule")
+        if controlled and schedule == "NONE":
+            raise WorkflowError("Controlled drug cannot have schedule NONE")
+        if not all(isinstance(v, bool) for v in (
+                controlled, nc_narrow_therapeutic_index, is_biological,
+                has_fda_interchangeable_biologic_alternative, requires_cold_chain, active)):
+            raise WorkflowError("Product compliance flags must be boolean")
+        if has_fda_interchangeable_biologic_alternative and not is_biological:
+            raise WorkflowError("Only biologics may declare an interchangeable alternative")
         with self.sessions.begin() as s:
             self._authorized(s, actor, "correct")
-            if not all((name.strip(), strength.strip(), dosage_form.strip())):
-                raise WorkflowError("Drug name, strength, and form required")
-            d = Drug(name=name.strip(), strength=strength.strip(), dosage_form=dosage_form.strip(),
-                     controlled=controlled)
-            s.add(d); s.flush()
-            self._audit(s, actor, "DRUG_CREATED", d.id, {"controlled": controlled})
-            return d.id
+            drug = Drug(name=n, strength=st, dosage_form=form,
+                controlled=controlled or schedule != "NONE",
+                brand_name=optional(brand_name, "brand name", 180),
+                route=optional(route, "route", 80),
+                controlled_substance_schedule=schedule,
+                nc_narrow_therapeutic_index=nc_narrow_therapeutic_index,
+                is_biological=is_biological,
+                has_fda_interchangeable_biologic_alternative=has_fda_interchangeable_biologic_alternative,
+                requires_cold_chain=requires_cold_chain, active=active)
+            s.add(drug); s.flush()
+            self._audit(s, actor, "DRUG_CREATED", drug.id, {
+                "schedule": schedule, "active": active, "biological": is_biological,
+                "narrow_therapeutic_index": nc_narrow_therapeutic_index})
+            return drug.id
 
     def add_product(self, actor: Actor, drug_id: str, ndc: str, manufacturer: str,
-                    description: str, price: str = "0") -> str:
+                    description: str, price: str = "0", *,
+                    package_description: str | None = None, package_type: str | None = None,
+                    units_per_package: str | None = None, package_price: str | None = None,
+                    therapeutic_equivalence_code: str | None = None,
+                    is_interchangeable_biological: bool = False,
+                    active: bool = True) -> str:
+        if not isinstance(ndc, str) or not ndc.strip() or len(ndc.strip()) > 30:
+            raise WorkflowError("Valid product NDC required")
+        if not isinstance(manufacturer, str) or not manufacturer.strip() or len(manufacturer.strip()) > 120:
+            raise WorkflowError("Valid manufacturer required")
+        if not isinstance(description, str) or not description.strip() or len(description.strip()) > 200:
+            raise WorkflowError("Valid product descriptor required")
+        try:
+            unit_cost = Decimal(str(price))
+            package_cost = Decimal(str(package_price)) if package_price is not None else None
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise WorkflowError("Invalid package/unit price") from exc
+        for amount in (unit_cost, package_cost):
+            if amount is not None and (not amount.is_finite() or amount < 0
+                                       or amount.as_tuple().exponent < -4):
+                raise WorkflowError("Price must be nonnegative with at most four decimals")
+        units = positive(units_per_package) if units_per_package is not None else None
+        if not isinstance(active, bool) or not isinstance(is_interchangeable_biological, bool):
+            raise WorkflowError("Product status flags must be boolean")
+        def optional(value, name, limit):
+            if value is None:
+                return None
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise WorkflowError(f"Invalid {name}")
+            return value.strip() or None
         with self.sessions.begin() as s:
             self._authorized(s, actor, "correct")
-            if not s.get(Drug, drug_id):
+            drug = s.get(Drug, drug_id)
+            if drug is None:
                 raise WorkflowError("Drug not found")
-            if not ndc or not manufacturer or not description:
-                raise WorkflowError("Product NDC, manufacturer and description required")
-            p = Product(drug_id=drug_id, ndc=ndc, manufacturer=manufacturer,
-                        description=description, unit_price=Decimal(price))
-            s.add(p); s.flush()
-            self._audit(s, actor, "PRODUCT_CREATED", p.id, {"ndc": ndc})
-            return p.id
+            if is_interchangeable_biological and not drug.is_biological:
+                raise WorkflowError("Non-biologic product cannot be interchangeable biological")
+            product = Product(drug_id=drug_id, ndc=ndc.strip(),
+                manufacturer=manufacturer.strip(), description=description.strip(),
+                unit_price=unit_cost, package_description=optional(package_description, "package description", 240),
+                package_type=optional(package_type, "package type", 80),
+                units_per_package=units, package_price=package_cost,
+                therapeutic_equivalence_code=optional(therapeutic_equivalence_code, "therapeutic equivalence", 20),
+                is_interchangeable_biological=is_interchangeable_biological, active=active)
+            s.add(product); s.flush()
+            self._audit(s, actor, "PRODUCT_CREATED", product.id, {
+                "ndc": ndc.strip(), "units_per_package": str(units) if units else None,
+                "package_price": str(package_cost) if package_cost is not None else None})
+            return product.id
 
     def register_barcode(self, actor: Actor, product_id: str, barcode: str) -> str:
         with self.sessions.begin() as s:
@@ -229,23 +299,79 @@ class PharmacyService:
 
     def add_prescription(self, actor: Actor, patient_id: str, prescriber_id: str, drug_id: str,
                          rx_number: str, sig: str, quantity: str, refills: int = 0,
-                         expiration_date: str | None = None, do_not_fill_before: str | None = None) -> str:
+                         expiration_date: str | None = None, do_not_fill_before: str | None = None,
+                         *, source_type: str = "MANUAL", written_date: str | None = None,
+                         electronic_message_id: str | None = None,
+                         electronic_raw_message: str | None = None,
+                         prescribed_product_id: str | None = None,
+                         product_selection_directive: str = "UNSPECIFIED") -> str:
         qty = positive(quantity)
+        if source_type not in {"MANUAL", "PAPER", "FAX", "ELECTRONIC", "VERBAL", "TRANSFER"}:
+            raise WorkflowError("Unsupported prescription source type")
+        if product_selection_directive not in {
+                "UNSPECIFIED", "SELECTION_PERMITTED", "DISPENSE_AS_WRITTEN"}:
+            raise WorkflowError("Invalid product selection directive")
+        if product_selection_directive == "DISPENSE_AS_WRITTEN" and not prescribed_product_id:
+            raise WorkflowError("Dispense-as-written requires a prescribed NDC")
+        if isinstance(refills, bool) or not isinstance(refills, int) or not 0 <= refills <= 999:
+            raise WorkflowError("Refills must be an integer from 0 to 999")
+        if not isinstance(rx_number, str) or not 1 <= len(rx_number.strip()) <= 30:
+            raise WorkflowError("Rx number is required (maximum 30 characters)")
+        if not isinstance(sig, str) or not 1 <= len(sig.strip()) <= 4000:
+            raise WorkflowError("SIG must contain 1 to 4000 characters")
+        for label, value in (("Written date", written_date), ("Expiration", expiration_date),
+                             ("Do not fill before", do_not_fill_before)):
+            if value is not None:
+                if not isinstance(value, str) or len(value) != 10:
+                    raise WorkflowError(f"{label} must be YYYY-MM-DD")
+                try:
+                    parsed = date.fromisoformat(value)
+                except ValueError as exc:
+                    raise WorkflowError(f"Invalid {label.lower()}") from exc
+                if parsed.isoformat() != value:
+                    raise WorkflowError(f"{label} must be YYYY-MM-DD")
+        if written_date and expiration_date and expiration_date < written_date:
+            raise WorkflowError("Expiration date precedes the written date")
+        if written_date and written_date > date.today().isoformat():
+            raise WorkflowError("Future written date is not valid")
+        if source_type != "ELECTRONIC" and (electronic_message_id or electronic_raw_message):
+            raise WorkflowError("Electronic message metadata requires ELECTRONIC source")
+        if electronic_message_id is not None and (
+                not isinstance(electronic_message_id, str)
+                or not 1 <= len(electronic_message_id.strip()) <= 160):
+            raise WorkflowError("Invalid electronic message identifier")
+        if electronic_raw_message is not None and (
+                not isinstance(electronic_raw_message, str)
+                or not 1 <= len(electronic_raw_message) <= 200000):
+            raise WorkflowError("Invalid synthetic electronic source payload")
         with self.sessions.begin() as s:
             self._authorized(s, actor, "entry")
             self._site(s, Patient, patient_id, actor)
             self._site(s, Prescriber, prescriber_id, actor)
-            d = s.get(Drug, drug_id)
-            if not d or not sig.strip() or not rx_number.strip() or refills < 0:
-                raise WorkflowError("Drug, Rx number, SIG and valid refills required")
-            if d.controlled:
-                raise WorkflowError("Controlled substances are blocked until independently validated")
+            drug = s.get(Drug, drug_id)
+            if drug is None or not drug.active:
+                raise WorkflowError("Selected drug does not exist or is inactive")
+            if drug.controlled or drug.controlled_substance_schedule != "NONE":
+                raise WorkflowError("Controlled/unclassified medication needs a validated workflow")
+            product = s.get(Product, prescribed_product_id) if prescribed_product_id else None
+            if prescribed_product_id and (
+                    product is None or not product.active or product.drug_id != drug_id):
+                raise WorkflowError("Prescribed NDC must be active under the selected drug")
             rx = Prescription(site_id=actor.site_id, patient_id=patient_id,
-                prescriber_id=prescriber_id, drug_id=drug_id, rx_number=rx_number,
-                sig=sig, quantity=qty, refills_allowed=refills, status="DATA_ENTRY",
-                expiration_date=expiration_date, do_not_fill_before=do_not_fill_before)
+                prescriber_id=prescriber_id, drug_id=drug_id, rx_number=rx_number.strip(),
+                sig=sig.strip(), quantity=qty, refills_allowed=refills, status="DATA_ENTRY",
+                expiration_date=expiration_date, do_not_fill_before=do_not_fill_before,
+                source_type=source_type, written_date=written_date,
+                electronic_message_id=electronic_message_id.strip() if electronic_message_id else None,
+                electronic_raw_message=electronic_raw_message,
+                prescribed_product_id=product.id if product else None,
+                product_selection_directive=product_selection_directive)
             s.add(rx); s.flush()
-            self._audit(s, actor, "RX_CREATED", rx.id, {"rx_number": rx_number})
+            # Never include raw electronic payload in the audit event.
+            self._audit(s, actor, "RX_CREATED", rx.id, {
+                "rx_number": rx.rx_number, "source_type": source_type,
+                "prescribed_product_id": rx.prescribed_product_id,
+                "product_selection_directive": product_selection_directive})
             return rx.id
 
     def advance_to_dur(self, actor: Actor, rx_id: str) -> None:
@@ -284,6 +410,8 @@ class PharmacyService:
         """Start a fill inside the caller's existing transaction (including scheduled starts)."""
         if rx.status != "DUR_REVIEW":
             raise WorkflowError("Prescription must pass Data Entry/DUR stage")
+        from .product_selection import require_medication_eligible
+        require_medication_eligible(s, rx)
         today = (effective_date or date.today()).isoformat()
         if rx.expiration_date and rx.expiration_date < today:
             raise WorkflowError("Prescription expired")
@@ -360,8 +488,8 @@ class PharmacyService:
             if not b:
                 raise WorkflowError("Unregistered barcode")
             product = s.get(Product, b.product_id)
-            if product is None or product.drug_id != rx.drug_id:
-                raise WorkflowError("Scanned NDC does not belong to Data Entry drug")
+            from .product_selection import require_product_eligible
+            require_product_eligible(s, rx, product)
             stock = s.scalar(select(Stock).where(Stock.site_id == actor.site_id,
                 Stock.product_id == product.id, Stock.lot == lot, Stock.expires == expires).with_for_update())
             if not stock or stock.expires <= date.today().isoformat():
@@ -391,6 +519,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PRODUCT_FILL":
                 raise WorkflowError("Wrong fill state")
+            from .product_selection import require_fill_sources_eligible
+            require_fill_sources_eligible(s, rx, f)
             from .emergency_supply import require_emergency_dispense_eligible
             require_emergency_dispense_eligible(s, rx, f)
             sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
@@ -440,6 +570,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PHARMACIST_REVIEW":
                 raise WorkflowError("Fill not awaiting pharmacist review")
+            from .product_selection import require_fill_sources_eligible
+            require_fill_sources_eligible(s, rx, f)
             from .emergency_supply import require_emergency_dispense_eligible
             require_emergency_dispense_eligible(s, rx, f)
             from .fill_completion import require_fill_date_eligible
@@ -492,6 +624,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "READY" or not identity_verified or not signed:
                 raise WorkflowError("Ready fill, identity verification and signature required")
+            from .product_selection import require_fill_sources_eligible
+            require_fill_sources_eligible(s, rx, f)
             from .emergency_supply import require_emergency_dispense_eligible
             require_emergency_dispense_eligible(s, rx, f)
             from .fill_completion import require_fill_date_eligible
