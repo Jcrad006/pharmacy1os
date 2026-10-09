@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .documents import DocumentService
 from .inventory_ops import InventoryService
+from .inventory_locations import InventoryLocationService
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
@@ -73,6 +74,7 @@ def main() -> None:
     auth_service = AuthService(service)
     document_service = DocumentService.from_demo_env(service)
     inventory_service = InventoryService(service)
+    inventory_locations = InventoryLocationService(service)
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
@@ -289,6 +291,12 @@ def main() -> None:
                 self.action("Resolve Hold", self.resolve_stock_hold)
                 self.action("Adjust Stock", self.adjust_stock)
                 self.action("Stock Ledger", self.stock_ledger)
+                self.action("Create Physical Location", self.create_inventory_location)
+                self.action("View Locations", self.show_inventory_locations)
+                self.action("Reconcile Lot To Location", self.reconcile_inventory_location)
+                self.action("View Lot Positions", self.show_inventory_positions)
+                self.action("Move Available Stock Between Locations", self.move_inventory_location)
+                self.action("FEFO Advisory", self.show_fefo_advisory)
             elif page == 9:
                 self.action("Create Synthetic Payer", self.create_payer)
                 self.action("View Payers", self.show_payers)
@@ -847,7 +855,22 @@ def main() -> None:
             lot = self.ask("Product Fill", "Lot number")
             exp = self.ask("Product Fill", "Expiration YYYY-MM-DD")
             qty = self.ask("Product Fill", "Quantity from this physical bottle")
-            service.scan_source(self.actor, fid, barcode, lot, exp, qty)
+            location_id = None
+            with service.sessions() as session:
+                from .models import Barcode
+                row = session.scalar(select(Barcode).where(Barcode.value == barcode))
+                stock = session.scalar(select(Stock).where(
+                    Stock.site_id == self.actor.site_id,
+                    Stock.product_id == row.product_id if row else "",
+                    Stock.lot == lot, Stock.expires == exp))
+                if stock is not None and stock.location_tracking_enabled:
+                    available = inventory_locations.positions(self.actor, stock.id)
+                    chosen = self.choose_item("Physical product fill", "Confirm scanned stock location",
+                        [p for p in available if Decimal(p["available"]) > 0],
+                        lambda p: f"{p['code']} | available {p['available']}")
+                    location_id = chosen["location_id"]
+            service.scan_source(self.actor, fid, barcode, lot, exp, qty,
+                                location_id=location_id)
 
         def prepare(self):
             fid = self.fill_for_rx(self.selected_id())
@@ -1100,6 +1123,75 @@ def main() -> None:
             inventory_service.adjust(self.actor, self.selected_id(),
                     self.ask("Stock adjustment", "Signed change (+/- qty)"),
                     self.ask("Stock adjustment", "Reason"))
+
+        def choose_inventory_location(self, title, *, nonquarantine=True):
+            locations = inventory_locations.locations(self.actor)
+            available = [item for item in locations if item["active"]
+                         and (not nonquarantine or not item["is_quarantine"])]
+            return self.choose_item(title, "Choose physical stock location", available,
+                lambda row: f"{row['code']} | {row['name']} [{row['type']}]")
+
+        def create_inventory_location(self):
+            name = self.ask("New inventory location", "Location name")
+            code = self.ask("New inventory location", "Location code")
+            category = self.choose_item("Location type", "Choose physical type",
+                ["SHELF", "BIN", "RECEIVING", "QUARANTINE", "REFRIGERATOR",
+                 "FREEZER", "SAFE", "RETURN_TO_VENDOR", "WILL_CALL", "OTHER"], lambda x: x)
+            is_quarantine = category == "QUARANTINE"
+            receiving = not is_quarantine and (
+                QMessageBox.question(self, "Default receiving",
+                    "Make this the site's default RECEIVING location?")
+                == QMessageBox.StandardButton.Yes)
+            dispensing = not is_quarantine and (
+                QMessageBox.question(self, "Default dispensing",
+                    "Make this the site's default DISPENSING location?")
+                == QMessageBox.StandardButton.Yes)
+            barcode = self.ask("Location", "Location barcode (optional)", "")
+            inventory_locations.create(self.actor, code, name, category,
+                barcode=barcode or None, is_default_receiving=receiving,
+                is_default_dispensing=dispensing, is_quarantine=is_quarantine)
+
+        def show_inventory_locations(self):
+            QMessageBox.information(self, "Synthetic physical locations",
+                json.dumps(inventory_locations.locations(self.actor), indent=2)[:12000])
+
+        def reconcile_inventory_location(self):
+            stock_id = self.choose_stock()
+            location = self.choose_inventory_location("Initial physical stock location")
+            note = self.ask("Physical reconciliation",
+                "Document confirmed on-hand count and initial physical location")
+            inventory_locations.activate_stock(self.actor, stock_id, location["id"], note)
+            QMessageBox.information(self, "Location tracking activated",
+                "Future stock movements are now reconciled against this physical lot "
+                "position. This is a synthetic verified baseline, not a historical "
+                "physical location reconstruction.")
+
+        def show_inventory_positions(self):
+            stock_id = self.choose_stock()
+            data = inventory_locations.positions(self.actor, stock_id)
+            QMessageBox.information(self, "Physical stock positions",
+                json.dumps(data, indent=2)[:12000])
+
+        def move_inventory_location(self):
+            stock_id = self.choose_stock()
+            original = self.choose_inventory_location("Source location")
+            destination = self.choose_inventory_location("Destination location")
+            quantity = self.ask("Physical inventory move", "Available quantity to relocate")
+            reason = self.ask("Physical inventory move", "Reason for physical custody change")
+            inventory_locations.move(self.actor, stock_id, original["id"], destination["id"],
+                                     quantity, reason)
+
+        def show_fefo_advisory(self):
+            with service.sessions() as session:
+                records = session.scalars(select(Product).order_by(Product.ndc)).all()
+                items = [(p.id, p.ndc, p.description) for p in records]
+            item = self.choose_item("FEFO advisory", "Choose NDC", items,
+                lambda row: f"{row[1]} – {row[2]}")
+            days = int(self.ask("FEFO advisory", "Minimum remaining shelf life, days", "0"))
+            rows = inventory_locations.fefo_recommendations(self.actor, item[0],
+                minimum_shelf_life_days=days)
+            QMessageBox.information(self, "Read-only FEFO suggestions",
+                json.dumps(rows, indent=2)[:12000] + "\n\nAdvisory only — not an allocated pick.")
 
         def stock_ledger(self):
             movements = inventory_service.ledger(self.actor, self.selected_id())
