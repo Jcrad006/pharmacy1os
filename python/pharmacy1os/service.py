@@ -514,7 +514,8 @@ class PharmacyService:
             self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
                         {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
 
-    def prepare_for_review(self, actor: Actor, fill_id: str, payer_names: list[str] | None = None) -> list[str]:
+    def prepare_for_review(self, actor: Actor, fill_id: str, payer_names: list[str] | None = None,
+                           *, coverage_ids: list[str] | None = None) -> list[str]:
         """Sandbox claims and separate bottle-label records; no real payer transport."""
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
@@ -532,9 +533,17 @@ class PharmacyService:
             if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
                 raise WorkflowError("Physical source quantities must match dispensed quantity")
             payers = payer_names or []
+            selected_coverages = None
+            if coverage_ids is not None:
+                if payers:
+                    raise WorkflowError("Do not mix legacy payer names and patient coverage IDs")
+                from .insurance import require_coverages
+                selected_coverages = require_coverages(s, actor, rx, coverage_ids)
+                payers = [payer.name for _, payer in selected_coverages]
             from .emergency_supply import require_emergency_claim_separation
             require_emergency_claim_separation(s, f.id, actor.site_id, payers)
-            if len(payers) > 4 or any(not name.strip() for name in payers):
+            if (len(payers) > 4 or
+                    any(not isinstance(name, str) or not name.strip() for name in payers)):
                 raise WorkflowError("Maximum four named COB payers")
             from .fill_completion import FillCompletion
             is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
@@ -559,11 +568,15 @@ class PharmacyService:
                 s.flush()
                 from .billing import record_paid
                 record_paid(s, actor, claim, sources)
+                if selected_coverages is not None:
+                    from .insurance import snapshot_paid_coverage
+                    snapshot_paid_coverage(s, actor, f, claim, selected_coverages[seq - 1])
             from .label_printing import enqueue_label_jobs
             enqueue_label_jobs(s, actor, f)
             f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
             self._audit(s, actor, "FILL_PREPARED", f.id,
-                        {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX"})
+                        {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX",
+                         "coverage_linked": selected_coverages is not None})
             return labels
 
     def verify(self, actor: Actor, fill_id: str) -> None:
