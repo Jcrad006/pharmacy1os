@@ -112,6 +112,8 @@ class LifecycleService:
                 void_unissued_obligation(s, actor, f, reason)
                 from .label_printing import void_label_jobs
                 void_label_jobs(s, actor, f.id, reason)
+                from .inventory_demands import cancel_fill_demand_tx
+                cancel_fill_demand_tx(s, actor, f, rx, reason)
                 f.status = "CANCELLED"
             from .prescription_transfer import require_no_pending_transfer
             require_no_pending_transfer(s, rx)
