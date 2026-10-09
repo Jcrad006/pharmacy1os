@@ -257,6 +257,7 @@ def main() -> None:
                 self.action("Complete Emergency Follow-up", self.emergency_followup)
                 self.action("Scan Product Source", self.scan)
                 self.action("Remove Incorrect Scanned Source", self.remove_scanned_source)
+                self.action("Set Original Container Packaging", self.set_fill_packaging)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
                 self.action("Prepare With Patient Coverages", self.prepare_with_coverages)
                 self.action("Preview / Print Synthetic Bottle", self.print_test_label)
@@ -898,6 +899,18 @@ def main() -> None:
                     location_id = chosen["location_id"]
             service.scan_source(self.actor, fid, barcode, lot, exp, qty,
                                 location_id=location_id)
+
+        def set_fill_packaging(self):
+            fill_id = self.fill_for_rx(self.selected_id())
+            in_original = QMessageBox.question(self,
+                "Product packaging", "Will the product be dispensed in its original manufacturer container?"
+            ) == QMessageBox.StandardButton.Yes
+            reason = self.ask("Packaging attestation",
+                "Document original-container or repackaging decision")
+            details = service.set_fill_packaging(self.actor, fill_id,
+                dispensed_in_original_container=in_original, note=reason)
+            QMessageBox.information(self, "Packaging choice recorded",
+                json.dumps(details, indent=2) + "\n\nPatient discard metadata is calculated at pharmacist verification.")
 
         def remove_scanned_source(self):
             fill_id = self.fill_for_rx(self.selected_id())
