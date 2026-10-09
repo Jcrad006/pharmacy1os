@@ -76,7 +76,8 @@ def test_document_corruption_bad_key_and_site_rejection(fixtures):
     with pytest.raises(DocumentError):
         DocumentService(svc, tmp / "vault", encryption_key=b"Y" * 32).read_source(actors["TECHNICIAN"], doc["id"])
     path = docsvc._path(actors["TECHNICIAN"].site_id, doc["id"])
-    path.write_bytes(path.read_bytes()[:-1] + b"!")
+    original_bytes = path.read_bytes()
+    path.write_bytes(original_bytes[:-1] + bytes([original_bytes[-1] ^ 0x01]))
     with pytest.raises(DocumentError):
         docsvc.read_source(actors["TECHNICIAN"], doc["id"])
     assert len(docsvc.verify_integrity(actors["TECHNICIAN"])) == 1
