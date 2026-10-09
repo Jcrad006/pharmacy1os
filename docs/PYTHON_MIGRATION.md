@@ -172,3 +172,8 @@ Added synthetic full-intended-vs-physical fill obligations, technician Product F
 ## Eighteenth Python increment — pharmacist emergency supply and follow-up (2026-10-08)
 
 Added synthetic emergency-supply authorization for pharmacist-only, prior SOLD, exhausted-refill, noncontrolled prescriptions; dated follow-ups; no-extra-refill and no-claims rules; site-scoped API and Qt controls; audit and clinical exceptions, including overdue alerts and safe unsold return-to-stock. Additive Python-only migration c4e6bdf912a0 and test coverage accompany the increment. Production legality, real payer claims, clinical validation and full feature parity remain incomplete. See PYTHON_EMERGENCY_SUPPLY.md.
+
+
+## Nineteenth Python increment — transfers, native synthetic labels, concurrency (2026-10-08)
+
+Added request/attest/withdraw transfer-out handoff with no external transmission, pharmacist final attestation, site checks and pending-transfer guards. Added immutable bottle-specific synthetic print-job snapshots (one per NDC/LOT physical bottle) with SHA-256, watermark, void-on-cancellation/return, audited reprints and opt-in PySide6 native OS printing. Added PostgreSQL row locks for direct scan/reserve, prepare, verify, sell and RTS paths plus real concurrency integration tests. New additive migrations f1e28b7a45ce and a8f167bf70d2 follow c4e6bdf912a0. See [PYTHON_TRANSFER_PRINT_CONCURRENCY.md](PYTHON_TRANSFER_PRINT_CONCURRENCY.md). **Do not mistake synthetic transfer attestation for live legal transfer, local print attempt for verified label delivery, or these row locks for end-to-end production concurrency validation.**
