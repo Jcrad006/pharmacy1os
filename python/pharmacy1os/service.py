@@ -477,7 +477,7 @@ class PharmacyService:
             return self._start_fill_tx(s, actor, rx, dispense_quantity)
 
     def scan_source(self, actor: Actor, fill_id: str, barcode: str, lot: str,
-                    expires: str, quantity: str) -> None:
+                    expires: str, quantity: str, location_id: str | None = None) -> None:
         qty = positive(quantity)
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
