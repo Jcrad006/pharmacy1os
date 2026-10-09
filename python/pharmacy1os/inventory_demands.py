@@ -22,6 +22,7 @@ from .models import Drug, Fill, Product, Prescription, RecallCase, Site, Stock, 
 from .service import Actor, PharmacyService, WorkflowError, positive
 
 ZERO = Decimal("0")
+MAX_QTY = Decimal("999999999.999")
 SOURCES = {"FILL", "COMPLETION", "REORDER", "MANUAL"}
 OPEN = {"OPEN", "READY"}
 
@@ -136,6 +137,8 @@ def record_fill_demand_tx(s: Session, actor: Actor, fill: Fill, rx: Prescription
     """Automatically create a new synthetic fill demand exactly once."""
     if source not in {"FILL", "COMPLETION"}:
         raise WorkflowError("Invalid fill inventory demand source")
+    if fill.quantity <= ZERO or fill.quantity > MAX_QTY:
+        raise WorkflowError("Physical demand exceeds the supported inventory quantity range")
     previous = s.scalar(select(InventoryDemand).where(InventoryDemand.fill_id == fill.id))
     if previous is not None:
         raise WorkflowError("Inventory demand is already linked to this fill")
@@ -274,6 +277,8 @@ class InventoryDemandService:
         if source not in {"MANUAL", "REORDER"}:
             raise WorkflowError("Only manual or reorder requests may be created here")
         required = positive(quantity)
+        if required > MAX_QTY:
+            raise WorkflowError("Manual demand exceeds the supported inventory quantity range")
         written_note = _note(note, minimum=12)
         day = _day(needed_by)
         with self.service.sessions.begin() as s:
