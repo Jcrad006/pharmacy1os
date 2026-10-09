@@ -157,3 +157,8 @@ Introduced `AuthService`, SQLAlchemy `py_auth_credentials` and `py_auth_sessions
 The native PySide6 workstation now optionally prompts for a synthetic username/password with `PHARMACY1OS_NATIVE_AUTH_MODE=session`, hides its old role selector and uses a checked session actor. Existing `create_app(... synthetic_enabled=True)` tests still use explicitly labeled demo identity mode; the default API remains disabled without synthetic opt-in. API operator entrypoint opts into session mode through `PHARMACY1OS_API_AUTH_MODE=session`.
 
 **Not certified production authentication.** No MFA, TLS termination, hardening under shared networks, secure staff onboarding, password recovery, trusted external identity provider or HIPAA security risk assessment. Do not use with real patient records. See `docs/PYTHON_SYNTHETIC_AUTH.md`.
+
+
+## Sixteenth Python increment — advisory replenishment policies (2026-10-08)
+
+Added site-scoped audited reorder thresholds, exact Decimal snapshot recommendations accounting for usable stock, partial/open POs and in-transit stock, plus recall/controlled-product review blocks. Synthetic FastAPI and native PySide6 Supply Chain controls are connected. This adds no automatic wholesaler purchasing and remains excluded from production. The new additive Alembic revision `e2a9401f67c3` touches only `py_reorder_policies`. See [PYTHON_REPLENISHMENT.md](PYTHON_REPLENISHMENT.md) and synthetic regression tests; feature parity and release validation remain outstanding.
