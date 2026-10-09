@@ -310,3 +310,75 @@ def test_postgres_same_fill_double_scan_serializes_on_fill_row():
             assert len(s.scalars(select(FillSource).where(FillSource.fill_id == fill)).all()) == 1
     finally:
         svc.engine.dispose()
+
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_simultaneous_physical_bin_pick_never_double_reserves():
+    """Two workstation sessions racing for one bin must not reserve past on-hand."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+
+    from pharmacy1os.inventory_locations import InventoryLocationService
+    from pharmacy1os.inventory_allocations import InventoryAllocationService
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Real PostgreSQL + psycopg required")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine), "Only the freshly migrated synthetic PG schema is valid"
+        actors = svc.bootstrap_demo()["actors"]
+        tech, pharm = actors["TECHNICIAN"], actors["PHARMACIST"]
+        patient = svc.add_patient(tech, "Concurrent", "Synthetic")
+        doctor = svc.add_prescriber(tech, "Concurrent", "Synthetic", "MD")
+        drug = svc.add_drug(pharm, "CONCURRENT-SYN-DRUG", "10mg", "tablet")
+        product = svc.add_product(pharm, drug, "98980-0000-01", "Fake Demo", "Synthetic unit")
+        svc.register_barcode(tech, product, "PG-LOCATION-CONCURRENCY")
+        expiry = (date.today() + timedelta(days=200)).isoformat()
+        stock_id = svc.receive(tech, "PG-LOCATION-CONCURRENCY", "PG-CONCURRENT-LOT",
+                               expiry, "40")
+        locsvc = InventoryLocationService(svc)
+        location_id = locsvc.create(pharm, "CONCURRENT-A", "Synthetic concurrent bin",
+                                    "BIN", is_default_receiving=True,
+                                    is_default_dispensing=True)
+        locsvc.activate_stock(pharm, stock_id, location_id,
+            "A pharmacist counted forty demonstration units in this synthetic test bin.")
+        fill_ids = []
+        for index in (1, 2):
+            rx = svc.add_prescription(tech, patient, doctor, drug,
+                                     f"PG-LOCATION-CONCURRENT-{index}", "one daily", "30")
+            svc.advance_to_dur(tech, rx)
+            fill_ids.append(svc.start_fill(tech, rx))
+        go = Barrier(2)
+
+        def attempt(fill_id):
+            go.wait(timeout=15)
+            try:
+                svc.scan_source(tech, fill_id, "PG-LOCATION-CONCURRENCY",
+                                "PG-CONCURRENT-LOT", expiry, "30",
+                                location_id=location_id)
+                return "OK"
+            except WorkflowError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(attempt, fill_ids))
+        assert outcomes.count("OK") == 1, outcomes
+        assert len([o for o in outcomes if "Insufficient available stock" in o]) == 1, outcomes
+        with svc.sessions() as s:
+            stock = s.get(Stock, stock_id)
+            assert stock.on_hand == 40 and stock.reserved == 30
+            assert not verify_mapped_schema(svc.engine)
+        allocations = [
+            InventoryAllocationService(svc).for_fill(pharm, fid) for fid in fill_ids
+        ]
+        assert sorted(len(rows) for rows in allocations) == [0, 1]
+        positions = locsvc.positions(tech, stock_id)
+        assert positions[0]["reserved"] == "30.000"
+        assert positions[0]["available"] == "10.000"
+    finally:
+        svc.engine.dispose()
