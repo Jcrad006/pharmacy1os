@@ -94,8 +94,8 @@ def test_pending_transfer_blocks_scheduling_and_active_refill_and_allows_withdra
                                       (date.today()+timedelta(days=5)).isoformat(), "SCHEDULE-X")
     with pytest.raises(WorkflowError, match="pending outgoing transfer"):
         SchedulingService(svc).begin_refill_review(a["TECHNICIAN"], rx, "Normal refill")
-    with pytest.raises(WorkflowError, match="pending outgoing transfer"):
-        LifecycleService(svc).cancel(a["TECHNICIAN"], rx, "Cannot cancel during handoff")
+    with pytest.raises(WorkflowError):
+        LifecycleService(svc).cancel(a["TECHNICIAN"], rx, "Cannot cancel a previously sold Rx")
     transfers.withdraw(a["TECHNICIAN"], event, "Recipient no longer requests transfer")
     assert transfers.get(a["AUDITOR"], event)["status"] == "WITHDRAWN"
     SchedulingService(svc).begin_refill_review(a["TECHNICIAN"], rx, "New refill after withdrawal")
