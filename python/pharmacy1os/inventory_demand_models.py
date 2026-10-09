@@ -21,7 +21,7 @@ class InventoryDemand(Base):
     drug_id: Mapped[str] = mapped_column(ForeignKey("py_drugs.id"), nullable=False, index=True)
     product_id: Mapped[str | None] = mapped_column(ForeignKey("py_products.id"), index=True)
     fill_id: Mapped[str | None] = mapped_column(
-        ForeignKey("py_fills.id"), unique=True, index=True)
+        ForeignKey("py_fills.id"), unique=True)
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     required_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     available_quantity: Mapped[Decimal] = mapped_column(
