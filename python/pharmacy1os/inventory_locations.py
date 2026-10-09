@@ -258,8 +258,8 @@ class InventoryLocationService:
                     row.is_default_receiving = False
                 if is_default_dispensing:
                     row.is_default_dispensing = False
-                if is_quarantine:
-                    row.is_quarantine = False
+                # Multiple designated quarantine locations may coexist.
+                # Never silently demote a location holding quarantined stock.
             row = InventoryLocation(site_id=actor.site_id, code=location_code,
                 name=location_name, type=type, barcode=bar,
                 is_default_receiving=is_default_receiving,
