@@ -17,7 +17,7 @@ def require_medication_eligible(s: Session, rx: Prescription) -> Drug:
     if drug is None or not drug.active:
         raise WorkflowError("The prescribed medication is missing or inactive")
     if drug.controlled or drug.controlled_substance_schedule != "NONE":
-        raise WorkflowError("Controlled or unclassified medications require a validated workflow")
+        raise WorkflowError("controlled or unclassified medications require a validated workflow")
     if drug.nc_narrow_therapeutic_index:
         raise WorkflowError("NTI medication requires the unported manufacturer-consent workflow")
     if drug.is_biological or drug.has_fda_interchangeable_biologic_alternative:
