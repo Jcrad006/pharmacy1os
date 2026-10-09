@@ -64,6 +64,45 @@ class ClinicalRecordService:
                 "created_at": intervention.created_at.isoformat(),
             }
 
+    def create_issue(self, actor: Actor, prescription_id: str, code: str,
+                     title: str, description: str | None = None,
+                     severity: str = "WARNING") -> dict[str, Any]:
+        if severity not in {"INFO", "WARNING", "HIGH"}:
+            raise WorkflowError("Original-style DUR severity must be INFO, WARNING or HIGH")
+        issue_id = self.service.add_dur_issue(actor, prescription_id,
+            severity, code, title=title, description=description)
+        return self.issue(actor, issue_id)
+
+    def resolve_issue(self, actor: Actor, issue_id: str, note: str) -> dict[str, Any]:
+        self.service.resolve_dur(actor, issue_id, note)
+        return self.issue(actor, issue_id)
+
+    def issue(self, actor: Actor, issue_id: str) -> dict[str, Any]:
+        with self.service.sessions() as s:
+            self.service._authorized(s, actor, "read")
+            issue = s.get(DUR, issue_id)
+            if issue is None:
+                raise WorkflowError("DUR issue not found")
+            self.service._site(s, Prescription, issue.prescription_id, actor)
+            reviewer = s.get(Staff, issue.resolved_by_id) if issue.resolved_by_id else None
+            if reviewer is not None and reviewer.site_id != actor.site_id:
+                raise WorkflowError("DUR resolution actor is inconsistent")
+            return {
+                "id": issue.id, "prescription_id": issue.prescription_id,
+                "code": issue.code, "title": issue.title or issue.code,
+                "description": issue.description, "severity": issue.severity,
+                "source": issue.source,
+                "status": "RESOLVED" if issue.resolved else "OPEN",
+                "created_at": issue.created_at.isoformat() if issue.created_at else None,
+                "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at else None,
+                "resolution_note": issue.resolution,
+                "resolved_automatically": issue.resolved_automatically,
+                "resolved_by_id": issue.resolved_by_id,
+                "resolved_by": (
+                    {"display_name": reviewer.name, "role": reviewer.role}
+                    if reviewer is not None else None),
+            }
+
     def clinical_record(self, actor: Actor, prescription_id: str) -> dict[str, Any]:
         with self.service.sessions() as s:
             self.service._authorized(s, actor, "read")
@@ -90,9 +129,15 @@ class ClinicalRecordService:
                 "prescription_id": rx.id,
                 "issues": [{
                     "id": issue.id, "prescription_id": rx.id,
-                    "code": issue.code, "severity": issue.severity,
+                    "code": issue.code, "title": issue.title or issue.code,
+                    "description": issue.description,
+                    "severity": issue.severity, "source": issue.source,
                     "status": "RESOLVED" if issue.resolved else "OPEN",
                     "resolved": issue.resolved, "resolution_note": issue.resolution,
+                    "created_at": issue.created_at.isoformat() if issue.created_at else None,
+                    "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at else None,
+                    "resolved_automatically": issue.resolved_automatically,
+                    "resolved_by_id": issue.resolved_by_id,
                 } for issue in issues],
                 "interventions": result,
                 "warning": "SYNTHETIC_CLINICAL_RECORD_NOT_LIVE_PHARMACY",

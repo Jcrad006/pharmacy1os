@@ -181,6 +181,15 @@ class DUR(Base):
     code: Mapped[str] = mapped_column(String(70))
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
     resolution: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by_id: Mapped[str | None] = mapped_column(
+        ForeignKey("py_staff.id", name="fk_py_dur_resolved_by"))
+    resolved_automatically: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
 
 class Fill(Base):

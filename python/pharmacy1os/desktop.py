@@ -275,6 +275,8 @@ def main() -> None:
                 self.action("Pharmacist Edit Unfilled Rx", self.edit_unfilled_rx)
                 self.action("Record Pharmacist Intervention", self.record_pharmacist_intervention)
                 self.action("Review Rx Clinical Record", self.review_rx_clinical_record)
+                self.action("Document DUR Issue", self.document_dur_issue)
+                self.action("Resolve DUR Issue (Pharmacist)", self.resolve_clinical_dur_issue)
                 self.action("Request Transfer Out", self.request_transfer_out)
                 self.action("Attest External Transfer", self.attest_transfer_out)
                 self.action("Withdraw Transfer Request", self.withdraw_transfer_out)
@@ -1127,6 +1129,27 @@ def main() -> None:
             QMessageBox.information(self, "Intervention recorded",
                 f"Append-only clinical note {result['id']} recorded.\n"
                 "This note does not resolve DUR or amend the prescription.")
+
+        def document_dur_issue(self):
+            rx_id = self.selected_id()
+            severity = self.choose_item("DUR severity",
+                "Choose clinical issue severity", ["INFO", "WARNING", "HIGH"], lambda s: s)
+            code = self.ask("DUR issue", "Clinical rule or intervention code")
+            title = self.ask("DUR issue", "Short clinical issue title")
+            description = self.ask("DUR issue", "Brief clinical explanation")
+            row = clinical_records.create_issue(self.actor, rx_id,
+                code, title, description=description, severity=severity)
+            QMessageBox.information(self, "DUR issue documented", row["id"])
+
+        def resolve_clinical_dur_issue(self):
+            record = clinical_records.clinical_record(self.actor, self.selected_id())
+            unresolved = [x for x in record["issues"] if x["status"] == "OPEN"]
+            selected = self.choose_item("Open DUR issue", "Choose issue to resolve",
+                unresolved, lambda x: f"{x['severity']} | {x['code']} | {x['title']}")
+            note = self.ask("DUR resolution", "Document pharmacist clinical review")
+            row = clinical_records.resolve_issue(self.actor, selected["id"], note)
+            QMessageBox.information(self, "DUR issue resolved",
+                f"{row['code']} resolved by {row['resolved_by']['display_name']}")
 
         def review_rx_clinical_record(self):
             record = clinical_records.clinical_record(self.actor, self.selected_id())

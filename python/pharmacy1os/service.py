@@ -113,6 +113,24 @@ class PharmacyService:
                     if name not in fill_columns:
                         conn.exec_driver_sql(
                             f"ALTER TABLE py_fills ADD COLUMN {name} {definition}")
+                # Prior synthetic Qt databases predate the original-style DUR
+                # metadata. Add only missing nullable columns, never fabricate
+                # authors or earlier clinical actions.
+                dur_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_dur_issues')").all()}
+                dur_extensions = {
+                    "title": "VARCHAR(160)",
+                    "description": "TEXT",
+                    "source": "VARCHAR(40)",
+                    "created_at": "DATETIME",
+                    "resolved_at": "DATETIME",
+                    "resolved_by_id": "VARCHAR(36) REFERENCES py_staff(id)",
+                    "resolved_automatically": "BOOLEAN NOT NULL DEFAULT 0",
+                }
+                for name, definition in dur_extensions.items():
+                    if name not in dur_columns:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE py_dur_issues ADD COLUMN {name} {definition}")
 
     def bootstrap_demo(self) -> dict[str, Any]:
         """Create a synthetic pharmacy and demo actors; never production identities."""
@@ -403,26 +421,50 @@ class PharmacyService:
             rx.status = "DUR_REVIEW"
             self._audit(s, actor, "RX_DUR_REVIEW", rx.id, {})
 
-    def add_dur_issue(self, actor: Actor, rx_id: str, severity: str, code: str) -> str:
+    def add_dur_issue(self, actor: Actor, rx_id: str, severity: str,
+                      code: str, title: str | None = None,
+                      description: str | None = None) -> str:
+        clean_code = code.strip().upper() if isinstance(code, str) else ""
+        clean_title = title.strip() if isinstance(title, str) else clean_code
+        detail = description.strip() if isinstance(description, str) else None
+        if (severity not in {"HIGH", "WARNING", "INFO", "MEDIUM", "LOW"}
+                or not 1 <= len(clean_code) <= 70
+                or not 1 <= len(clean_title) <= 160
+                or (detail is not None and len(detail) > 4000)):
+            raise WorkflowError("Valid DUR severity, code, title and description required")
         with self.sessions.begin() as s:
             self._authorized(s, actor, "clinical")
             self._site(s, Prescription, rx_id, actor)
-            if severity not in {"HIGH", "MEDIUM", "LOW"} or not code:
-                raise WorkflowError("DUR issue severity and code required")
-            issue = DUR(prescription_id=rx_id, severity=severity, code=code)
+            issue = DUR(prescription_id=rx_id, severity=severity,
+                        code=clean_code, title=clean_title,
+                        description=detail, source="SYNTHETIC_MANUAL",
+                        resolved=False, resolved_automatically=False)
             s.add(issue); s.flush()
-            self._audit(s, actor, "DUR_ISSUE_ADDED", issue.id, {"rx_id": rx_id, "severity": severity})
+            self._audit(s, actor, "DUR_ISSUE_ADDED", issue.id,
+                        {"rx_id": rx_id, "severity": severity,
+                         "code": clean_code, "source": "SYNTHETIC_MANUAL"})
             return issue.id
 
     def resolve_dur(self, actor: Actor, issue_id: str, note: str) -> None:
+        clean_note = note.strip() if isinstance(note, str) else ""
+        if not 1 <= len(clean_note) <= 4000:
+            raise WorkflowError("DUR resolution note must contain 1–4000 characters")
         with self.sessions.begin() as s:
             self._authorized(s, actor, "clinical")
-            issue = s.get(DUR, issue_id)
-            if not issue or not note.strip():
-                raise WorkflowError("Issue and meaningful resolution note required")
+            issue = s.scalar(select(DUR).where(DUR.id == issue_id).with_for_update())
+            if issue is None:
+                raise WorkflowError("DUR issue not found")
             self._site(s, Prescription, issue.prescription_id, actor)
-            issue.resolved = True; issue.resolution = note.strip()
-            self._audit(s, actor, "DUR_RESOLVED", issue.id, {"resolution": note.strip()})
+            if issue.resolved:
+                raise WorkflowError("DUR issue is already resolved")
+            issue.resolved = True
+            issue.resolution = clean_note
+            issue.resolved_at = datetime.now(timezone.utc)
+            issue.resolved_by_id = actor.id
+            issue.resolved_automatically = False
+            self._audit(s, actor, "DUR_RESOLVED", issue.id, {
+                "prescription_id": issue.prescription_id, "code": issue.code,
+                "resolved_by_id": actor.id})
 
     def _start_fill_tx(self, s: Session, actor: Actor, rx: Prescription,
                        dispense_quantity: str | None = None, *, effective_date: date | None = None,
