@@ -98,6 +98,21 @@ class PharmacyService:
                         "ADD COLUMN recall_id VARCHAR(36) REFERENCES py_recall_cases(id)")
                     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS "
                         "ix_py_inventory_holds_recall_id ON py_inventory_holds (recall_id)")
+                # Narrow compatibility for an existing opt-in synthetic SQLite
+                # desktop DB. Production migrations always use Alembic instead.
+                fill_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_fills')").all()}
+                packaging_columns = {
+                    "dispensed_in_original_container": "BOOLEAN NOT NULL DEFAULT 0",
+                    "patient_discard_date": "VARCHAR(10)",
+                    "packaging_reviewed_by_id": "VARCHAR(36) REFERENCES py_staff(id)",
+                    "packaging_reviewed_at": "DATETIME",
+                    "packaging_note": "TEXT",
+                }
+                for name, definition in packaging_columns.items():
+                    if name not in fill_columns:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE py_fills ADD COLUMN {name} {definition}")
 
     def bootstrap_demo(self) -> dict[str, Any]:
         """Create a synthetic pharmacy and demo actors; never production identities."""
