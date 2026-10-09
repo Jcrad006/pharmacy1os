@@ -18,6 +18,7 @@ from .inventory_allocations import InventoryAllocationService
 from .inventory_demands import InventoryDemandService
 from .inventory_discrepancies import ReceivingDiscrepancyService, DISCREPANCY_TYPES
 from .inventory_asof import HistoricalInventoryService
+from .inventory_exceptions import InventoryExceptionRegistry
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
@@ -83,6 +84,7 @@ def main() -> None:
     inventory_demands = InventoryDemandService(service)
     receiving_discrepancies = ReceivingDiscrepancyService(service)
     inventory_history = HistoricalInventoryService(service)
+    stock_exceptions = InventoryExceptionRegistry(service)
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
@@ -304,6 +306,11 @@ def main() -> None:
                 self.action("Adjust Stock", self.adjust_stock)
                 self.action("Stock Ledger", self.stock_ledger)
                 self.action("Historical As-Of Lot Balance", self.inventory_asof_balance)
+                self.action("View Inventory Exception Register", self.view_inventory_exceptions)
+                self.action("Refresh Inventory Exceptions", self.refresh_inventory_exceptions)
+                self.action("Acknowledge Inventory Exception", self.acknowledge_inventory_exception)
+                self.action("Resolve Inventory Exception (Pharmacist)", self.resolve_inventory_exception)
+                self.action("Inventory Exception History", self.inventory_exception_history)
                 self.action("Create Physical Location", self.create_inventory_location)
                 self.action("View Locations", self.show_inventory_locations)
                 self.action("Reconcile Lot To Location", self.reconcile_inventory_location)
@@ -1239,6 +1246,39 @@ def main() -> None:
                 rows, lambda x: f"{x['status']} | {x['type']} | {x['id'][:8]}")
             QMessageBox.information(self, "Append-only discrepancy events",
                 json.dumps(receiving_discrepancies.history(self.actor, selected["id"]),
+                           indent=2)[:16000])
+
+        def view_inventory_exceptions(self):
+            rows = stock_exceptions.list(self.actor)
+            QMessageBox.information(self, "Persistent stock exception register",
+                (json.dumps(rows, indent=2) if rows else "No saved inventory alerts")[:16000]
+                + "\n\nAdvisory only; explicit refresh required.")
+
+        def refresh_inventory_exceptions(self):
+            result = stock_exceptions.refresh(self.actor)
+            QMessageBox.information(self, "Inventory exceptions refreshed",
+                json.dumps(result, indent=2))
+
+        def choose_stock_exception(self, statuses=None):
+            rows = [x for x in stock_exceptions.list(self.actor)
+                    if statuses is None or x["status"] in statuses]
+            return self.choose_item("Inventory exception", "Choose an alert", rows,
+                lambda x: f"{x['severity']} | {x['status']} | {x['title'][:50]}")
+
+        def acknowledge_inventory_exception(self):
+            row = self.choose_stock_exception({"OPEN"})
+            note = self.ask("Exception acknowledgement", "Document your review")
+            stock_exceptions.acknowledge(self.actor, row["id"], note)
+
+        def resolve_inventory_exception(self):
+            row = self.choose_stock_exception({"OPEN", "ACKNOWLEDGED"})
+            note = self.ask("Pharmacist exception resolution", "Document corrective action and outcome")
+            stock_exceptions.resolve(self.actor, row["id"], note)
+
+        def inventory_exception_history(self):
+            row = self.choose_stock_exception()
+            QMessageBox.information(self, "Append-only inventory exception events",
+                json.dumps(stock_exceptions.history(self.actor, row["id"]),
                            indent=2)[:16000])
 
         def inventory_asof_balance(self):
