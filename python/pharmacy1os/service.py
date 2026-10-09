@@ -509,7 +509,8 @@ class PharmacyService:
             if stock.on_hand - stock.reserved - stock.quarantined < qty:
                 raise WorkflowError("Insufficient available stock")
             from .inventory_ops import record_movement
-            record_movement(s, actor, stock, "FILL_RESERVE", reserved=qty)
+            record_movement(s, actor, stock, "FILL_RESERVE", reserved=qty,
+                            location_id=location_id)
             s.add(FillSource(fill_id=f.id, stock_id=stock.id, quantity=qty))
             self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
                         {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
