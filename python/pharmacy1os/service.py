@@ -511,7 +511,10 @@ class PharmacyService:
             from .inventory_ops import record_movement
             record_movement(s, actor, stock, "FILL_RESERVE", reserved=qty,
                             location_id=location_id)
-            s.add(FillSource(fill_id=f.id, stock_id=stock.id, quantity=qty))
+            source = FillSource(fill_id=f.id, stock_id=stock.id, quantity=qty)
+            s.add(source); s.flush()
+            from .inventory_allocations import record_scan_allocation
+            record_scan_allocation(s, actor, f, stock, source, location_id)
             self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
                         {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
 
@@ -612,9 +615,16 @@ class PharmacyService:
                     raise WorkflowError("Source expired or reservation invalid")
                 from .inventory_advanced import assert_not_recalled
                 assert_not_recalled(s, stock)
+                from .inventory_allocations import (
+                    source_allocation, allocation_location_id, transition_allocation,
+                )
+                allocation = source_allocation(s, actor, f, stock, src)
                 from .inventory_ops import record_movement
                 record_movement(s, actor, stock, "FILL_DISPENSE",
-                                on_hand=-src.quantity, reserved=-src.quantity)
+                                on_hand=-src.quantity, reserved=-src.quantity,
+                                location_id=allocation_location_id(s, allocation))
+                transition_allocation(s, actor, allocation, "CONSUMED",
+                    "Pharmacist verified and consumed the scanned physical allocation")
             f.status = "READY"; rx.status = "READY"
             self._audit(s, actor, "PHARMACIST_VERIFIED", f.id, {"quantity": str(f.quantity)})
 
