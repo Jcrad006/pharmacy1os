@@ -13,6 +13,7 @@ class PayerBillingProfile(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
     site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), nullable=False, index=True)
     payer_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    payer_id: Mapped[str | None] = mapped_column(ForeignKey("py_insurance_payers.id"), nullable=True, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     max_physical_sources: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     billing_ndc_strategy: Mapped[str] = mapped_column(String(30), nullable=False, default="MAJORITY_NDC")
