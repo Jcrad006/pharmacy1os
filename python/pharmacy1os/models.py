@@ -195,7 +195,7 @@ class Fill(Base):
     dispensed_in_original_container: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false")
     patient_discard_date: Mapped[str | None] = mapped_column(String(10))
-    packaging_reviewed_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id"))
+    packaging_reviewed_by_id: Mapped[str | None] = mapped_column(ForeignKey("py_staff.id", name="fk_py_fills_packaging_reviewer"))
     packaging_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     packaging_note: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (UniqueConstraint("prescription_id", "fill_number", "attempt"),)

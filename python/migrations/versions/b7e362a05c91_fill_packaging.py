@@ -24,7 +24,7 @@ def upgrade():
             sa.Boolean(), nullable=False, server_default=sa.false()))
         batch.add_column(sa.Column("patient_discard_date", sa.String(10)))
         batch.add_column(sa.Column("packaging_reviewed_by_id", sa.String(36),
-            sa.ForeignKey("py_staff.id")))
+            sa.ForeignKey("py_staff.id", name="fk_py_fills_packaging_reviewer")))
         batch.add_column(sa.Column("packaging_reviewed_at",
             sa.DateTime(timezone=True)))
         batch.add_column(sa.Column("packaging_note", sa.Text()))
