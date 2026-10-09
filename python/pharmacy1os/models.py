@@ -57,6 +57,7 @@ class Prescriber(Base):
     first_name: Mapped[str] = mapped_column(String(100))
     last_name: Mapped[str] = mapped_column(String(100), index=True)
     practice_level: Mapped[str] = mapped_column(String(30))
+    date_of_birth: Mapped[str | None] = mapped_column(String(10), nullable=True)
     npi: Mapped[str | None] = mapped_column(String(20), nullable=True)
     dea: Mapped[str | None] = mapped_column(String(30), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
