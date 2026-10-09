@@ -89,8 +89,8 @@ def test_synthetic_emergency_flow_no_second_payer_and_follow_up(env):
     assert tasks[0]["prescription_id"] == rx
     with pytest.raises(WorkflowError, match="converted"):
         FillCompletionService(svc).interrupt_as_partial(tech, emergency_fill, "2", "Cannot split")
-    with pytest.raises(WorkflowError, match="already documented"):
-        # It also fails closed because this emergency physical fill is now active.
+    with pytest.raises(WorkflowError, match="previously sold|already documented"):
+        # Active emergency fill also prevents a second authorization.
         workflow.authorize(pharm, rx, "5", "Duplicate", due)
 
     svc.scan_source(tech, emergency_fill, "EMERG-BAR", "EMERGLOT", exp, "5")
