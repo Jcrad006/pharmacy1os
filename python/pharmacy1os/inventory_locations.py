@@ -145,7 +145,8 @@ def mirror_movement(s: Session, actor: Actor, stock: Stock, *,
         if remaining <= 0:
             continue
         ordered = rows
-        if preferred is not None and state == "available":
+        if preferred is not None:
+            # A verified allocation may only release or consume the bin actually scanned.
             ordered = [(p, loc) for p, loc in rows if loc.id == preferred.id]
         for pos, loc in ordered:
             if remaining <= 0:
