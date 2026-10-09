@@ -207,3 +207,12 @@ def test_demand_api_mode_and_cross_site_isolation(env):
     assert cli.post(prefix + f"/{rid}/cancel", headers=tech, json={
         "reason": "Not required"}).status_code == 200
     assert cli.get(prefix, headers=audit).status_code == 200
+
+
+
+def test_manual_inventory_demand_rejects_quantity_larger_than_numeric_schema(env):
+    svc, actors, foreign, drug, p1, p2, expiry, patient1, patient2, doctor, demands = env
+    with pytest.raises(WorkflowError, match="exceeds the supported inventory quantity"):
+        demands.create_manual(actors["TECHNICIAN"], drug, "1000000000",
+                              note="Invalid oversized synthetic stock demand")
+    assert demands.list(actors["AUDITOR"]) == []
