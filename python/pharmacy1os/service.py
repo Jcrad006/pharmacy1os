@@ -458,6 +458,9 @@ class PharmacyService:
         s.add(f)
         rx.status = "PRODUCT_FILL"
         s.flush()
+        from .inventory_demands import record_fill_demand_tx
+        record_fill_demand_tx(s, actor, f, rx,
+                              source="COMPLETION" if scheduled_id is not None else "FILL")
         if qty < rx.quantity:
             s.add(FillObligation(site_id=actor.site_id, prescription_id=rx.id,
                 anchor_fill_id=f.id, intended=rx.quantity, dispensed=Decimal("0"),
@@ -625,6 +628,8 @@ class PharmacyService:
                                 location_id=allocation_location_id(s, allocation))
                 transition_allocation(s, actor, allocation, "CONSUMED",
                     "Pharmacist verified and consumed the scanned physical allocation")
+            from .inventory_demands import fulfill_fill_demand_tx
+            fulfill_fill_demand_tx(s, actor, f, rx)
             f.status = "READY"; rx.status = "READY"
             self._audit(s, actor, "PHARMACIST_VERIFIED", f.id, {"quantity": str(f.quantity)})
 
