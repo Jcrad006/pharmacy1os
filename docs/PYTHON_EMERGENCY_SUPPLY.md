@@ -31,3 +31,8 @@ Alembic revision c4e6bdf912a0 adds the separate py_emergency_supplies table, fol
 No regulated emergency-dispensing legality determination, EPCS, controlled-substance exception, prescriber credential verification, verified insurer/NCPDP operation, claims transmission or reversal, pharmacy-specific emergency timelines, patient or prescriber outreach, hardware labeling, or full audit/restore/concurrency validation is claimed.
 
 Hands-on Qt UI validation, concurrent PostgreSQL test scenarios, clinical review and operational compliance analysis remain required. Never use this prototype to dispense or store real patient information.
+
+
+### Revalidation at every dispensing boundary
+
+The service revalidates the emergency authorization at barcode scanning, physical preparation, pharmacist verification, single-fill pickup, and multi-fill POS checkout. If the catalog drug becomes controlled or is removed, if regular refills become available after authorization, or if the authorized physical quantity changes, the emergency fill is blocked for professional reassessment. The original approval does not override subsequent clinical state changes.
