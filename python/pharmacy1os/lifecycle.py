@@ -104,6 +104,8 @@ class LifecycleService:
                 from .fill_completion import void_unissued_obligation
                 void_unissued_obligation(s, actor, f, reason)
                 f.status = "CANCELLED"
+            from .prescription_transfer import require_no_pending_transfer
+            require_no_pending_transfer(s, rx)
             before = rx.status
             rx.status = "CANCELLED"
             rx.held_from = None
