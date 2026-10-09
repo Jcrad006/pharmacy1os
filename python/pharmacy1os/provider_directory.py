@@ -113,17 +113,20 @@ class ProviderDirectory:
         with self.pharmacy.sessions.begin() as s:
             self.pharmacy._authorized(s, actor, "correct")
             provider = self.pharmacy._site(s, Prescriber, prescriber_id, actor)
-            if (kind == "NPI" and provider.npi
-                    and _normalized_identifier(provider.npi) != normalized):
-                raise WorkflowError("NPI conflicts with the existing provider identity")
-            # Original TypeScript registration permits only one NPI. Enforce
-            # the same invariant for later directory edits, not just create.
-            if kind == "NPI" and s.scalar(select(ProviderIdentifier.id).where(
+            # A persisted active NPI is authoritative. Check it first so
+            # repeated enrollment is reported as an existing-child conflict,
+            # regardless of any legacy scalar NPI still on the parent.
+            if kind == "NPI":
+                existing = s.scalar(select(ProviderIdentifier.id).where(
                     ProviderIdentifier.site_id == actor.site_id,
                     ProviderIdentifier.prescriber_id == prescriber_id,
                     ProviderIdentifier.type == "NPI",
-                    ProviderIdentifier.active.is_(True))):
-                raise WorkflowError("A prescriber may have only one active NPI")
+                    ProviderIdentifier.active.is_(True)))
+                if existing:
+                    raise WorkflowError("A prescriber may have only one active NPI")
+                if (provider.npi and
+                        _normalized_identifier(provider.npi) != normalized):
+                    raise WorkflowError("NPI conflicts with the existing provider identity")
             if is_primary:
                 s.execute(update(ProviderIdentifier).where(
                     ProviderIdentifier.prescriber_id == prescriber_id,
