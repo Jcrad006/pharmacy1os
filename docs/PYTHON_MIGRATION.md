@@ -1,4 +1,6 @@
 # Python-native Pharmacy1OS migration
+> **Feature-parity audit (2026-10-08):** The original TypeScript rewrite is **not complete**. See the [138-feature parity audit](PYTHON_PARITY_AUDIT_2026-10-08.md), [116-endpoint inventory](PYTHON_PARITY_ROUTE_INVENTORY_2026-10-08.md), and [58-model crosswalk](PYTHON_PARITY_DATA_MODEL_CROSSWALK_2026-10-08.md). Core synthetic implementations must not be mistaken for field, API, desktop, or regulatory parity.
+
 
 **Status: multi-module Python synthetic rewrite underway; no feature parity or production release.**
 
