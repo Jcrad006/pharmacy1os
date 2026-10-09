@@ -103,6 +103,8 @@ class LifecycleService:
                     bag.status = "CANCELLED"
                 from .fill_completion import void_unissued_obligation
                 void_unissued_obligation(s, actor, f, reason)
+                from .label_printing import void_label_jobs
+                void_label_jobs(s, actor, f.id, reason)
                 f.status = "CANCELLED"
             from .prescription_transfer import require_no_pending_transfer
             require_no_pending_transfer(s, rx)
