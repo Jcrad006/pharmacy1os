@@ -32,7 +32,7 @@ def env():
 
 def test_outstanding_orders_and_in_transit_reduce_advisory_quantity(env):
     svc, planner, ops, a, b, drug, product, stock, expiry = env
-    planner.configure(a["PHARMACIST"], product, "20", "50", "Synthetic threshold")
+    planner.configure(a["PHARMACIST"], product, "30", "50", "Synthetic threshold")
     initial = planner.recommendations(a["TECHNICIAN"])[0]
     assert initial["status"] == "BELOW_MINIMUM"
     assert initial["available"] == "12.000"
