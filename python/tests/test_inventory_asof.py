@@ -53,7 +53,7 @@ def test_asof_onhand_quarantine_and_adjustment(env):
     assert current["available_quantity"] == "12.000"
     assert current["recorded_acquisition_cost"] is None
     before = history.as_of(actors["AUDITOR"], stock, "2020-01-01T00:00:00Z")
-    assert before["on_hand_quantity"] == "0"
+    assert before["on_hand_quantity"] == "0.000"
 
 
 def test_asof_rejects_timezone_naive_and_cross_site(env):
