@@ -34,21 +34,14 @@ def _accessible_available(s: Session, stock: Stock, site_id: str) -> Decimal:
         return ZERO
     if not stock.location_tracking_enabled:
         return aggregate
-    physical = s.scalar(select(InventoryStockPosition.available)
-        .join(InventoryLocation, InventoryStockPosition.location_id == InventoryLocation.id)
-        .where(InventoryStockPosition.stock_id == stock.id,
-               InventoryLocation.site_id == site_id,
-               InventoryLocation.active.is_(True),
-               InventoryLocation.is_quarantine.is_(False))
-        .order_by(InventoryStockPosition.id).limit(1))
-    # Multiple eligible physical bins can hold this lot.
+    # Multiple eligible physical bins may contain the same NDC/lot.
     positions = s.scalars(select(InventoryStockPosition.available)
         .join(InventoryLocation, InventoryStockPosition.location_id == InventoryLocation.id)
         .where(InventoryStockPosition.stock_id == stock.id,
                InventoryLocation.site_id == site_id,
                InventoryLocation.active.is_(True),
                InventoryLocation.is_quarantine.is_(False))).all()
-    return min(aggregate, sum(positions, ZERO)) if physical is not None else ZERO
+    return min(aggregate, sum(positions, ZERO))
 
 
 def assess_fefo(s: Session, actor: Actor, stock: Stock, policy: FefoPolicy) -> dict:
