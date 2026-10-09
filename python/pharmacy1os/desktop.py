@@ -16,6 +16,7 @@ from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
 from .fill_completion import FillCompletionService, FillObligation
+from .emergency_supply import EmergencySupplyService
 from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
 from .billing import BillingService
@@ -70,6 +71,7 @@ def main() -> None:
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
     completion_service = FillCompletionService(service)
+    emergency_service = EmergencySupplyService(service)
     directory_service = ProviderDirectory(service)
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
@@ -228,6 +230,8 @@ def main() -> None:
                 self.action("Stop / Convert To Partial", self.convert_to_partial)
                 self.action("Supply Owed Completion", self.start_completion)
                 self.action("View Physical Balance", self.view_completion_balance)
+                self.action("Authorize Synthetic Emergency", self.authorize_emergency)
+                self.action("Complete Emergency Follow-up", self.emergency_followup)
                 self.action("Scan Product Source", self.scan)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
                 self.action("Pharmacist Verify", self.verify)
@@ -620,6 +624,23 @@ def main() -> None:
                 f"Remaining owed: {balance['remaining_owed']}\n"
                 f"Status: {balance['status']}")
 
+        def authorize_emergency(self):
+            rx_id = self.selected_id()
+            amount = self.ask("Synthetic emergency", "Physical quantity (prior SOLD Rx only)")
+            note = self.ask("Synthetic emergency", "Pharmacist reason for exception")
+            due = self.ask("Synthetic emergency",
+                "Follow-up due with timezone (e.g. 2026-11-01T15:00:00-04:00)")
+            fill_id = emergency_service.authorize(self.actor, rx_id, amount, note, due)
+            QMessageBox.information(self, "Synthetic emergency authorization",
+                f"Physical fill {fill_id[:8]} created. Scan and submit for pharmacist review. "
+                "No payer claims permitted. Follow-up appears in Exceptions.")
+
+        def emergency_followup(self):
+            events = emergency_service.list(self.actor, include_closed=False)
+            selected = self.choose_item("Emergency follow-up", "Select emergency fill",
+                events, lambda e: f"{e['fill_id'][:8]} | due {e['follow_up_due_at']} | {e['status']}")
+            emergency_service.complete_follow_up(self.actor, selected["fill_id"],
+                self.ask("Emergency follow-up", "Document completed clinical follow-up"))
         def scan(self):
             fid = self.fill_for_rx(self.selected_id())
             barcode = self.ask("Product Fill", "Scan/enter registered barcode")
