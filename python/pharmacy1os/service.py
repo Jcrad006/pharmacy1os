@@ -114,6 +114,13 @@ class PharmacyService:
                     if name not in fill_columns:
                         conn.exec_driver_sql(
                             f"ALTER TABLE py_fills ADD COLUMN {name} {definition}")
+                # Existing opt-in demo workstations may already have prescriber
+                # records; missing DOB is genuinely unknown and stays NULL.
+                prescriber_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_prescribers')").all()}
+                if "date_of_birth" not in prescriber_columns:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE py_prescribers ADD COLUMN date_of_birth VARCHAR(10)")
                 # Prior synthetic Qt databases predate the original-style DUR
                 # metadata. Add only missing nullable columns, never fabricate
                 # authors or earlier clinical actions.
