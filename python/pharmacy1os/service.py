@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -519,6 +519,94 @@ class PharmacyService:
             record_scan_allocation(s, actor, f, stock, source, location_id)
             self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
                         {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
+
+    def scanned_sources(self, actor: Actor, fill_id: str) -> list[dict[str, Any]]:
+        """Show physical source reservations for a pharmacy-site-owned fill."""
+        with self.sessions() as s:
+            self._authorized(s, actor, "read")
+            fill = s.get(Fill, fill_id)
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            self._site(s, Prescription, fill.prescription_id, actor)
+            from .inventory_location_models import InventoryAllocation, InventoryStockPosition
+            entries = []
+            for source in s.scalars(select(FillSource).where(
+                    FillSource.fill_id == fill.id).order_by(FillSource.id)):
+                stock = self._site(s, Stock, source.stock_id, actor)
+                product = s.get(Product, stock.product_id)
+                if product is None:
+                    raise WorkflowError("Scanned product no longer exists")
+                allocation = s.scalar(select(InventoryAllocation).where(
+                    InventoryAllocation.site_id == actor.site_id,
+                    InventoryAllocation.fill_source_id == source.id))
+                location_id = None
+                if allocation is not None:
+                    position = s.get(InventoryStockPosition, allocation.position_id)
+                    if position is None or position.stock_id != stock.id:
+                        raise WorkflowError("Scanned physical allocation is inconsistent")
+                    location_id = position.location_id
+                entries.append({
+                    "id": source.id, "fill_id": fill.id,
+                    "stock_id": stock.id, "product_id": product.id,
+                    "ndc": product.ndc, "description": product.description,
+                    "lot": stock.lot, "expires": stock.expires,
+                    "quantity": str(source.quantity), "location_id": location_id,
+                    "allocation_status": allocation.status if allocation else None,
+                })
+            return entries
+
+    def remove_scanned_source(self, actor: Actor, fill_id: str,
+                              source_id: str, reason: str) -> dict[str, Any]:
+        """Release a mistaken pre-review physical source, retaining its audit trail."""
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 2000:
+            raise WorkflowError("Scanned source correction requires a 12–2000 character explanation")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Sources can only be removed during Product Fill")
+            # Never quietly invalidate claims, paid events or issued label artifacts.
+            if (s.scalar(select(Claim.id).where(Claim.fill_id == fill.id).limit(1))
+                    or s.scalar(select(Label.id).where(Label.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claimed or labeled fill needs a separate reversal workflow")
+            from .claim_transactions_models import SandboxClaimTransaction
+            from .label_printing import LabelPrintJob
+            if (s.scalar(select(SandboxClaimTransaction.id).where(
+                    SandboxClaimTransaction.fill_id == fill.id).limit(1))
+                    or s.scalar(select(LabelPrintJob.id).where(
+                    LabelPrintJob.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claim or print history needs a separate reversal workflow")
+            source = s.scalar(select(FillSource).where(
+                FillSource.id == source_id, FillSource.fill_id == fill.id).with_for_update())
+            if source is None:
+                raise WorkflowError("Scanned source not found for this fill")
+            stock = s.scalar(select(Stock).where(
+                Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
+            if stock is None or stock.reserved < source.quantity:
+                raise WorkflowError("Physical stock reservation is inconsistent")
+            from .inventory_allocations import (
+                source_allocation, allocation_location_id, transition_allocation,
+            )
+            allocation = source_allocation(s, actor, fill, stock, source)
+            from .inventory_ops import record_movement
+            movement_id = record_movement(s, actor, stock, "FILL_SOURCE_CORRECTION_RELEASE",
+                reserved=-source.quantity, reason=note,
+                location_id=allocation_location_id(s, allocation))
+            transition_allocation(s, actor, allocation, "RELEASED",
+                "Mistaken scanned source removed: " + note, release_source_link=True)
+            details = {"source_id": source.id, "stock_id": stock.id,
+                       "fill_id": fill.id, "quantity": str(source.quantity),
+                       "movement_id": movement_id, "reason": note}
+            s.delete(source)
+            s.flush()
+            details["remaining_sources"] = s.scalar(select(func.count(FillSource.id)).where(
+                FillSource.fill_id == fill.id))
+            self._audit(s, actor, "FILL_PRODUCT_SOURCE_REMOVED", fill.id, details)
+            return details
 
     def prepare_for_review(self, actor: Actor, fill_id: str, payer_names: list[str] | None = None,
                            *, coverage_ids: list[str] | None = None) -> list[str]:
