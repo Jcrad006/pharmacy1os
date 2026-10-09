@@ -146,6 +146,7 @@ class SourceIn(BaseModel):
     lot: str
     expires: str
     quantity: str
+    location_id: str | None = None
 
 
 class PrepareIn(BaseModel):
