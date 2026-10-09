@@ -25,6 +25,18 @@ def _configuration(profile: PayerBillingProfile | None) -> dict[str, Any]:
 
 
 def _active_profile(s, site_id: str, name: str) -> PayerBillingProfile | None:
+    from .insurance_models import InsurancePayer
+    canonical = s.scalar(select(InsurancePayer).where(
+        InsurancePayer.site_id == site_id, InsurancePayer.name == name))
+    if canonical is not None:
+        direct = s.scalar(select(PayerBillingProfile).where(
+            PayerBillingProfile.site_id == site_id,
+            PayerBillingProfile.payer_id == canonical.id,
+            PayerBillingProfile.effective.is_(True))
+            .order_by(PayerBillingProfile.version.desc()).limit(1))
+        if direct is not None:
+            return direct
+    # Backward-compatible name-only profiles remain usable for existing demos.
     return s.scalar(select(PayerBillingProfile)
                     .where(PayerBillingProfile.site_id == site_id,
                            PayerBillingProfile.payer_name == name,
@@ -96,7 +108,8 @@ class BillingService:
 
     def update_profile(self, actor: Actor, payer_name: str, *, max_physical_sources: int,
                        billing_ndc_strategy: str = "MAJORITY_NDC",
-                       full_authorized_quantity: bool = True, reason: str) -> str:
+                       full_authorized_quantity: bool = True, reason: str,
+                       payer_id: str | None = None) -> str:
         name = payer_name.strip() if isinstance(payer_name, str) else ""
         if not name or len(name) > 120 or not reason or not reason.strip():
             raise WorkflowError("Payer name and change reason required")
@@ -110,16 +123,25 @@ class BillingService:
             raise WorkflowError("Prototype supports only the full-authorized-quantity billing assumption")
         with self.service.sessions.begin() as s:
             self.service._authorized(s, actor, "correct")
+            if payer_id is not None:
+                from .insurance_models import InsurancePayer
+                payer = s.scalar(select(InsurancePayer).where(
+                    InsurancePayer.id == payer_id,
+                    InsurancePayer.site_id == actor.site_id))
+                if payer is None or not payer.active or payer.name != name:
+                    raise WorkflowError("Linked payer must be active, belong to site and match profile name")
             old = _active_profile(s, actor.site_id, name)
             if old:
                 old.effective = False
             new = PayerBillingProfile(site_id=actor.site_id, payer_name=name,
+                payer_id=payer_id or (old.payer_id if old else None),
                 version=(old.version + 1 if old else 1), max_physical_sources=max_physical_sources,
                 billing_ndc_strategy=billing_ndc_strategy, full_authorized_quantity=True,
                 effective=True, reason=reason.strip(), created_by_id=actor.id)
             s.add(new);s.flush()
             self.service._audit(s, actor, "PAYER_PROFILE_VERSION_CREATED", new.id,
-                {"payer":name,"version":new.version,"prev":old.id if old else None,
+                {"payer":name,"payer_id":new.payer_id,"version":new.version,
+                 "prev":old.id if old else None,
                  "max_sources":max_physical_sources, "ndc_strategy":billing_ndc_strategy,
                  "reason":reason.strip()})
             return new.id
@@ -129,7 +151,8 @@ class BillingService:
             self.service._authorized(s, actor, "read")
             p=s.scalars(select(PayerBillingProfile).where(PayerBillingProfile.site_id==actor.site_id)
                         .order_by(PayerBillingProfile.payer_name, PayerBillingProfile.version)).all()
-            return [{"id":x.id,"payer":x.payer_name,"version":x.version,
+            return [{"id":x.id,"payer":x.payer_name,"payer_id":x.payer_id,
+                     "version":x.version,
                      "max_physical_sources":x.max_physical_sources,
                      "billing_ndc_strategy":x.billing_ndc_strategy,"effective":x.effective} for x in p]
 
