@@ -159,8 +159,16 @@ class FillCompletionService:
                     Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
                 if stock is None or stock.reserved < source.quantity:
                     raise WorkflowError("Physical stock reservation inconsistent")
+                from .inventory_allocations import (
+                    source_allocation, allocation_location_id, transition_allocation,
+                )
+                allocation = source_allocation(s, actor, fill, stock, source)
                 record_movement(s, actor, stock, "PARTIAL_INTERRUPT_RELEASE",
-                                reserved=-source.quantity, reason=note)
+                                reserved=-source.quantity, reason=note,
+                                location_id=allocation_location_id(s, allocation))
+                transition_allocation(s, actor, allocation, "RELEASED",
+                    "Partial interruption voided original scanned reservation",
+                    release_source_link=True)
                 s.delete(source)
             # Require an explicit fresh scan for the *actual* physical part; never silently
             # assume a source remains trustworthy after a reported shortage.
