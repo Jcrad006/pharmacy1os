@@ -159,6 +159,10 @@ class SourceIn(BaseModel):
     location_id: str | None = None
 
 
+class SourceCorrectionIn(BaseModel):
+    reason: str = Field(min_length=12, max_length=2000)
+
+
 class PrepareIn(BaseModel):
     payers: list[str] = Field(default_factory=list, max_length=4)
     coverage_ids: list[str] | None = Field(default=None, max_length=4)
@@ -480,6 +484,15 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def scan(fill_id: str, payload: SourceIn, actor: DemoActor):
         svc.scan_source(actor, fill_id, **payload.model_dump())
         return {"ok": True}
+
+    @app.get("/api/fills/{fill_id}/product-sources")
+    def scanned_sources(fill_id: str, actor: DemoActor):
+        return {"sources": svc.scanned_sources(actor, fill_id)}
+
+    @app.delete("/api/fills/{fill_id}/product-sources/{source_id}")
+    def correct_scanned_source(fill_id: str, source_id: str,
+                               payload: SourceCorrectionIn, actor: DemoActor):
+        return svc.remove_scanned_source(actor, fill_id, source_id, payload.reason)
 
     @app.post("/api/fills/{fill_id}/prepare")
     def prepare(fill_id: str, payload: PrepareIn, actor: DemoActor):
