@@ -127,6 +127,12 @@ class RxIn(BaseModel):
     product_selection_directive: str = "UNSPECIFIED"
 
 
+class RxEditIn(BaseModel):
+    expected_version: int = Field(ge=0)
+    attestation_note: str = Field(min_length=12, max_length=2000)
+    changes: dict[str, str | int | None] = Field(min_length=1, max_length=10)
+
+
 class FillIn(BaseModel):
     dispense_quantity: str | None = None
 
@@ -414,6 +420,16 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
                 "product_selection_directive": rx.product_selection_directive,
                 "warning": "SYNTHETIC_DEVELOPMENT_ONLY_NO_ELECTRONIC_MESSAGE_VALIDATION",
             }
+
+    @app.patch("/api/prescriptions/{rx_id}")
+    def edit_rx(rx_id: str, payload: RxEditIn, actor: DemoActor):
+        return PrescriptionEditService(svc).update(
+            actor, rx_id, payload.changes,
+            payload.expected_version, payload.attestation_note)
+
+    @app.get("/api/prescriptions/{rx_id}/edits")
+    def list_rx_edits(rx_id: str, actor: DemoActor):
+        return {"edits": PrescriptionEditService(svc).history(actor, rx_id)}
 
     @app.post("/api/prescriptions")
     def new_rx(payload: RxIn, actor: DemoActor):
