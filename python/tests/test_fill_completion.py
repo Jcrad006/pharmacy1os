@@ -67,7 +67,7 @@ def test_interruption_rescans_part_then_completes_without_new_claim_or_refill(en
                                          "PART-SCHEDULE")
     with pytest.raises(WorkflowError, match="remaining"):
         flow.begin_completion(tech, primary, "79")
-    with pytest.raises(WorkflowError, match="pharmacy site"):
+    with pytest.raises(WorkflowError, match="not found at this site"):
         flow.balance(other["PHARMACIST"], primary)
 
     # Refill interval applies to new logical fills, not to the remainder of this claim.
