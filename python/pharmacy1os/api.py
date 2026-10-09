@@ -16,6 +16,8 @@ from .service import AccessDenied, Actor, PharmacyService, WorkflowError
 from .documents import DocumentService, decode_base64
 from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
+from .inventory_planning import InventoryPlanningService
+from .inventory_planning_api import make_planning_router
 from .lifecycle import LifecycleService
 from .provider_api import make_provider_router
 from .provider_directory import ProviderDirectory
@@ -273,6 +275,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     if auth_mode == "session":
         app.include_router(make_auth_router(authentication, staff_actor))
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
+    app.include_router(make_planning_router(InventoryPlanningService(svc), staff_actor))
     app.include_router(make_schedule_router(SchedulingService(svc), staff_actor))
     app.include_router(make_billing_router(BillingService(svc), staff_actor))
     app.include_router(make_willcall_router(WillCallService(svc), staff_actor))
