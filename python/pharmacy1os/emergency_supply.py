@@ -73,6 +73,28 @@ def require_emergency_claim_separation(s: Session, fill_id: str, site_id: str,
         raise WorkflowError("Emergency supply does not support synthetic payer claims")
 
 
+def require_emergency_dispense_eligible(s: Session, rx: Prescription, fill: Fill) -> None:
+    """Recheck mutable catalog/Rx classification during scan, verify and checkout.
+
+    Authorization is not a standing right to dispense after the clinical record
+    changes. Ordinary non-emergency fills are unaffected.
+    """
+    event = emergency_for_fill(s, fill.id, rx.site_id)
+    if event is None:
+        return
+    if (event.status != "OPEN" or event.prescription_id != rx.id
+            or event.quantity != fill.quantity
+            or fill.billed_quantity != event.quantity):
+        raise WorkflowError("Emergency authorization no longer matches this physical fill")
+    drug = s.get(Drug, rx.drug_id)
+    if drug is None or drug.controlled:
+        raise WorkflowError("Emergency supply blocked by controlled or missing catalog drug")
+    if rx.refills_used < rx.refills_allowed:
+        raise WorkflowError("Authorized refills are now available; emergency requires review")
+    from .fill_completion import guard_new_logical_fill
+    guard_new_logical_fill(s, rx)
+
+
 def void_unsold_emergency(s: Session, actor: Actor, fill: Fill, reason: str) -> bool:
     """Called inside return-to-stock or cancellation, never on a sold fill."""
     record = s.scalar(select(EmergencySupply).where(
