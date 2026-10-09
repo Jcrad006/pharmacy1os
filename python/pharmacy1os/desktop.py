@@ -13,6 +13,7 @@ from decimal import Decimal
 from .documents import DocumentService
 from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
+from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
 from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
@@ -65,6 +66,7 @@ def main() -> None:
     document_service = DocumentService.from_demo_env(service)
     inventory_service = InventoryService(service)
     advanced_service = AdvancedInventoryService(service)
+    planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
     directory_service = ProviderDirectory(service)
     scheduling_service = SchedulingService(service)
@@ -274,6 +276,7 @@ def main() -> None:
                 self.action("Cancel Schedule", self.schedule_cancel)
                 self.action("Begin Refill DUR", self.schedule_refill_review)
             elif page == 10:
+                self.action("Replenishment Planner", self.manage_replenishment)
                 self.action("Purchase Orders", self.manage_po)
                 self.action("Site Transfers", self.manage_transfer)
                 self.action("Cycle Counts", self.manage_count)
@@ -728,6 +731,39 @@ def main() -> None:
                             st.lot, str(st.on_hand - st.reserved - st.quarantined)) for st in stocks]
             return self.choose_item("Stock", "Select lot", options,
                 lambda x: f"{x[1]}  lot {x[2]}  available {x[3]}  [{x[0][:8]}]")[0]
+
+        def manage_replenishment(self):
+            """Advisory-only supply planning; no automatic purchase orders."""
+            action = self.choose_item("Replenishment", "Action",
+                ["Review recommendations", "Configure NDC threshold", "Disable NDC threshold"],
+                lambda x: x)
+            if action == "Review recommendations":
+                rows = planning_service.recommendations(self.actor, include_all=True)
+                lines = [
+                    f"{x['ndc']} | {x['status']} | available {x['available']} | "
+                    f"PO {x['open_orders']} | incoming {x['incoming_transfers']} | "
+                    f"projected {x['projected']} | suggested {x['suggested_quantity']}"
+                    for x in rows
+                ]
+                QMessageBox.information(self, "Synthetic replenishment review",
+                    "\n".join(lines) if lines else "No reorder thresholds configured for this pharmacy.")
+                return
+            ndc = self.ask("Replenishment", "NDC / product identifier")
+            with service.sessions() as session:
+                product = session.scalar(select(Product).where(Product.ndc == ndc))
+                if product is None:
+                    raise ValueError("NDC not found")
+                product_id = product.id
+            if action == "Configure NDC threshold":
+                planning_service.configure(
+                    self.actor, product_id,
+                    self.ask("Replenishment", "Reorder minimum (e.g. 10)"),
+                    self.ask("Replenishment", "Target on-hand (e.g. 50)"),
+                    self.ask("Replenishment", "Document reason"))
+            else:
+                planning_service.disable(
+                    self.actor, product_id,
+                    self.ask("Replenishment", "Document reason for disabling"))
 
         def manage_po(self):
             op = self.choose_item("Purchase Orders", "Action", ['Create', 'Receive', 'Cancel'], lambda x: x)
