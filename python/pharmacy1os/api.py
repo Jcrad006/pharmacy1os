@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
-from .models import Staff
+from .models import Drug, Prescription, Product, Staff
 from .service import AccessDenied, Actor, PharmacyService, WorkflowError
 from .documents import DocumentService, decode_base64
 from .inventory_ops import InventoryService
@@ -56,6 +56,7 @@ class PatientIn(BaseModel):
     last: str
     dob: str | None = None
     phone: str | None = None
+    email: str | None = None
 
 
 class PrescriberIn(BaseModel):
@@ -70,6 +71,14 @@ class DrugIn(BaseModel):
     strength: str
     dosage_form: str
     controlled: bool = False
+    brand_name: str | None = None
+    route: str | None = None
+    active: bool = True
+    controlled_substance_schedule: str | None = None
+    nc_narrow_therapeutic_index: bool = False
+    is_biological: bool = False
+    has_fda_interchangeable_biologic_alternative: bool = False
+    requires_cold_chain: bool = False
 
 
 class ProductIn(BaseModel):
@@ -78,6 +87,13 @@ class ProductIn(BaseModel):
     manufacturer: str
     description: str
     price: str = "0"
+    package_description: str | None = None
+    package_type: str | None = None
+    units_per_package: str | None = None
+    package_price: str | None = None
+    therapeutic_equivalence_code: str | None = None
+    is_interchangeable_biological: bool = False
+    active: bool = True
 
 
 class BarcodeIn(BaseModel):
@@ -102,6 +118,12 @@ class RxIn(BaseModel):
     refills: int = Field(default=0, ge=0)
     expiration_date: str | None = None
     do_not_fill_before: str | None = None
+    written_date: str | None = None
+    source_type: str = "MANUAL"
+    electronic_message_id: str | None = None
+    electronic_raw_message: str | None = None
+    prescribed_product_id: str | None = None
+    product_selection_directive: str = "UNSPECIFIED"
 
 
 class FillIn(BaseModel):
@@ -318,6 +340,42 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def add_prescriber(payload: PrescriberIn, actor: DemoActor):
         return {"id": svc.add_prescriber(actor, **payload.model_dump())}
 
+    @app.get("/api/catalog/drugs")
+    def list_drugs(actor: DemoActor, q: str = ""):
+        with svc.sessions() as s:
+            svc._authorized(s, actor, "read")
+            rows = s.query(Drug).order_by(Drug.name, Drug.strength).limit(300).all()
+            return {"drugs": [{
+                "id": d.id, "name": d.name, "brand_name": d.brand_name,
+                "strength": d.strength, "dosage_form": d.dosage_form,
+                "route": d.route, "active": d.active,
+                "controlled_substance_schedule": d.controlled_substance_schedule,
+                "nc_narrow_therapeutic_index": d.nc_narrow_therapeutic_index,
+                "is_biological": d.is_biological,
+                "has_fda_interchangeable_biologic_alternative": d.has_fda_interchangeable_biologic_alternative,
+                "requires_cold_chain": d.requires_cold_chain,
+            } for d in rows if q.casefold() in
+                f"{d.name} {d.brand_name or ''} {d.strength} {d.dosage_form}".casefold()]}
+
+    @app.get("/api/catalog/products")
+    def list_products(actor: DemoActor, drug_id: str | None = None):
+        with svc.sessions() as s:
+            svc._authorized(s, actor, "read")
+            query = s.query(Product)
+            if drug_id is not None:
+                query = query.filter(Product.drug_id == drug_id)
+            rows = query.order_by(Product.ndc).limit(300).all()
+            return {"products": [{
+                "id": p.id, "drug_id": p.drug_id, "ndc": p.ndc,
+                "manufacturer": p.manufacturer, "description": p.description,
+                "active": p.active, "unit_price": str(p.unit_price),
+                "package_description": p.package_description, "package_type": p.package_type,
+                "units_per_package": str(p.units_per_package) if p.units_per_package is not None else None,
+                "package_price": str(p.package_price) if p.package_price is not None else None,
+                "therapeutic_equivalence_code": p.therapeutic_equivalence_code,
+                "is_interchangeable_biological": p.is_interchangeable_biological,
+            } for p in rows]}
+
     @app.post("/api/drugs")
     def add_drug(payload: DrugIn, actor: DemoActor):
         return {"id": svc.add_drug(actor, **payload.model_dump())}
@@ -333,6 +391,28 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     @app.post("/api/receiving")
     def receive(payload: ReceiveIn, actor: DemoActor):
         return {"id": svc.receive(actor, **payload.model_dump())}
+
+    @app.get("/api/prescriptions/{rx_id}")
+    def prescription_detail(rx_id: str, actor: DemoActor):
+        with svc.sessions() as s:
+            svc._authorized(s, actor, "read")
+            rx = svc._site(s, Prescription, rx_id, actor)
+            return {
+                "id": rx.id, "site_id": rx.site_id, "rx_number": rx.rx_number,
+                "patient_id": rx.patient_id, "prescriber_id": rx.prescriber_id,
+                "drug_id": rx.drug_id, "sig": rx.sig, "quantity": str(rx.quantity),
+                "refills_allowed": rx.refills_allowed, "refills_used": rx.refills_used,
+                "status": rx.status, "version": rx.version,
+                "expiration_date": rx.expiration_date,
+                "do_not_fill_before": rx.do_not_fill_before,
+                "written_date": rx.written_date,
+                "source_type": rx.source_type,
+                "electronic_message_id": rx.electronic_message_id,
+                "electronic_source_recorded": rx.electronic_raw_message is not None,
+                "prescribed_product_id": rx.prescribed_product_id,
+                "product_selection_directive": rx.product_selection_directive,
+                "warning": "SYNTHETIC_DEVELOPMENT_ONLY_NO_ELECTRONIC_MESSAGE_VALIDATION",
+            }
 
     @app.post("/api/prescriptions")
     def new_rx(payload: RxIn, actor: DemoActor):
