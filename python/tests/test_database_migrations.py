@@ -282,7 +282,7 @@ def test_inventory_demand_upgrade_does_not_invent_historic_patient_need(monkeypa
                               "quantity,refills_allowed,refills_used,status,version) "
                               "VALUES (:id,:site,:patient,:prescriber,:drug,'OLD-DEMAND-RX',"
                               "'daily',10,0,0,'PRODUCT_FILL',0)"),
-                         {**ids, "site": ids["site"]})
+                         {**ids, "id": ids["rx"], "site": ids["site"]})
             conn.execute(text("INSERT INTO py_fills "
                               "(id,prescription_id,fill_number,attempt,status,quantity,billed_quantity) "
                               "VALUES (:id,:rx,0,1,'PRODUCT_FILL',10,10)"),
