@@ -48,6 +48,7 @@ def test_postgres_synthetic_pos_checkout_and_refund():
     from datetime import date, timedelta
     from pharmacy1os.pos import PosService
     from pharmacy1os.pos_models import PosTransaction, PosLine, PosFinancialEvent
+    from pharmacy1os.date_rules import DateRulesService, FillSaleTimestamp
 
     url = os.environ["PHARMACY1OS_PG_CI_URL"]
     if not url.startswith("postgresql+psycopg://"):
@@ -82,6 +83,12 @@ def test_postgres_synthetic_pos_checkout_and_refund():
             tx = session.get(PosTransaction, sale["id"])
             assert tx is not None and str(tx.subtotal) == "2.75"
             assert session.scalar(select(PosLine).where(PosLine.transaction_id == tx.id)) is not None
+            assert session.scalar(select(FillSaleTimestamp).where(
+                FillSaleTimestamp.fill_id == fill)) is not None
+        DateRulesService(service).set_minimum_days(
+            pharmacist, rx, 14, "PostgreSQL synthetic refill interval verification")
+        assert any(block["code"] == "REFILL_TOO_SOON" for block in
+                   DateRulesService(service).preview(tech, rx)["blocks"])
         refund = pos.refund(pharmacist, sale["id"], "1.25", "CASH",
                             "Postgres synthetic adjustment", "POS-PG-CI-REFUND")
         assert refund["status"] == "PARTIAL_REFUND"

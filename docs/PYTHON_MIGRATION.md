@@ -125,3 +125,12 @@ EPCS, DSCSA certification, shared-network deployment, or real PHI permitted.
 ## Seventh Python increment — scheduled fills and synthetic payer profiles (2026-10-08)
 
 Ported transaction-bound scheduling/refill review, an explicit due-date/DUR safety gate, per-site schedule idempotency, versioned per-payer billing profiles, physical source/NDC claim snapshots, and append-only application-level synthetic paid/reversed claim events. New isolated Alembic revisions follow the provider-directory migration; FastAPI endpoints and Qt controls are included. This is **NOT** a full Python conversion or production release. See `PYTHON_SCHEDULING_BILLING.md` for functionality, limitations, and test evidence. Continue preserving the TypeScript reference and legacy Prisma records.
+
+
+## Tenth Python increment — synthetic refill eligibility and sale timestamps (2026-10-08)
+
+Added `pharmacy1os/date_rules.py` and a separate audited, site-scoped date-policy service, new sale-time events from both single-fill checkout and multi-fill POS, FastAPI endpoints, and native Qt controls. A pharmacist may configure a minimum 0–365-day synthetic interval between fills and must record the reason. The start-fill transaction, scheduled-fill creation/starting, pharmacist verification, pickup and active-fill resumption all reevaluate eligibility. Existing expiry and do-not-fill-before rules remain. A previously SOLD fill without a verified pickup timestamp now blocks interval-based refill processing until the record has been safely reconciled; the program never invents a historic sale time.
+
+Additive Alembic revision `84a672dc47f0` creates only Python-owned `py_*` tables. Data in the original TypeScript/Prisma application is untouched. Local pure-rule validation passed; full GitHub Python/PostgreSQL regression checks are required. See `PYTHON_DATE_RULES.md`.
+
+**Not full parity or safe for clinical production**: native desktop UI has not passed hands-on GUI validation, clocks/timezones need pharmacy-local policy design, old data must be migrated/validated, and no legal/payer or controlled-substance refill timing is inferred. Production identity, dispensing concurrency, hardware, eRx, payer communications, and regulated backup/recovery remain unfinished.
