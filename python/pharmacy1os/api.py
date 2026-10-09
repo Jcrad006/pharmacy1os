@@ -35,6 +35,8 @@ from .prescription_transfer import TransferService
 from .prescription_edit import PrescriptionEditService
 from .clinical_records import ClinicalRecordService
 from .clinical_records_api import make_clinical_record_router, make_dur_resolution_router
+from .nti_compliance import NtiComplianceService
+from .nti_compliance_api import make_nti_router
 from .prescription_transfer_api import make_transfer_router
 from .label_printing import LabelPrintService
 from .label_printing_api import make_label_print_router
@@ -347,6 +349,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_fefo_router(FefoPolicyService(svc), staff_actor))
     app.include_router(make_clinical_record_router(ClinicalRecordService(svc), staff_actor))
     app.include_router(make_dur_resolution_router(ClinicalRecordService(svc), staff_actor))
+    app.include_router(make_nti_router(NtiComplianceService(svc), staff_actor))
     app.include_router(make_demand_router(InventoryDemandService(svc), staff_actor))
     app.include_router(make_discrepancy_router(ReceivingDiscrepancyService(svc), staff_actor))
     app.include_router(make_asof_router(HistoricalInventoryService(svc), staff_actor))

@@ -26,6 +26,7 @@ from .lifecycle import LifecycleService
 from .prescription_transfer import TransferService
 from .prescription_edit import PrescriptionEditService
 from .clinical_records import ClinicalRecordService
+from .nti_compliance import NtiComplianceService
 from .label_printing import LabelPrintService
 from .fill_completion import FillCompletionService, FillObligation
 from .emergency_supply import EmergencySupplyService
@@ -94,6 +95,7 @@ def main() -> None:
     transfer_service = TransferService(service)
     edit_service = PrescriptionEditService(service)
     clinical_records = ClinicalRecordService(service)
+    nti_compliance = NtiComplianceService(service)
     label_printer = LabelPrintService(service)
     completion_service = FillCompletionService(service)
     emergency_service = EmergencySupplyService(service)
@@ -275,6 +277,8 @@ def main() -> None:
                 self.action("Pharmacist Edit Unfilled Rx", self.edit_unfilled_rx)
                 self.action("Record Pharmacist Intervention", self.record_pharmacist_intervention)
                 self.action("Review Rx Clinical Record", self.review_rx_clinical_record)
+                self.action("Review NTI Manufacturer Continuity", self.review_nti_compliance)
+                self.action("Document NTI Manufacturer Consent", self.document_nti_consent)
                 self.action("Document DUR Issue", self.document_dur_issue)
                 self.action("Resolve DUR Issue (Pharmacist)", self.resolve_clinical_dur_issue)
                 self.action("Request Transfer Out", self.request_transfer_out)
@@ -1155,6 +1159,33 @@ def main() -> None:
             record = clinical_records.clinical_record(self.actor, self.selected_id())
             QMessageBox.information(self, "Prescription clinical record",
                 json.dumps(record, indent=2)[:16000])
+
+        def review_nti_compliance(self):
+            row = nti_compliance.preview(self.actor, self.fill_for_rx(self.selected_id()))
+            QMessageBox.information(self, "Synthetic NTI continuity",
+                json.dumps(row, indent=2)[:16000])
+
+        def document_nti_consent(self):
+            fill_id = self.fill_for_rx(self.selected_id())
+            context = nti_compliance.preview(self.actor, fill_id)
+            prior = context["prior_manufacturer"]
+            if not prior:
+                raise ValueError("No prior sold manufacturer; consent record is not required")
+            choices = [name for name in context["active_manufacturers"] if name != prior]
+            new = self.choose_item("NTI manufacturer", "Select new manufacturer",
+                choices, lambda x: x)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            prescriber = self.ask("Prescriber consent",
+                "Offset-aware ISO 8601 date/time prescriber consent occurred", now)
+            patient = self.ask("Patient consent",
+                "Offset-aware ISO 8601 date/time patient consent occurred", now)
+            note = self.ask("NTI clinical documentation",
+                "Document pharmacist's verification of both consents")
+            result = nti_compliance.document(self.actor, fill_id, prior, new,
+                prescriber, patient, note)
+            QMessageBox.information(self, "Synthetic consent assertion",
+                f"Recorded {result['id']}. Does not itself verify legal consent.")
 
         def edit_unfilled_rx(self):
             """Audited pharmacist edit; never overwrites scanned original or previous fill."""

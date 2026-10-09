@@ -18,8 +18,8 @@ def require_medication_eligible(s: Session, rx: Prescription) -> Drug:
         raise WorkflowError("The prescribed medication is missing or inactive")
     if drug.controlled or drug.controlled_substance_schedule != "NONE":
         raise WorkflowError("controlled or unclassified medications require a validated workflow")
-    if drug.nc_narrow_therapeutic_index:
-        raise WorkflowError("NTI medication requires the unported manufacturer-consent workflow")
+    # NTI safety is validated separately for each scanned, prepared, verified
+    # and sold physical source. Other specialized products remain fail-closed.
     if drug.is_biological or drug.has_fda_interchangeable_biologic_alternative:
         raise WorkflowError("Biologic substitution and required communication are not yet validated")
     if drug.requires_cold_chain:
@@ -49,7 +49,10 @@ def require_product_eligible(s: Session, rx: Prescription, product: Product | No
 
 def require_fill_sources_eligible(s: Session, rx: Prescription, fill: Fill) -> None:
     require_medication_eligible(s, rx)
-    for source in s.scalars(select(FillSource).where(FillSource.fill_id == fill.id)):
+    sources = s.scalars(select(FillSource).where(FillSource.fill_id == fill.id)).all()
+    from .nti_compliance import require_nti_fill
+    require_nti_fill(s, rx, fill, sources)
+    for source in sources:
         stock = s.get(Stock, source.stock_id)
         if stock is None or stock.site_id != rx.site_id:
             raise WorkflowError("Physical source was lost or assigned to another site")

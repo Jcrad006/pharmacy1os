@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models, inventory_demand_models, inventory_discrepancy_models, inventory_exception_models, inventory_fefo_models, clinical_records  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models, inventory_demand_models, inventory_discrepancy_models, inventory_exception_models, inventory_fefo_models, clinical_records, nti_compliance  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -562,6 +562,8 @@ class PharmacyService:
             from .inventory_advanced import assert_not_recalled
             assert_not_recalled(s, stock)
             sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+            from .nti_compliance import require_nti_source
+            require_nti_source(s, rx, f, product, sources)
             if len(sources) >= 4 or any(source.stock_id == stock.id for source in sources):
                 raise WorkflowError("Maximum four distinct sources; duplicates rejected")
             if sum((source.quantity for source in sources), Decimal("0")) + qty > f.quantity:
