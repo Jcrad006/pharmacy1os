@@ -256,6 +256,7 @@ def main() -> None:
                 self.action("Authorize Synthetic Emergency", self.authorize_emergency)
                 self.action("Complete Emergency Follow-up", self.emergency_followup)
                 self.action("Scan Product Source", self.scan)
+                self.action("Remove Incorrect Scanned Source", self.remove_scanned_source)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
                 self.action("Prepare With Patient Coverages", self.prepare_with_coverages)
                 self.action("Preview / Print Synthetic Bottle", self.print_test_label)
@@ -897,6 +898,18 @@ def main() -> None:
                     location_id = chosen["location_id"]
             service.scan_source(self.actor, fid, barcode, lot, exp, qty,
                                 location_id=location_id)
+
+        def remove_scanned_source(self):
+            fill_id = self.fill_for_rx(self.selected_id())
+            sources = service.scanned_sources(self.actor, fill_id)
+            source = self.choose_item("Source correction",
+                "Select the incorrectly scanned product", sources,
+                lambda x: f"{x['ndc']} | {x['lot']} | {x['quantity']} | {x['description']}")
+            reason = self.ask("Source correction", "Reason for releasing this reservation")
+            result = service.remove_scanned_source(
+                self.actor, fill_id, source["id"], reason)
+            QMessageBox.information(self, "Stock reservation released",
+                json.dumps(result, indent=2) + "\n\nRescan the verified bottle to proceed.")
 
         def prepare(self):
             fid = self.fill_for_rx(self.selected_id())
