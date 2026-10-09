@@ -37,6 +37,8 @@ def test_identifiers_can_hold_npi_multiple_dea_state_identifiers(env):
 
 def test_subsequent_active_npi_is_uniquely_enforced(env):
     _, directory, actors, rx = env
+    with pytest.raises(WorkflowError, match="conflicts with the existing provider identity"):
+        directory.add_identifier(actors["PHARMACIST"], rx, "NPI", "9876543210")
     directory.add_identifier(actors["PHARMACIST"], rx, "NPI", "1234567893")
     with pytest.raises(WorkflowError, match="one active NPI"):
         directory.add_identifier(actors["PHARMACIST"], rx, "NPI", "9876543210")
