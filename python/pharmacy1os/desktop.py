@@ -552,18 +552,18 @@ def main() -> None:
             if not ordered:
                 raise ValueError("No active patient payer coverages; use the Third Party page")
             selected = [x["id"] for x in ordered]
-            question = "\\n".join(
+            question = "\n".join(
                 f"{x['position']}: {x['payer_name']} [{x['member_id_masked']}]"
                 for x in ordered)
             answer = QMessageBox.question(self, "Synthetic insurance coverage",
                 "Prepare using these coverage positions? This does NOT transmit insurance "
-                "claims, verify eligibility or calculate real COB.\\n" + question)
+                "claims, verify eligibility or calculate real COB.\n" + question)
             if answer != QMessageBox.StandardButton.Yes:
                 return
             labels = service.prepare_for_review(
                 self.actor, fid, [], coverage_ids=selected)
             QMessageBox.information(self, "Synthetic label creation",
-                "\\n".join(labels))
+                "\n".join(labels))
 
         def view_claim_transactions(self):
             fill_id = self.ask("Synthetic claim history", "Fill ID")
@@ -658,7 +658,7 @@ def main() -> None:
             signature = self.ask("Synthetic checkout", "Attested signature method",
                                  "PAPER").upper()
             approval = QMessageBox.question(self, "Synthetic checkout",
-                "Confirm identity verified and signature attested?\\n"
+                "Confirm identity verified and signature attested?\n"
                 "NO REAL MONEY OR CLAIMS WILL BE PROCESSED.")
             if approval != QMessageBox.StandardButton.Yes:
                 return
@@ -1035,9 +1035,9 @@ def main() -> None:
             with service.sessions() as session:
                 service._authorized(session, self.actor, "read")
                 patient = service._site(session, Patient, self.selected_id(), self.actor)
-                summary = (f"Patient: {patient.last_name}, {patient.first_name}\\n"
-                           f"DOB: {patient.date_of_birth or 'Not provided'}\\n"
-                           f"Phone: {patient.phone or 'Not provided'}\\n"
+                summary = (f"Patient: {patient.last_name}, {patient.first_name}\n"
+                           f"DOB: {patient.date_of_birth or 'Not provided'}\n"
+                           f"Phone: {patient.phone or 'Not provided'}\n"
                            f"Email: {patient.email or 'Not provided'}")
             QMessageBox.information(self, "Synthetic patient record", summary)
 
