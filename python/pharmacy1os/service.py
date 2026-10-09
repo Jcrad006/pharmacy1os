@@ -134,11 +134,16 @@ class PharmacyService:
                     subject_id=subject, detail=json.dumps(detail, sort_keys=True, default=str)))
 
     def add_patient(self, actor: Actor, first: str, last: str, dob: str | None = None,
-                    phone: str | None = None) -> str:
+                    phone: str | None = None, email: str | None = None) -> str:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "entry")
+            normalized_email = email.strip() if isinstance(email, str) else None
+            if normalized_email is not None and (
+                    not normalized_email or len(normalized_email) > 254
+                    or "@" not in normalized_email or any(ch.isspace() for ch in normalized_email)):
+                raise WorkflowError("Invalid patient email")
             p = Patient(site_id=actor.site_id, first_name=first.strip(), last_name=last.strip(),
-                        date_of_birth=dob, phone=phone)
+                        date_of_birth=dob, phone=phone, email=normalized_email)
             if not p.first_name or not p.last_name:
                 raise WorkflowError("Patient first and last names are required")
             s.add(p); s.flush()
