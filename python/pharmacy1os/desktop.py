@@ -270,7 +270,9 @@ def main() -> None:
                 self.action("View Directory", self.provider_detail)
             elif page == 6:
                 self.action("Add Drug", self.add_drug)
+                self.action("Add Detailed Drug / Compliance", self.add_drug_detailed)
                 self.action("Add Product / NDC", self.add_product)
+                self.action("Add Detailed Product Package", self.add_product_detailed)
                 self.action("Register Barcode", self.register_barcode)
             elif page == 7:
                 self.action("Receive Scanned Product", self.receive)
@@ -811,6 +813,44 @@ def main() -> None:
             service.add_product(self.actor, drug_id, self.ask("NDC", "NDC"),
                                 self.ask("NDC", "Manufacturer"), self.ask("NDC", "Descriptor"))
 
+        def add_drug_detailed(self):
+            """Preserve source catalog metadata; block unvalidated classes from filling."""
+            name = self.ask("Detailed Drug", "Generic name")
+            strength = self.ask("Detailed Drug", "Strength")
+            dosage = self.ask("Detailed Drug", "Dosage form")
+            brand = self.ask("Detailed Drug", "Brand (optional)", "")
+            route = self.ask("Detailed Drug", "Route (optional)", "")
+            schedule = self.choose_item("Controlled classification", "Schedule", [
+                "NONE", "II", "III", "IV", "V", "UNCLASSIFIED"
+            ], lambda x: x)
+            flags = {}
+            for key, label in (
+                ("nc_narrow_therapeutic_index", "Narrow therapeutic index"),
+                ("is_biological", "Biological medicine"),
+                ("requires_cold_chain", "Cold-chain handling required"),
+            ):
+                flags[key] = QMessageBox.question(self, label,
+                    f"Is this drug classified as: {label}?") == QMessageBox.StandardButton.Yes
+            service.add_drug(self.actor, name, strength, dosage,
+                brand_name=brand or None, route=route or None,
+                controlled_substance_schedule=schedule,
+                **flags)
+
+        def add_product_detailed(self):
+            drug_id = self.selected_id()
+            ndc = self.ask("Detailed product", "NDC")
+            manufacturer = self.ask("Detailed product", "Manufacturer")
+            descriptor = self.ask("Detailed product", "Product description")
+            price = self.ask("Detailed product", "Unit price", "0")
+            units = self.ask("Detailed product", "Units per package", "100")
+            package_price = self.ask("Detailed product", "Package price", "0")
+            package_type = self.ask("Detailed product", "Package type (optional)", "")
+            te = self.ask("Detailed product", "Therapeutic equivalence code (optional)", "")
+            service.add_product(self.actor, drug_id, ndc, manufacturer, descriptor, price,
+                units_per_package=units, package_price=package_price,
+                package_type=package_type or None,
+                therapeutic_equivalence_code=te or None)
+
         def register_barcode(self):
             ndc = self.ask("Barcode", "NDC of product")
             with service.sessions() as s:
@@ -1202,9 +1242,30 @@ def main() -> None:
                 pid = choose("Patient", patients, lambda p: f"{p.last_name}, {p.first_name} ({p.id[:8]})")
                 did = choose("Provider", providers, lambda p: f"{p.last_name}, {p.first_name} ({p.id[:8]})")
                 drug = choose("Drug", drugs, lambda p: f"{p.name} {p.strength} ({p.id[:8]})")
+            source = self.choose_item("Prescription source", "Select documented source", [
+                "MANUAL", "PAPER", "FAX", "ELECTRONIC", "VERBAL", "TRANSFER"
+            ], lambda x: x)
+            directive = self.choose_item("Product selection", "Choose prescribed product rule", [
+                "UNSPECIFIED", "SELECTION_PERMITTED", "DISPENSE_AS_WRITTEN"
+            ], lambda x: x)
+            selected_product = None
+            if directive == "DISPENSE_AS_WRITTEN":
+                with service.sessions() as s:
+                    options = s.scalars(select(Product).where(
+                        Product.drug_id == drug, Product.active.is_(True)
+                    ).order_by(Product.ndc)).all()
+                    selected_product = self.choose_item("Dispense as written", "Select exact prescribed NDC",
+                        options, lambda p: f"{p.ndc} | {p.description}") .id
+            written = self.ask("Prescription source", "Written date YYYY-MM-DD (optional)", "")
+            erx_id = (self.ask("Synthetic electronic source", "Message reference (optional)", "")
+                      if source == "ELECTRONIC" else "")
             service.add_prescription(self.actor, pid, did, drug, self.ask("Rx", "Rx number"),
                                      self.ask("Rx", "SIG"), self.ask("Rx", "Quantity"),
-                                     int(self.ask("Rx", "Refills", "0")))
+                                     int(self.ask("Rx", "Refills", "0")),
+                                     source_type=source, written_date=written or None,
+                                     electronic_message_id=erx_id or None,
+                                     product_selection_directive=directive,
+                                     prescribed_product_id=selected_product)
 
     window = Window()
     window.show()
