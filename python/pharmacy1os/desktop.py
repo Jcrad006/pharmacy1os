@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .documents import DocumentService
 from .inventory_ops import InventoryService
+from .inventory_fefo import FefoPolicyService
 from .inventory_locations import InventoryLocationService
 from .inventory_allocations import InventoryAllocationService
 from .inventory_demands import InventoryDemandService
@@ -80,6 +81,7 @@ def main() -> None:
     document_service = DocumentService.from_demo_env(service)
     inventory_service = InventoryService(service)
     inventory_locations = InventoryLocationService(service)
+    fefo_policies = FefoPolicyService(service)
     inventory_allocations = InventoryAllocationService(service)
     inventory_demands = InventoryDemandService(service)
     receiving_discrepancies = ReceivingDiscrepancyService(service)
@@ -319,6 +321,8 @@ def main() -> None:
                 self.action("View Lot Positions", self.show_inventory_positions)
                 self.action("Move Available Stock Between Locations", self.move_inventory_location)
                 self.action("FEFO Advisory", self.show_fefo_advisory)
+                self.action("View FEFO Policies", self.view_fefo_policies)
+                self.action("Configure FEFO Policy (Pharmacist)", self.configure_fefo_policy)
                 self.action("View Fill / Physical Allocation History", self.show_fill_allocations)
                 self.action("View Inventory Demands / Backorders", self.view_inventory_demands)
                 self.action("Create Manual / Reorder Demand", self.create_inventory_demand)
@@ -897,8 +901,17 @@ def main() -> None:
                         [p for p in available if Decimal(p["available"]) > 0],
                         lambda p: f"{p['code']} | available {p['available']}")
                     location_id = chosen["location_id"]
-            service.scan_source(self.actor, fid, barcode, lot, exp, qty,
-                                location_id=location_id)
+            try:
+                service.scan_source(self.actor, fid, barcode, lot, exp, qty,
+                                    location_id=location_id)
+            except Exception as exc:
+                if (not str(exc).startswith("FEFO policy requires earlier stock")
+                        or self.actor.role not in {"PHARMACIST", "ADMIN"}):
+                    raise
+                note = self.ask("Pharmacist FEFO override",
+                    "Document why an earlier lot or minimum shelf life cannot be used")
+                service.scan_source(self.actor, fid, barcode, lot, exp, qty,
+                                    location_id=location_id, fefo_override_note=note)
 
         def set_fill_packaging(self):
             fill_id = self.fill_for_rx(self.selected_id())
@@ -1368,6 +1381,27 @@ def main() -> None:
             QMessageBox.information(self, "Fill / physical location allocation history",
                 json.dumps(events, indent=2)[:12000]
                 if events else "No tracked physical allocations for this fill.")
+
+        def view_fefo_policies(self):
+            policies = fefo_policies.list(self.actor)
+            QMessageBox.information(self, "Site FEFO policy register",
+                (json.dumps(policies, indent=2) if policies else
+                 "No FEFO policies configured. Existing scans remain unregulated by FEFO.")[:12000])
+
+        def configure_fefo_policy(self):
+            with service.sessions() as session:
+                products = session.scalars(select(Product).where(
+                    Product.active.is_(True)).order_by(Product.ndc)).all()
+                choices = [(product.id, product.ndc, product.description)
+                           for product in products]
+            selected = self.choose_item("FEFO configuration", "Choose NDC", choices,
+                lambda x: f"{x[1]} – {x[2]}")
+            mode = self.choose_item("FEFO mode", "Select behavior",
+                ["ADVISORY", "ENFORCE"], lambda x: x)
+            shelf_days = int(self.ask("FEFO shelf life", "Minimum whole days remaining", "0"))
+            note = self.ask("FEFO policy", "Document pharmacy policy decision")
+            policy_id = fefo_policies.configure(self.actor, selected[0], mode, shelf_days, note)
+            QMessageBox.information(self, "Site FEFO policy", f"Policy saved: {policy_id}")
 
         def show_fefo_advisory(self):
             with service.sessions() as session:
