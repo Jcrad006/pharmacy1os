@@ -107,8 +107,11 @@ class ClinicalRecordService:
         with self.service.sessions() as s:
             self.service._authorized(s, actor, "read")
             rx = self.service._site(s, Prescription, prescription_id, actor)
+            # Match the original clinical panel: unresolved issues first,
+            # newest among the same status, then a stable ID tie-breaker.
             issues = s.scalars(select(DUR).where(DUR.prescription_id == rx.id)
-                .order_by(DUR.id)).all()
+                .order_by(DUR.resolved.asc(),
+                          DUR.created_at.desc(), DUR.id.desc())).all()
             notes = s.scalars(select(InterventionNote).where(
                 InterventionNote.site_id == actor.site_id,
                 InterventionNote.prescription_id == rx.id)
@@ -125,9 +128,12 @@ class ClinicalRecordService:
                     "author": {"display_name": author.name, "role": author.role},
                     "note": item.note, "created_at": item.created_at.isoformat(),
                 })
-            return {
-                "prescription_id": rx.id,
-                "issues": [{
+            issue_rows = []
+            for issue in issues:
+                reviewer = s.get(Staff, issue.resolved_by_id) if issue.resolved_by_id else None
+                if reviewer is not None and reviewer.site_id != actor.site_id:
+                    raise WorkflowError("Clinical reviewer site mismatch")
+                issue_rows.append({
                     "id": issue.id, "prescription_id": rx.id,
                     "code": issue.code, "title": issue.title or issue.code,
                     "description": issue.description,
@@ -138,7 +144,12 @@ class ClinicalRecordService:
                     "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at else None,
                     "resolved_automatically": issue.resolved_automatically,
                     "resolved_by_id": issue.resolved_by_id,
-                } for issue in issues],
-                "interventions": result,
+                    "resolved_by": (
+                        {"display_name": reviewer.name, "role": reviewer.role}
+                        if reviewer is not None else None),
+                })
+            return {
+                "prescription_id": rx.id,
+                "issues": issue_rows, "interventions": result,
                 "warning": "SYNTHETIC_CLINICAL_RECORD_NOT_LIVE_PHARMACY",
             }
