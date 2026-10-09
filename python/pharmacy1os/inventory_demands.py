@@ -166,11 +166,12 @@ def update_fill_demand_tx(s: Session, actor: Actor, fill: Fill, rx: Prescription
         raise WorkflowError("Cannot amend a fulfilled or cancelled inventory demand")
     if fill.quantity <= 0:
         raise WorkflowError("Inventory demand must have a positive physical fill target")
+    previous = row.status
     row.required_quantity = fill.quantity
     row.available_quantity = ZERO
     row.status = "OPEN"
     row.updated_at = utcnow()
-    _event(s, actor, row, "FILL_TARGET_CHANGED", "OPEN", _note(reason))
+    _event(s, actor, row, "FILL_TARGET_CHANGED", previous, _note(reason))
     reconcile_tx(s, actor, rx.drug_id, reason="Partial fill target updated")
 
 
