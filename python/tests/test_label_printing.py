@@ -151,3 +151,36 @@ def test_synthetic_preview_api_guard_and_reprint_authorization(env):
     result = api.post(url, json=payload, headers=pharmacist)
     assert result.status_code == 200
     assert result.json()["physical_print_verified"] is False
+
+
+def test_scanned_lot_and_manufacturer_expiration_are_bound_to_each_bottle(env):
+    svc, a, outsider, rx, fill, sources, exp, printer = _prepared(env)
+    jobs = printer.list(a["TECHNICIAN"], fill)
+    first, second = (
+        printer.preview(a["TECHNICIAN"], job["id"]) for job in jobs
+    )
+    assert "SCANNED LOT: PRINT-LOT-1" in first
+    assert "SCANNED LOT: PRINT-LOT-2" not in first
+    assert "SCANNED LOT: PRINT-LOT-2" in second
+    assert f"MANUFACTURER EXP: {exp}" in first
+    assert f"MANUFACTURER EXP: {exp}" in second
+    assert "PACKAGING: REPACKAGED / PRESCRIPTION CONTAINER" in first
+    assert "PATIENT DISCARD DATE: PENDING_PHARMACIST_VERIFICATION" in second
+    with svc.sessions() as session:
+        snaps = [session.get(LabelPrintJob, job["id"]).snapshot_json for job in jobs]
+    import json
+    assert json.loads(snaps[0])["scanned_stock_id"] != json.loads(snaps[1])["scanned_stock_id"]
+
+
+def test_original_manufacturer_container_status_frozen_into_label_preview(env):
+    svc, a, outsider, rx, fill, sources, exp, printer = env
+    svc.set_fill_packaging(a["TECHNICIAN"], fill,
+        dispensed_in_original_container=True,
+        note="The prescription is prepared in its original closed container")
+    _prepared(env)
+    jobs = printer.list(a["TECHNICIAN"], fill)
+    previews = [printer.preview(a["TECHNICIAN"], job["id"]) for job in jobs]
+    assert all("PACKAGING: ORIGINAL MANUFACTURER CONTAINER" in item
+               for item in previews)
+    assert all("ORIGINAL_CONTAINER_MANUFACTURER_EXPIRATION_APPLIES" in item
+               for item in previews)
