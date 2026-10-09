@@ -194,3 +194,8 @@ See [PYTHON_PARITY_PROGRESS_INCREMENT_21.md](PYTHON_PARITY_PROGRESS_INCREMENT_21
 ## Twenty-second Python increment — synthetic claim ledger and rejection controls
 
 See [PYTHON_PARITY_PROGRESS_INCREMENT_22.md](PYTHON_PARITY_PROGRESS_INCREMENT_22.md). Implemented standalone append-only `BILL`, `REVERSE`, `TEST_REJECT`, and `TEST_RESOLVE` synthetic request/response snapshots linked to site, fill, payer and optional coverage, with SHA-256 request digests and unique idempotency keys. A manually injected test rejection blocks fill preparation until pharmacist-reviewed test clearance; it **does not represent a real insurer rejection or approval**. Optionally link versioned payer billing profiles by stable payer ID. Migration `e48f2d6a47cb` touches only Python `py_*` objects. The CLI now registers all mapped extensions before verifying migrated schemas. Actual payer-network claims, rejection retry orchestration, FEFO inventory, native desktop parity and Prisma conversion remain unfinished.
+
+
+## Twenty-third Python increment — physical inventory locations and FEFO advisory
+
+See [PYTHON_PARITY_PROGRESS_INCREMENT_23.md](PYTHON_PARITY_PROGRESS_INCREMENT_23.md). The Python rewrite now supports synthetic site-scoped inventory locations, opt-in pharmacist-attested stock-position reconciliation, automatic available/reserved/quarantined physical balance mirroring for tracked lots, available-only stock moves, location-confirmed source scanning and read-only FEFO recommendations. Migration `f29a4d5c38a1` only modifies isolated Python `py_*` tables. **Full original fill-linked InventoryAllocation, demand/backorders, as-of ledger and inventory exception workflows are not yet ported.**
