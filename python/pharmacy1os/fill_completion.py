@@ -144,6 +144,9 @@ class FillCompletionService:
                 raise WorkflowError("Only an active Product Fill may be interrupted")
             if not ZERO < physical < fill.quantity:
                 raise WorkflowError("Partial quantity must be below the original physical target")
+            from .emergency_supply import emergency_for_fill
+            if emergency_for_fill(s, fill.id, actor.site_id):
+                raise WorkflowError("Emergency supply cannot be converted to an ordinary partial")
             if s.scalar(select(FillObligation.id).where(FillObligation.anchor_fill_id == fill.id)) or s.scalar(
                 select(FillCompletion.id).where(FillCompletion.fill_id == fill.id)):
                 raise WorkflowError("Partially linked fills cannot be interrupted a second time")
