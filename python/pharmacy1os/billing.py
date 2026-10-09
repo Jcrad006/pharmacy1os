@@ -86,6 +86,8 @@ def record_reversal(s, actor: Actor, claim: Claim, reason: str) -> None:
                          payer_name=claim.payer, selected_ndc=selected,
                          billed_quantity=claim.billed_quantity,
                          source_snapshot=snapshot, reason=reason.strip()[:500], actor_id=actor.id))
+    from .claim_transactions import record_test_reversal
+    record_test_reversal(s, actor, claim, reason)
 
 
 class BillingService:
