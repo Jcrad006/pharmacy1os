@@ -15,6 +15,7 @@ from .documents import DocumentService
 from .inventory_ops import InventoryService
 from .inventory_locations import InventoryLocationService
 from .inventory_allocations import InventoryAllocationService
+from .inventory_demands import InventoryDemandService
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
@@ -77,6 +78,7 @@ def main() -> None:
     inventory_service = InventoryService(service)
     inventory_locations = InventoryLocationService(service)
     inventory_allocations = InventoryAllocationService(service)
+    inventory_demands = InventoryDemandService(service)
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
@@ -300,6 +302,11 @@ def main() -> None:
                 self.action("Move Available Stock Between Locations", self.move_inventory_location)
                 self.action("FEFO Advisory", self.show_fefo_advisory)
                 self.action("View Fill / Physical Allocation History", self.show_fill_allocations)
+                self.action("View Inventory Demands / Backorders", self.view_inventory_demands)
+                self.action("Create Manual / Reorder Demand", self.create_inventory_demand)
+                self.action("Reconcile Drug Inventory Demands", self.reconcile_inventory_demands)
+                self.action("Cancel Manual / Reorder Demand", self.cancel_inventory_demand)
+                self.action("View Demand History", self.view_inventory_demand_history)
             elif page == 9:
                 self.action("Create Synthetic Payer", self.create_payer)
                 self.action("View Payers", self.show_payers)
@@ -1183,6 +1190,54 @@ def main() -> None:
             reason = self.ask("Physical inventory move", "Reason for physical custody change")
             inventory_locations.move(self.actor, stock_id, original["id"], destination["id"],
                                      quantity, reason)
+
+        def view_inventory_demands(self):
+            rows = inventory_demands.list(self.actor)
+            QMessageBox.information(self, "Inventory demand / backorder queue",
+                (json.dumps(rows, indent=2) or "No open inventory demands")[:16000]
+                + "\n\nREADY = forecast only, not reserved units.")
+
+        def create_inventory_demand(self):
+            with service.sessions() as s:
+                drugs = s.scalars(select(Drug).order_by(Drug.name)).all()
+                items = [(x.id, x.name, x.strength) for x in drugs]
+            selected = self.choose_item("Drug demand", "Choose inventory drug", items,
+                lambda d: f"{d[1]} {d[2]} [{d[0][:8]}]")
+            source = self.choose_item("Demand source", "Choose synthetic demand",
+                ["MANUAL", "REORDER"], lambda x: x)
+            quantity = self.ask("Inventory demand", "Physical unit quantity needed")
+            note = self.ask("Inventory demand", "Document why the stock is needed")
+            due = self.ask("Inventory demand", "Needed-by date YYYY-MM-DD (optional)", "")
+            row_id = inventory_demands.create_manual(self.actor, selected[0], quantity,
+                source=source, needed_by=due or None, note=note)
+            QMessageBox.information(self, "Demand created", f"Advisory demand {row_id} recorded.")
+
+        def reconcile_inventory_demands(self):
+            with service.sessions() as s:
+                drugs = s.scalars(select(Drug).order_by(Drug.name)).all()
+                items = [(x.id, x.name, x.strength) for x in drugs]
+            selected = self.choose_item("Reconcile demand", "Choose drug", items,
+                lambda x: f"{x[1]} {x[2]}")
+            result = inventory_demands.reconcile(self.actor, selected[0])
+            QMessageBox.information(self, "Advisory stock reconciliation",
+                json.dumps(result, indent=2))
+
+        def cancel_inventory_demand(self):
+            rows = [d for d in inventory_demands.list(self.actor)
+                    if d["source"] in ("MANUAL", "REORDER")
+                    and d["status"] in ("OPEN", "READY")]
+            chosen = self.choose_item("Demand queue", "Choose demand to cancel", rows,
+                lambda x: f"{x['source']} | {x['required_quantity']} | {x['drug_id'][:8]}")
+            reason = self.ask("Demand cancellation", "Document cancellation reason")
+            inventory_demands.cancel(self.actor, chosen["id"], reason)
+
+        def view_inventory_demand_history(self):
+            rows = inventory_demands.list(self.actor)
+            chosen = self.choose_item("Demand history", "Select demand", rows,
+                lambda x: f"{x['source']} | {x['status']} | {x['drug_id'][:8]}")
+            QMessageBox.information(self, "Immutable demand events",
+                json.dumps(inventory_demands.history(self.actor, chosen["id"]),
+                           indent=2)[:16000])
 
         def show_fill_allocations(self):
             fill_id = self.ask("Physical pick history", "Fill ID")
