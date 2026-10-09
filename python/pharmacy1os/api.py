@@ -46,6 +46,7 @@ from .fill_completion import FillCompletionService
 from .fill_completion_api import make_fill_completion_router
 from .provider_api import make_provider_router
 from .provider_directory import ProviderDirectory
+from .provider_parity import PrescriberParityService, PrescriberContractIn
 from .scheduling import SchedulingService
 from .scheduling_api import make_schedule_router
 from .billing import BillingService
@@ -399,9 +400,9 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
                 "dateOfBirth": created.date_of_birth,
                 "phone": created.phone, "email": created.email}}
 
-    @app.post("/api/prescribers")
-    def add_prescriber(payload: PrescriberIn, actor: DemoActor):
-        return {"id": svc.add_prescriber(actor, **payload.model_dump())}
+    @app.post("/api/prescribers", status_code=201)
+    def add_prescriber(payload: PrescriberContractIn, actor: DemoActor):
+        return PrescriberParityService(svc).create(actor, payload)
 
     @app.get("/api/catalog/drugs")
     def list_drugs(actor: DemoActor, q: str = ""):
