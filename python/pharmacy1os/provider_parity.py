@@ -7,7 +7,6 @@ authenticate NPI/DEA credentials or authorize real patient data.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field
@@ -187,9 +186,19 @@ class PrescriberParityService:
                 for row in rows:
                     s.add(model(site_id=actor.site_id, prescriber_id=rx_provider.id, **row))
             s.flush()
-            # Preserve the simple preexisting Python NPI shortcut for old clients.
-            primary_npi = next((x["number"] for x in identifiers if x["type"] == "NPI"), None)
-            rx_provider.npi = primary_npi
+            # Keep transitional scalar fields available for older Python
+            # readers. Structured child records remain authoritative; values
+            # too long for the legacy scalar are never silently truncated.
+            def scalar_compat(value: str | None, max_len: int) -> str | None:
+                return value if value is not None and len(value) <= max_len else None
+            rx_provider.npi = scalar_compat(next((x["number"] for x in identifiers
+                if x["type"] == "NPI"), None), 20)
+            rx_provider.dea = scalar_compat(next((x["number"] for x in identifiers
+                if x["type"] == "DEA"), None), 30)
+            rx_provider.phone = scalar_compat(next((x["value"] for x in contacts
+                if x["kind"] == "PHONE" and x["is_primary"]), None), 50)
+            rx_provider.fax = scalar_compat(next((x["value"] for x in contacts
+                if x["kind"] == "FAX" and x["is_primary"]), None), 50)
             self.pharmacy._audit(s, actor, "PRESCRIBER_CREATED", rx_provider.id,
                 {"practice_level": rx_provider.practice_level,
                  "identifier_count": len(identifiers),
