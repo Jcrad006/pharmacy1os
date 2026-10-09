@@ -15,6 +15,7 @@ from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
+from .prescription_transfer import TransferService
 from .fill_completion import FillCompletionService, FillObligation
 from .emergency_supply import EmergencySupplyService
 from .provider_directory import ProviderDirectory
@@ -70,6 +71,7 @@ def main() -> None:
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
+    transfer_service = TransferService(service)
     completion_service = FillCompletionService(service)
     emergency_service = EmergencySupplyService(service)
     directory_service = ProviderDirectory(service)
@@ -241,6 +243,9 @@ def main() -> None:
                 self.action("Hold Rx", self.hold_rx)
                 self.action("Resume Rx", self.resume_rx)
                 self.action("Cancel Rx", self.cancel_rx)
+                self.action("Request Transfer Out", self.request_transfer_out)
+                self.action("Attest External Transfer", self.attest_transfer_out)
+                self.action("Withdraw Transfer Request", self.withdraw_transfer_out)
                 self.action("Rx Documents", self.document_window)
                 self.action("Date Rules / Min Refill Interval", self.rx_date_policy)
             elif page == 2:
@@ -641,6 +646,42 @@ def main() -> None:
                 events, lambda e: f"{e['fill_id'][:8]} | due {e['follow_up_due_at']} | {e['status']}")
             emergency_service.complete_follow_up(self.actor, selected["fill_id"],
                 self.ask("Emergency follow-up", "Document completed clinical follow-up"))
+        def request_transfer_out(self):
+            rx_id = self.selected_id()
+            pharmacy = self.ask("External transfer request", "Receiving pharmacy name")
+            phone = self.ask("External transfer request", "Receiving pharmacy phone")
+            reason = self.ask("External transfer request", "Transfer request justification")
+            key = self.ask("External transfer request", "Stable request reference")
+            event_id = transfer_service.request(self.actor, rx_id, pharmacy, phone, reason, key)
+            QMessageBox.information(self, "Transfer recorded",
+                f"Request {event_id[:8]} saved. NO fax/eRx or external transmission "
+                "occurred. A pharmacist must separately attest the completed handoff.")
+
+        def transfer_selection(self):
+            items = transfer_service.list(self.actor)
+            pending = [x for x in items if x["status"] == "REQUESTED"]
+            return self.choose_item("Transfer requests", "Select pending request",
+                pending, lambda x: f"{x['destination_name']} | {x['id'][:8]}")
+
+        def attest_transfer_out(self):
+            item = self.transfer_selection()
+            receiver = self.ask("Transfer attestation", "Receiving pharmacist name")
+            reference = self.ask("Transfer attestation", "Independent handoff reference")
+            note = self.ask("Transfer attestation", "Document the actual outside exchange")
+            answer = QMessageBox.question(self, "Transfer attestation",
+                "Did you personally confirm an external transfer took place? "
+                "No electronic transmission is performed by Pharmacy1OS.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            transfer_service.attest_out(self.actor, item["id"],
+                receiving_pharmacist=receiver, handoff_reference=reference,
+                note=note, personally_confirmed=True)
+
+        def withdraw_transfer_out(self):
+            item = self.transfer_selection()
+            reason = self.ask("Withdraw transfer", "Reason for withdrawing request")
+            transfer_service.withdraw(self.actor, item["id"], reason)
+
         def scan(self):
             fid = self.fill_for_rx(self.selected_id())
             barcode = self.ask("Product Fill", "Scan/enter registered barcode")
