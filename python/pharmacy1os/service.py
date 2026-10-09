@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -304,8 +304,11 @@ class PharmacyService:
         active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
         if any(f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"} for f in active):
             raise WorkflowError("A fill is already active")
+        from .emergency_supply import EmergencySupply
         completion_ids = set(s.scalars(select(FillCompletion.fill_id).where(
             FillCompletion.site_id == actor.site_id)).all())
+        completion_ids.update(s.scalars(select(EmergencySupply.fill_id).where(
+            EmergencySupply.site_id == actor.site_id)).all())
         returned = next((f for f in sorted(active, key=lambda f: (f.fill_number, f.attempt), reverse=True)
                          if f.status == "RETURNED" and f.id not in completion_ids), None)
         fillnum = returned.fill_number if returned else (max((f.fill_number for f in active), default=-1) + 1)
@@ -385,6 +388,8 @@ class PharmacyService:
             if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
                 raise WorkflowError("Physical source quantities must match dispensed quantity")
             payers = payer_names or []
+            from .emergency_supply import require_emergency_claim_separation
+            require_emergency_claim_separation(s, f.id, actor.site_id, payers)
             if len(payers) > 4 or any(not name.strip() for name in payers):
                 raise WorkflowError("Maximum four named COB payers")
             from .fill_completion import FillCompletion
@@ -534,9 +539,11 @@ class PharmacyService:
                 record_closed(s, actor, f, "RETURNED", reason)
                 bag.status = "RETURNED"
             from .fill_completion import FillCompletion, void_unissued_obligation
+            from .emergency_supply import void_unsold_emergency
             void_unissued_obligation(s, actor, f, reason)
+            was_emergency = void_unsold_emergency(s, actor, f, reason)
             linked_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id))
-            f.status = "RETURNED"; rx.status = "SOLD" if linked_completion else "DUR_REVIEW"
+            f.status = "RETURNED"; rx.status = "SOLD" if (linked_completion or was_emergency) else "DUR_REVIEW"
             self._audit(s, actor, "FILL_RETURNED_TO_STOCK", f.id, {"reason": reason})
 
     def queue(self, actor: Actor, term: str = "") -> list[dict[str, Any]]:
