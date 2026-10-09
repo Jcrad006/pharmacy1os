@@ -21,6 +21,8 @@ from .inventory_demands import InventoryDemandService
 from .inventory_demands_api import make_demand_router
 from .inventory_discrepancies import ReceivingDiscrepancyService
 from .inventory_discrepancies_api import make_discrepancy_router
+from .inventory_asof import HistoricalInventoryService
+from .inventory_asof_api import make_asof_router
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .inventory_planning_api import make_planning_router
@@ -328,6 +330,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_inventory_location_router(InventoryLocationService(svc), staff_actor))
     app.include_router(make_demand_router(InventoryDemandService(svc), staff_actor))
     app.include_router(make_discrepancy_router(ReceivingDiscrepancyService(svc), staff_actor))
+    app.include_router(make_asof_router(HistoricalInventoryService(svc), staff_actor))
     app.include_router(make_fill_completion_router(FillCompletionService(svc), staff_actor))
     app.include_router(make_transfer_router(TransferService(svc), staff_actor))
     app.include_router(make_label_print_router(LabelPrintService(svc), staff_actor))

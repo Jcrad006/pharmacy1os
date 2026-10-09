@@ -17,6 +17,7 @@ from .inventory_locations import InventoryLocationService
 from .inventory_allocations import InventoryAllocationService
 from .inventory_demands import InventoryDemandService
 from .inventory_discrepancies import ReceivingDiscrepancyService, DISCREPANCY_TYPES
+from .inventory_asof import HistoricalInventoryService
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
@@ -81,6 +82,7 @@ def main() -> None:
     inventory_allocations = InventoryAllocationService(service)
     inventory_demands = InventoryDemandService(service)
     receiving_discrepancies = ReceivingDiscrepancyService(service)
+    inventory_history = HistoricalInventoryService(service)
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
@@ -301,6 +303,7 @@ def main() -> None:
                 self.action("Resolve Hold", self.resolve_stock_hold)
                 self.action("Adjust Stock", self.adjust_stock)
                 self.action("Stock Ledger", self.stock_ledger)
+                self.action("Historical As-Of Lot Balance", self.inventory_asof_balance)
                 self.action("Create Physical Location", self.create_inventory_location)
                 self.action("View Locations", self.show_inventory_locations)
                 self.action("Reconcile Lot To Location", self.reconcile_inventory_location)
@@ -1237,6 +1240,13 @@ def main() -> None:
             QMessageBox.information(self, "Append-only discrepancy events",
                 json.dumps(receiving_discrepancies.history(self.actor, selected["id"]),
                            indent=2)[:16000])
+
+        def inventory_asof_balance(self):
+            stock_id = self.choose_stock()
+            at = self.ask("Historical lot balance", "As-of ISO8601 timestamp with offset (blank = now)", "")
+            result = inventory_history.as_of(self.actor, stock_id, at or None)
+            QMessageBox.information(self, "Read-only historical stock projection",
+                json.dumps(result, indent=2))
 
         def view_inventory_demands(self):
             rows = inventory_demands.list(self.actor)
