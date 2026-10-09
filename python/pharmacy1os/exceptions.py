@@ -10,9 +10,11 @@ from sqlalchemy import select
 from .models import DUR, Drug, Patient, Prescription
 from .scheduling_models import ScheduledFill
 from .emergency_supply import EmergencySupply
+from .fill_completion import FillObligation, FillCompletion
+from .models import Fill
 from .service import Actor, PharmacyService, WorkflowError
 
-KINDS = {"CLINICAL_ISSUE", "ON_HOLD", "PHARMACIST_REVIEW", "SCHEDULED_FILL", "EMERGENCY_FOLLOW_UP"}
+KINDS = {"CLINICAL_ISSUE", "ON_HOLD", "PHARMACIST_REVIEW", "SCHEDULED_FILL", "EMERGENCY_FOLLOW_UP", "PARTIAL_OWED"}
 SEVERITY = {"HIGH": 3, "WARNING": 2, "INFO": 1}
 
 
@@ -92,5 +94,27 @@ class ExceptionService:
                         add("EMERGENCY_FOLLOW_UP", task.id, rx,
                             "Emergency supply follow-up required",
                             task.reason, severity, due_utc.isoformat())
+            if not kind or kind == "PARTIAL_OWED":
+                obligations = s.scalars(select(FillObligation).where(
+                    FillObligation.site_id == actor.site_id,
+                    FillObligation.status == "OPEN",
+                    FillObligation.dispensed > 0,
+                    FillObligation.remaining > 0)).all()
+                for obligation in obligations:
+                    rx = by_id.get(obligation.prescription_id)
+                    if not rx:
+                        continue
+                    links = s.scalars(select(FillCompletion).where(
+                        FillCompletion.obligation_id == obligation.id,
+                        FillCompletion.site_id == actor.site_id)).all()
+                    current = [s.get(Fill, linked.fill_id) for linked in links]
+                    active = any(fill is not None and fill.status in (
+                        "PRODUCT_FILL", "PHARMACIST_REVIEW", "READY") for fill in current)
+                    stage = "Completion underway" if active else "Completion not started"
+                    add("PARTIAL_OWED", obligation.id, rx,
+                        "Previously dispensed partial still owed",
+                        f"{obligation.remaining} physical units owed. {stage}. "
+                        "No synthetic due date has been established.",
+                        "INFO" if active else "WARNING")
             results.sort(key=lambda x:(-SEVERITY.get(x["severity"],0),x["due_at"] or "9999-12-31",x["id"]))
             return results[:limit]
