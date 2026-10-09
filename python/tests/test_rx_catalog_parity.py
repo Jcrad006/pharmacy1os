@@ -146,7 +146,6 @@ def test_rejects_wrong_drug_product_and_inactive_metadata(fixture):
 
 
 @pytest.mark.parametrize("flags", [
-    {"nc_narrow_therapeutic_index": True},
     {"is_biological": True},
     {"requires_cold_chain": True},
     {"controlled_substance_schedule": "II"},

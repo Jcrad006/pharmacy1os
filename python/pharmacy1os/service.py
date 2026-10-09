@@ -103,6 +103,7 @@ class PharmacyService:
                 fill_columns = {row[1] for row in conn.exec_driver_sql(
                     "PRAGMA table_info('py_fills')").all()}
                 packaging_columns = {
+                    "nti_at_start": "BOOLEAN NOT NULL DEFAULT 0",
                     "dispensed_in_original_container": "BOOLEAN NOT NULL DEFAULT 0",
                     "patient_discard_date": "VARCHAR(10)",
                     "packaging_reviewed_by_id": "VARCHAR(36) REFERENCES py_staff(id)",
@@ -510,8 +511,11 @@ class PharmacyService:
         qty = positive(dispense_quantity or rx.quantity)
         if qty > rx.quantity:
             raise WorkflowError("Cannot dispense more than authorized quantity")
+        from .models import Drug
+        selected_drug = s.get(Drug, rx.drug_id)
         f = Fill(prescription_id=rx.id, fill_number=fillnum, attempt=attempt,
-                 quantity=qty, billed_quantity=rx.quantity, status="PRODUCT_FILL")
+                 quantity=qty, billed_quantity=rx.quantity, status="PRODUCT_FILL",
+                 nti_at_start=bool(selected_drug.nc_narrow_therapeutic_index))
         s.add(f)
         rx.status = "PRODUCT_FILL"
         s.flush()

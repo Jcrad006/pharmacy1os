@@ -201,6 +201,8 @@ class Fill(Base):
     status: Mapped[str] = mapped_column(String(30), default="PRODUCT_FILL")
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     billed_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    nti_at_start: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
     dispensed_in_original_container: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false")
     patient_discard_date: Mapped[str | None] = mapped_column(String(10))

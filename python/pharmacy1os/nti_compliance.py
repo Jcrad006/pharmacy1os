@@ -111,11 +111,20 @@ def _prior_sold_manufacturer(session: Session, rx: Prescription,
     return names.pop(), _utc(sold_at)
 
 
+def _check_nti_classification(session: Session, rx: Prescription, fill: Fill) -> Drug:
+    drug = session.get(Drug, rx.drug_id)
+    if drug is None:
+        raise WorkflowError("NTI medication catalog record unavailable")
+    if bool(fill.nti_at_start) != bool(drug.nc_narrow_therapeutic_index):
+        raise WorkflowError("NTI classification changed after fill start; restart under pharmacist review")
+    return drug
+
+
 def require_nti_source(session: Session, rx: Prescription, fill: Fill,
                        product: Product, existing_sources: list[FillSource]) -> None:
     """Fail closed on NTI split manufacturers and unconsented new manufacturer."""
-    drug = session.get(Drug, rx.drug_id)
-    if drug is None or not drug.nc_narrow_therapeutic_index:
+    drug = _check_nti_classification(session, rx, fill)
+    if not drug.nc_narrow_therapeutic_index:
         return
     candidate = _manufacturer(product.manufacturer)
     for source in existing_sources:
@@ -148,8 +157,8 @@ def require_nti_source(session: Session, rx: Prescription, fill: Fill,
 
 def require_nti_fill(session: Session, rx: Prescription, fill: Fill,
                      sources: list[FillSource]) -> None:
-    drug = session.get(Drug, rx.drug_id)
-    if drug is None or not drug.nc_narrow_therapeutic_index:
+    drug = _check_nti_classification(session, rx, fill)
+    if not drug.nc_narrow_therapeutic_index:
         return
     for source in sources:
         stock = session.get(Stock, source.stock_id)
@@ -171,8 +180,8 @@ class NtiComplianceService:
         if fill is None:
             raise WorkflowError("NTI fill not found")
         rx = self.service._site(session, Prescription, fill.prescription_id, actor)
-        drug = session.get(Drug, rx.drug_id)
-        if drug is None or not drug.nc_narrow_therapeutic_index:
+        drug = _check_nti_classification(session, rx, fill)
+        if not drug.nc_narrow_therapeutic_index:
             raise WorkflowError("This prescription is not for a configured NTI medication")
         return fill, rx
 
