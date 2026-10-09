@@ -15,6 +15,7 @@ from .inventory_ops import InventoryService
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
+from .fill_completion import FillCompletionService, FillObligation
 from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
 from .billing import BillingService
@@ -68,6 +69,7 @@ def main() -> None:
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
+    completion_service = FillCompletionService(service)
     directory_service = ProviderDirectory(service)
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
@@ -223,6 +225,9 @@ def main() -> None:
             if page == 0:
                 self.action("Advance → DUR", self.advance)
                 self.action("Start Fill", self.start_fill)
+                self.action("Stop / Convert To Partial", self.convert_to_partial)
+                self.action("Supply Owed Completion", self.start_completion)
+                self.action("View Physical Balance", self.view_completion_balance)
                 self.action("Scan Product Source", self.scan)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
                 self.action("Pharmacist Verify", self.verify)
@@ -573,6 +578,47 @@ def main() -> None:
             rx_id = self.selected_id()
             qty = self.ask("Start Fill", "Dispense quantity (partial or full)")
             service.start_fill(self.actor, rx_id, qty)
+
+        def choose_anchor(self):
+            rx_id = self.selected_id()
+            with service.sessions() as s:
+                obligations = s.scalars(select(FillObligation).where(
+                    FillObligation.prescription_id == rx_id,
+                    FillObligation.site_id == self.actor.site_id).order_by(
+                    FillObligation.id)).all()
+                anchors = [(x.anchor_fill_id, str(x.remaining), x.status)
+                           for x in obligations]
+            return self.choose_item("Partial fills", "Select original physical fill",
+                anchors, lambda x: f"{x[0][:8]} | Remaining {x[1]} | {x[2]}")[0]
+
+        def convert_to_partial(self):
+            fill_id = self.fill_for_rx(self.selected_id())
+            amount = self.ask("Partial interruption", "Physical quantity available")
+            reason = self.ask("Partial interruption", "Describe the stock shortage/interruption")
+            completion_service.interrupt_as_partial(self.actor, fill_id, amount, reason)
+            QMessageBox.information(self, "Physical fill reset",
+                "Previous reservations were released. Rescan the actual physical part "
+                "before proceeding. The originally billed quantity is preserved.")
+
+        def start_completion(self):
+            anchor_id = self.choose_anchor()
+            current = completion_service.balance(self.actor, anchor_id)
+            if current["status"] != "OPEN":
+                raise ValueError("No owed quantity remains on this partial fill")
+            amount = self.ask("Physical completion",
+                "Quantity to supply (maximum remaining owed)", current["remaining_owed"])
+            completion_service.begin_completion(self.actor, anchor_id, amount)
+            QMessageBox.information(self, "Completion created",
+                "Scan the supplied physical products and complete pharmacist review. "
+                "The original payer claim is not duplicated.")
+
+        def view_completion_balance(self):
+            balance = completion_service.balance(self.actor, self.choose_anchor())
+            QMessageBox.information(self, "Owed physical quantity",
+                f"Logical quantity: {balance['intended']}\n"
+                f"Physically sold: {balance['physically_sold']}\n"
+                f"Remaining owed: {balance['remaining_owed']}\n"
+                f"Status: {balance['status']}")
 
         def scan(self):
             fid = self.fill_for_rx(self.selected_id())
