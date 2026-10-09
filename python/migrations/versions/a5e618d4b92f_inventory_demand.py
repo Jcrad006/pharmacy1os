@@ -38,7 +38,7 @@ def upgrade():
         sa.CheckConstraint("required_quantity > 0 AND available_quantity >= 0",
                            name="ck_py_demand_quantities"),
     )
-    for field in ("site_id", "drug_id", "product_id", "fill_id"):
+    for field in ("site_id", "drug_id", "product_id"):
         op.create_index(f"ix_py_inventory_demands_{field}", "py_inventory_demands", [field])
     op.create_table("py_inventory_demand_events",
         sa.Column("id", sa.String(36), primary_key=True),
