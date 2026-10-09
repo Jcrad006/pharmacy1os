@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models, inventory_demand_models, inventory_discrepancy_models, inventory_exception_models  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models, inventory_demand_models, inventory_discrepancy_models, inventory_exception_models, inventory_fefo_models  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -494,7 +494,8 @@ class PharmacyService:
             return self._start_fill_tx(s, actor, rx, dispense_quantity)
 
     def scan_source(self, actor: Actor, fill_id: str, barcode: str, lot: str,
-                    expires: str, quantity: str, location_id: str | None = None) -> None:
+                    expires: str, quantity: str, location_id: str | None = None,
+                    fefo_override_note: str | None = None) -> None:
         qty = positive(quantity)
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
@@ -525,6 +526,8 @@ class PharmacyService:
                 raise WorkflowError("Scanned quantity exceeds actual fill quantity")
             if stock.on_hand - stock.reserved - stock.quarantined < qty:
                 raise WorkflowError("Insufficient available stock")
+            from .inventory_fefo import require_fefo_scan
+            require_fefo_scan(s, actor, f.id, stock, fefo_override_note)
             from .inventory_ops import record_movement
             record_movement(s, actor, stock, "FILL_RESERVE", reserved=qty,
                             location_id=location_id)
