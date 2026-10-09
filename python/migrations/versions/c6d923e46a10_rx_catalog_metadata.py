@@ -48,12 +48,18 @@ def upgrade():
         sa.Column("written_date", sa.String(10)),
         sa.Column("electronic_message_id", sa.String(160)),
         sa.Column("electronic_raw_message", sa.Text()),
-        sa.Column("prescribed_product_id", sa.String(36),
-                  sa.ForeignKey("py_products.id"), nullable=True),
         sa.Column("product_selection_directive", sa.String(35), nullable=False,
                   server_default="UNSPECIFIED"),
     ):
         op.add_column("py_prescriptions", column)
+    if op.get_bind().dialect.name == "sqlite":
+        # SQLite allows nullable inline REFERENCES when adding a column, but
+        # Alembic's generic add_column splits out the FK as unsupported ALTER.
+        op.execute("ALTER TABLE py_prescriptions ADD COLUMN "
+                   "prescribed_product_id VARCHAR(36) REFERENCES py_products (id)")
+    else:
+        op.add_column("py_prescriptions", sa.Column("prescribed_product_id",
+                      sa.String(36), sa.ForeignKey("py_products.id"), nullable=True))
     if op.get_bind().dialect.name == "postgresql":
         op.create_check_constraint("ck_py_rx_source_type", "py_prescriptions",
                                    "source_type IN ('MANUAL','PAPER','FAX','ELECTRONIC','VERBAL','TRANSFER')")
