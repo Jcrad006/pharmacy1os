@@ -167,3 +167,8 @@ Added site-scoped audited reorder thresholds, exact Decimal snapshot recommendat
 ## Seventeenth Python increment — physical partial and completion lineage (2026-10-08)
 
 Added synthetic full-intended-vs-physical fill obligations, technician Product Fill interruption with source reservation release and required rescan, sold-quantity tracking, linked completion parts retaining the original fill number, no duplicate synthetic payer claim, and hard guards against new logical refills while owed stock remains. Both legacy-style direct pickup and new Python POS checkout update owed physical balance transactionally. Native Qt dashboard and guarded FastAPI actions are exposed, with revision `b0e1d10f8a61` and negative-path regression tests. **Do not claim production partial-fill or real payer compliance.** See [PYTHON_FILL_COMPLETIONS.md](PYTHON_FILL_COMPLETIONS.md).
+
+
+## Eighteenth Python increment — pharmacist emergency supply and follow-up (2026-10-08)
+
+Added synthetic emergency-supply authorization for pharmacist-only, prior SOLD, exhausted-refill, noncontrolled prescriptions; dated follow-ups; no-extra-refill and no-claims rules; site-scoped API and Qt controls; audit and clinical exceptions, including overdue alerts and safe unsold return-to-stock. Additive Python-only migration c4e6bdf912a0 and test coverage accompany the increment. Production legality, real payer claims, clinical validation and full feature parity remain incomplete. See PYTHON_EMERGENCY_SUPPLY.md.
