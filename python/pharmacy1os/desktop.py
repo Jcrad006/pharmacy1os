@@ -14,6 +14,7 @@ from uuid import uuid4
 from .documents import DocumentService
 from .inventory_ops import InventoryService
 from .inventory_locations import InventoryLocationService
+from .inventory_allocations import InventoryAllocationService
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
@@ -75,6 +76,7 @@ def main() -> None:
     document_service = DocumentService.from_demo_env(service)
     inventory_service = InventoryService(service)
     inventory_locations = InventoryLocationService(service)
+    inventory_allocations = InventoryAllocationService(service)
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
@@ -297,6 +299,7 @@ def main() -> None:
                 self.action("View Lot Positions", self.show_inventory_positions)
                 self.action("Move Available Stock Between Locations", self.move_inventory_location)
                 self.action("FEFO Advisory", self.show_fefo_advisory)
+                self.action("View Fill / Physical Allocation History", self.show_fill_allocations)
             elif page == 9:
                 self.action("Create Synthetic Payer", self.create_payer)
                 self.action("View Payers", self.show_payers)
@@ -1180,6 +1183,13 @@ def main() -> None:
             reason = self.ask("Physical inventory move", "Reason for physical custody change")
             inventory_locations.move(self.actor, stock_id, original["id"], destination["id"],
                                      quantity, reason)
+
+        def show_fill_allocations(self):
+            fill_id = self.ask("Physical pick history", "Fill ID")
+            events = inventory_allocations.for_fill(self.actor, fill_id)
+            QMessageBox.information(self, "Fill / physical location allocation history",
+                json.dumps(events, indent=2)[:12000]
+                if events else "No tracked physical allocations for this fill.")
 
         def show_fefo_advisory(self):
             with service.sessions() as session:
