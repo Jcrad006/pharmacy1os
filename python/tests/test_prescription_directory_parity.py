@@ -2,16 +2,11 @@
 
 All records are fictional. No real patient information or dispensing.
 """
-from datetime import date, timedelta
-
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
-
 from pharmacy1os.api import create_app
-from pharmacy1os.models import Audit, Fill, Prescription
-from pharmacy1os.prescription_directory import PrescriptionDirectory
-from pharmacy1os.service import PharmacyService, WorkflowError
+from pharmacy1os.models import Prescription
+from pharmacy1os.service import PharmacyService
 
 
 @pytest.fixture
@@ -85,8 +80,9 @@ def test_rx_detail_fills_and_immutable_erx_redaction(fixture):
     queue = api.get("/api/prescriptions/queue", headers=h(actors["AUDITOR"]))
     assert "One tablet each morning" not in queue.text
     assert "sensitive test source" not in queue.text
-    assert "DATA_ENTRY" in api.get(f"/api/prescriptions/{rx2}",
-                         headers=h(actors["AUDITOR"])).json()["prescription"]["allowedTransitions"] or True
+    next_steps = api.get(f"/api/prescriptions/{rx2}",
+                         headers=h(actors["AUDITOR"])).json()["prescription"]["allowedTransitions"]
+    assert "DUR_REVIEW" in next_steps
 
 
 def test_prescription_audit_timeline_read_roles_site_isolation(fixture):
