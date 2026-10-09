@@ -183,3 +183,33 @@ def test_postgres_structured_prescription_change_persists(tmp_path):
         assert documents.read_source(tech, doc["id"])[0] == b"unchanging synthetic PDF"
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"), reason="requires isolated PostgreSQL CI service")
+def test_pg_exported_snapshot_matches_python_backup_metadata():
+    """Validate real PG17 exported snapshot sharing; pg_dump binary tested separately."""
+    import re
+    import psycopg
+    from psycopg import sql
+    from pharmacy1os.postgres_backup import _connection_settings, _read_pg_metadata
+
+    options, _public = _connection_settings(os.environ["PHARMACY1OS_PG_CI_URL"])
+    with psycopg.connect(**options, autocommit=True) as primary:
+        with primary.cursor() as cursor:
+            cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ ONLY")
+        revision, documents = _read_pg_metadata(primary)
+        assert isinstance(revision, str) and revision
+        assert isinstance(documents, list)
+        with primary.cursor() as cursor:
+            cursor.execute("SELECT pg_export_snapshot()")
+            snapshot = cursor.fetchone()[0]
+        assert re.fullmatch(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{8}-[0-9]+", snapshot)
+
+        # Use the exported snapshot on a second PG transaction, just as pg_dump does.
+        with psycopg.connect(**options, autocommit=True) as follower:
+            with follower.cursor() as cursor:
+                cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ ONLY")
+                cursor.execute(sql.SQL("SET TRANSACTION SNAPSHOT {}").format(sql.Literal(snapshot)))
+            observed_revision, observed_documents = _read_pg_metadata(follower)
+            assert observed_revision == revision
+            assert observed_documents == documents

@@ -141,3 +141,10 @@ Additive Alembic revision `84a672dc47f0` creates only Python-owned `py_*` tables
 Implemented a **new, offline-only** Python CLI for isolated SQLite test databases and immutable prescription document sources. It captures a SQLite backup-API snapshot, verifies and copies raw stored vault payloads, produces and HMAC-signs a manifest, and only publishes the stage after self-verification. It refuses corrupted/missing/orphaned documents, unexpected links, and ambiguous/invalid source metadata; encrypted sources remain encrypted in the backup. The CLI requires a signing secret and explicit operator confirmation that application writers are stopped.
 
 **This does not implement production recovery**, online/write-coordinated backups, PostgreSQL `pg_dump`, offsite key custody, a restore operation or a live HTTP backup route. Never point it at real pharmacy data. See `docs/PYTHON_BACKUP_INTEGRITY.md` for operator usage, data boundaries, and limitations.
+
+
+## Offline synthetic PostgreSQL archive & new-path SQLite recovery rehearsal (2026-10-08)
+
+Added `pharmacy1os-postgres-backup create/verify` for local **synthetic-only** PostgreSQL databases containing only Python-managed `py_*` tables and Alembic metadata, with exported REPEATABLE READ snapshots for `pg_dump --format=custom`, separate immutable document-vault hashes, signed HMAC manifest, and `pg_restore --list` catalog validation. Offline application shutdown is still mandatory: DB snapshot sharing alone does not coordinate filesystem writes. A compatible PostgreSQL client is required and neither passwords nor encryption keys are stored in the archive.
+
+Added `pharmacy1os-recovery rehearse` to verify a prior **SQLite** archive and create a completely separate, unused database file and vault directory; it uses no-clobber file creation and a recovery journal. It refuses active or pre-existing destinations and provides no PostgreSQL restore, no in-place rollback and no production recovery capability. Never use real patient data. See `docs/PYTHON_POSTGRES_BACKUP_AND_RECOVERY.md` for constraints and commands. GitHub CI must confirm Python tests and PostgreSQL snapshot sharing.
