@@ -212,3 +212,31 @@ def test_partial_api_is_synthetic_only_and_site_bound(env):
                        json={}, headers=tech).status_code == 409
     assert TestClient(create_app(svc)).get(f"/api/fills/{root}/owed-balance",
              headers=tech).status_code == 503
+
+
+def test_partial_balance_appears_as_synthetic_exception_until_sold(env):
+    from pharmacy1os.exceptions import ExceptionService
+
+    svc, actors, other, rx, stock, expiry = env
+    tech, pharm = actors["TECHNICIAN"], actors["PHARMACIST"]
+    flow = FillCompletionService(svc)
+    board = ExceptionService(svc)
+    primary = svc.start_fill(tech, rx, "10")
+    assert board.list(actors["AUDITOR"], kind="PARTIAL_OWED") == []
+    ready(svc, actors, primary, expiry, 10)
+    svc.sell(tech, primary, True, True, "0", "CASH")
+    outstanding = board.list(actors["AUDITOR"], kind="PARTIAL_OWED")
+    assert len(outstanding) == 1
+    assert outstanding[0]["severity"] == "WARNING"
+    assert "80.000" in outstanding[0]["detail"]
+    assert board.list(other["AUDITOR"], kind="PARTIAL_OWED") == []
+    fid = flow.begin_completion(tech, primary, "80")
+    active = board.list(actors["AUDITOR"], kind="PARTIAL_OWED")
+    assert active[0]["severity"] == "INFO"
+    assert "Completion underway" in active[0]["detail"]
+    ready(svc, actors, fid, expiry, 80)
+    svc.sell(tech, fid, True, True, "0", "CASH")
+    assert board.list(actors["AUDITOR"], kind="PARTIAL_OWED") == []
+    assert TestClient(create_app(svc, synthetic_enabled=True)).get(
+        "/api/exceptions", params={"kind": "PARTIAL_OWED"},
+        headers={"x-demo-staff-id": tech.id}).json()["items"] == []
