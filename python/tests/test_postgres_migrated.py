@@ -213,3 +213,100 @@ def test_pg_exported_snapshot_matches_python_backup_metadata():
             observed_revision, observed_documents = _read_pg_metadata(follower)
             assert observed_revision == revision
             assert observed_documents == documents
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"), reason="requires isolated PostgreSQL CI service")
+def test_postgres_concurrent_scans_do_not_over_reserve_one_lot():
+    """Competing workstations may not reserve 160 synthetic units from 100."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+
+    from pharmacy1os.models import FillSource
+    from pharmacy1os.service import WorkflowError
+
+    svc = PharmacyService(os.environ["PHARMACY1OS_PG_CI_URL"])
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharmacist = a["TECHNICIAN"], a["PHARMACIST"]
+        patient = svc.add_patient(tech, "Concurrency", "Test")
+        provider = svc.add_prescriber(tech, "Concurrency", "Doctor", "MD")
+        drug = svc.add_drug(pharmacist, "CONC-SYNTHETIC-DRUG", "5mg", "tablet")
+        product = svc.add_product(pharmacist, drug, "88888-0000-01", "Synthetic", "Demo capsules")
+        svc.register_barcode(tech, product, "CONC-PG-BAR")
+        exp = (date.today() + timedelta(days=180)).isoformat()
+        stock_id = svc.receive(tech, "CONC-PG-BAR", "CONC-LOT", exp, "100")
+        fills = []
+        for n in (1, 2):
+            rx = svc.add_prescription(tech, patient, provider, drug,
+                f"CONC-PG-RX-{n}", "daily", "80")
+            svc.advance_to_dur(tech, rx)
+            fills.append(svc.start_fill(tech, rx))
+        together = Barrier(2)
+
+        def compete(fid):
+            together.wait(timeout=10)
+            try:
+                svc.scan_source(tech, fid, "CONC-PG-BAR", "CONC-LOT", exp, "80")
+                return "RESERVED"
+            except WorkflowError:
+                return "INSUFFICIENT"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(compete, fills))
+        assert sorted(results) == ["INSUFFICIENT", "RESERVED"]
+        with svc.sessions() as s:
+            stock = s.get(Stock, stock_id)
+            assert stock.on_hand == 100
+            assert stock.reserved == 80
+            sources = s.scalars(select(FillSource).where(FillSource.fill_id.in_(fills))).all()
+            assert len(sources) == 1 and sources[0].quantity == 80
+    finally:
+        svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"), reason="requires isolated PostgreSQL CI service")
+def test_postgres_same_fill_double_scan_serializes_on_fill_row():
+    """Two operators racing the same barcode must not create two source lines."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+
+    from pharmacy1os.models import FillSource
+    from pharmacy1os.service import WorkflowError
+
+    svc = PharmacyService(os.environ["PHARMACY1OS_PG_CI_URL"])
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharmacist = a["TECHNICIAN"], a["PHARMACIST"]
+        patient = svc.add_patient(tech, "Concurrency", "DoubleScan")
+        provider = svc.add_prescriber(tech, "Concurrency", "Doctor", "MD")
+        drug = svc.add_drug(pharmacist, "CONC-SYNTHETIC-DRUG-2", "5mg", "tablet")
+        product = svc.add_product(pharmacist, drug, "88888-0000-02", "Synthetic", "Demo capsules")
+        svc.register_barcode(tech, product, "CONC-PG-BAR-2")
+        exp = (date.today() + timedelta(days=180)).isoformat()
+        stock_id = svc.receive(tech, "CONC-PG-BAR-2", "CONC-LOT-2", exp, "100")
+        rx = svc.add_prescription(tech, patient, provider, drug,
+            "CONC-PG-RX-SAME", "daily", "80")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        together = Barrier(2)
+
+        def compete(_):
+            together.wait(timeout=10)
+            try:
+                svc.scan_source(tech, fill, "CONC-PG-BAR-2", "CONC-LOT-2", exp, "80")
+                return "RESERVED"
+            except WorkflowError:
+                return "DUPLICATE"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(compete, [0, 1]))
+        assert sorted(results) == ["DUPLICATE", "RESERVED"]
+        with svc.sessions() as s:
+            assert s.get(Stock, stock_id).reserved == 80
+            assert len(s.scalars(select(FillSource).where(FillSource.fill_id == fill)).all()) == 1
+    finally:
+        svc.engine.dispose()
