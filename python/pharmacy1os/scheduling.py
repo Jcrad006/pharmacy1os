@@ -59,6 +59,8 @@ class SchedulingService:
                     raise WorkflowError("Idempotency key already used with different scheduling details")
                 return prior.id
             from .fill_completion import guard_new_logical_fill
+            from .prescription_transfer import require_no_pending_transfer
+            require_no_pending_transfer(s, rx)
             guard_new_logical_fill(s, rx)
             if rx.status not in {"DUR_REVIEW", "SOLD"}:
                 raise WorkflowError("Schedule only after DUR review or from a previously sold prescription")
@@ -107,6 +109,8 @@ class SchedulingService:
             if rx.status != "SOLD":
                 raise WorkflowError("Refill review is only available after a sold fill")
             from .fill_completion import guard_new_logical_fill
+            from .prescription_transfer import require_no_pending_transfer
+            require_no_pending_transfer(s, rx)
             guard_new_logical_fill(s, rx)
             fills = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
             if any(f.status in ("PRODUCT_FILL", "PHARMACIST_REVIEW", "READY") for f in fills):
