@@ -75,6 +75,7 @@ def main() -> None:
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
     transfer_service = TransferService(service)
+    edit_service = PrescriptionEditService(service)
     label_printer = LabelPrintService(service)
     completion_service = FillCompletionService(service)
     emergency_service = EmergencySupplyService(service)
@@ -248,6 +249,7 @@ def main() -> None:
                 self.action("Hold Rx", self.hold_rx)
                 self.action("Resume Rx", self.resume_rx)
                 self.action("Cancel Rx", self.cancel_rx)
+                self.action("Pharmacist Edit Unfilled Rx", self.edit_unfilled_rx)
                 self.action("Request Transfer Out", self.request_transfer_out)
                 self.action("Attest External Transfer", self.attest_transfer_out)
                 self.action("Withdraw Transfer Request", self.withdraw_transfer_out)
@@ -874,6 +876,56 @@ def main() -> None:
 
         def cancel_rx(self):
             lifecycle_service.cancel(self.actor, self.selected_id(), self.ask("Cancel Rx", "Reason"))
+
+        def edit_unfilled_rx(self):
+            """Audited pharmacist edit; never overwrites scanned original or previous fill."""
+            rx_id = self.selected_id()
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "clinical")
+                rx = service._site(s, Prescription, rx_id, self.actor)
+                expected = rx.version
+            choices = [
+                "sig", "quantity", "refills_allowed", "prescriber_id", "drug_id",
+                "prescribed_product_id", "product_selection_directive",
+                "written_date", "expiration_date", "do_not_fill_before",
+            ]
+            field = self.choose_item("Reviewed Rx edit", "Select original data-entry field",
+                choices, lambda x: x)
+            if field == "product_selection_directive":
+                proposed = self.choose_item("Product directive", "Choose",
+                    ["UNSPECIFIED", "SELECTION_PERMITTED", "DISPENSE_AS_WRITTEN"], lambda x: x)
+            elif field == "prescriber_id":
+                with service.sessions() as s:
+                    options = s.scalars(select(Prescriber).where(
+                        Prescriber.site_id == self.actor.site_id)).all()
+                    proposed = self.choose_item("Prescriber", "Select corrected provider",
+                        options, lambda p: f"{p.last_name}, {p.first_name}").id
+            elif field == "drug_id":
+                with service.sessions() as s:
+                    options = s.scalars(select(Drug).where(Drug.active.is_(True))).all()
+                    proposed = self.choose_item("Drug", "Select corrected medication",
+                        options, lambda d: f"{d.name} {d.strength}").id
+            elif field == "prescribed_product_id":
+                with service.sessions() as s:
+                    options = s.scalars(select(Product).where(
+                        Product.drug_id == rx.drug_id, Product.active.is_(True))).all()
+                    proposed = self.choose_item("Prescribed NDC", "Select corrected NDC",
+                        options, lambda p: f"{p.ndc} | {p.description}").id
+            else:
+                value = self.ask("Pharmacist-reviewed Rx edit",
+                    f"New {field} (blank clears optional date)", "")
+                if field == "refills_allowed":
+                    proposed = int(value)
+                elif field in {"written_date", "expiration_date", "do_not_fill_before"}:
+                    proposed = value or None
+                else:
+                    proposed = value
+            note = self.ask("Pharmacist review", "Document the independently confirmed change")
+            response = edit_service.update(self.actor, rx_id, {field: proposed},
+                expected_version=expected, attestation_note=note)
+            QMessageBox.information(self, "Prescription updated",
+                f"Version {response['version']} saved. Any completed DUR review "
+                "was reset to Data Entry when required.")
 
         def quarantine_stock(self):
             stock_id = self.selected_id()
