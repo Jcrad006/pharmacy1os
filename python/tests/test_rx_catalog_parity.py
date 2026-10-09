@@ -134,7 +134,7 @@ def test_rejects_wrong_drug_product_and_inactive_metadata(fixture):
     other_drug = svc.add_drug(a["PHARMACIST"], "OTHER-DRUG", "4mg", "tablet")
     with pytest.raises(WorkflowError, match="under the selected drug"):
         create_rx(fixture, "RX-MISMATCH", drug_id=other_drug,
-                  prescribed_product_id=main)
+                  prescribed=main)
     with svc.sessions.begin() as s:
         s.get(Product, main).active = False
     with pytest.raises(WorkflowError, match="active under"):
