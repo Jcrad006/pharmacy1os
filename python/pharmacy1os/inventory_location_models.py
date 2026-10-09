@@ -92,3 +92,49 @@ class InventoryPositionEvent(Base):
         CheckConstraint("state IN ('AVAILABLE','RESERVED','QUARANTINED')",
                         name="ck_py_pos_event_state"),
     )
+
+
+class InventoryAllocation(Base):
+    """Fill-specific reservation from an explicitly reconciled physical position."""
+    __tablename__ = "py_inventory_allocations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), nullable=False, index=True)
+    fill_id: Mapped[str] = mapped_column(ForeignKey("py_fills.id"), nullable=False, index=True)
+    stock_id: Mapped[str] = mapped_column(ForeignKey("py_stock.id"), nullable=False, index=True)
+    fill_source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("py_fill_sources.id", ondelete="SET NULL"), nullable=True, index=True)
+    position_id: Mapped[str] = mapped_column(
+        ForeignKey("py_inventory_stock_positions.id"), nullable=False, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="ACTIVE", server_default="ACTIVE")
+    actor_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 nullable=False, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution_reason: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        UniqueConstraint("fill_source_id", name="uq_py_allocation_fill_source"),
+        CheckConstraint("quantity > 0", name="ck_py_allocation_positive"),
+        CheckConstraint("status IN ('ACTIVE','CONSUMED','RELEASED')",
+                        name="ck_py_allocation_status"),
+    )
+
+
+class InventoryAllocationEvent(Base):
+    """Append-only status-change ledger; old source may be unlinked after partial interruption."""
+    __tablename__ = "py_inventory_allocation_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), nullable=False, index=True)
+    allocation_id: Mapped[str] = mapped_column(
+        ForeignKey("py_inventory_allocations.id"), nullable=False, index=True)
+    from_status: Mapped[str | None] = mapped_column(String(20))
+    to_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                  nullable=False, default=utcnow)
+    __table_args__ = (
+        CheckConstraint("to_status IN ('ACTIVE','CONSUMED','RELEASED')",
+                        name="ck_py_allocation_event_status"),
+    )
