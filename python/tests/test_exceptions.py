@@ -43,7 +43,7 @@ def test_exception_site_isolation_and_validation(state):
     other=svc.bootstrap_demo()["actors"]
     assert e.list(other["PHARMACIST"])==[]
     with pytest.raises(WorkflowError,match="not-yet-supported"):
-        e.list(a["AUDITOR"],kind="EMERGENCY_FOLLOW_UP")
+        e.list(a["AUDITOR"],kind="NOT_YET_SUPPORTED")
     with pytest.raises(WorkflowError):e.list(a["AUDITOR"],limit=301)
 
 
