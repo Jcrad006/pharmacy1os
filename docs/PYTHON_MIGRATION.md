@@ -199,3 +199,8 @@ See [PYTHON_PARITY_PROGRESS_INCREMENT_22.md](PYTHON_PARITY_PROGRESS_INCREMENT_22
 ## Twenty-third Python increment — physical inventory locations and FEFO advisory
 
 See [PYTHON_PARITY_PROGRESS_INCREMENT_23.md](PYTHON_PARITY_PROGRESS_INCREMENT_23.md). The Python rewrite now supports synthetic site-scoped inventory locations, opt-in pharmacist-attested stock-position reconciliation, automatic available/reserved/quarantined physical balance mirroring for tracked lots, available-only stock moves, location-confirmed source scanning and read-only FEFO recommendations. Migration `f29a4d5c38a1` only modifies isolated Python `py_*` tables. **Full original fill-linked InventoryAllocation, demand/backorders, as-of ledger and inventory exception workflows are not yet ported.**
+
+
+## Twenty-fourth Python increment — physical fill allocation lineage
+
+See [PYTHON_PARITY_PROGRESS_INCREMENT_24.md](PYTHON_PARITY_PROGRESS_INCREMENT_24.md). Adds fill-source-to-position `InventoryAllocation` records and an append-only transition ledger. Explicit physical location scans reserve identified bins; pharmacist verification consumes the exact allocation; cancellation and partial interruption release their originally scanned reservations and preserve history. The additive migration `f7a42b6d9f10` follows `f29a4d5c38a1`. Old untracked fills intentionally have no fabricated allocation. **Automatic FEFO selection, full inventory demand, receiving discrepancy and inventory exceptions are still unported.**
