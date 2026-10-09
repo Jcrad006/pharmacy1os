@@ -162,3 +162,8 @@ The native PySide6 workstation now optionally prompts for a synthetic username/p
 ## Sixteenth Python increment — advisory replenishment policies (2026-10-08)
 
 Added site-scoped audited reorder thresholds, exact Decimal snapshot recommendations accounting for usable stock, partial/open POs and in-transit stock, plus recall/controlled-product review blocks. Synthetic FastAPI and native PySide6 Supply Chain controls are connected. This adds no automatic wholesaler purchasing and remains excluded from production. The new additive Alembic revision `e2a9401f67c3` touches only `py_reorder_policies`. See [PYTHON_REPLENISHMENT.md](PYTHON_REPLENISHMENT.md) and synthetic regression tests; feature parity and release validation remain outstanding.
+
+
+## Seventeenth Python increment — physical partial and completion lineage (2026-10-08)
+
+Added synthetic full-intended-vs-physical fill obligations, technician Product Fill interruption with source reservation release and required rescan, sold-quantity tracking, linked completion parts retaining the original fill number, no duplicate synthetic payer claim, and hard guards against new logical refills while owed stock remains. Both legacy-style direct pickup and new Python POS checkout update owed physical balance transactionally. Native Qt dashboard and guarded FastAPI actions are exposed, with revision `b0e1d10f8a61` and negative-path regression tests. **Do not claim production partial-fill or real payer compliance.** See [PYTHON_FILL_COMPLETIONS.md](PYTHON_FILL_COMPLETIONS.md).
