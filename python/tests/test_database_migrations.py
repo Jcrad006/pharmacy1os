@@ -247,3 +247,56 @@ def test_location_tracking_upgrade_preserves_old_stock_without_fabricating_shelf
         assert not verify_mapped_schema(svc.engine)
     finally:
         svc.engine.dispose()
+
+
+
+def test_inventory_demand_upgrade_does_not_invent_historic_patient_need(monkeypatch, tmp_path):
+    """A migrated existing fill keeps its source records; no fake backlog is created."""
+    from uuid import uuid4
+    from pharmacy1os.inventory_demand_models import InventoryDemand
+
+    url = setup_env(monkeypatch, tmp_path / "pre-demand-upgrade.db")
+    command.upgrade(migration_config(), "f7a42b6d9f10")
+    ids = {name: str(uuid4()) for name in (
+        "site", "patient", "prescriber", "drug", "product", "rx", "fill")}
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO py_sites(id,name) VALUES (:id,'Existing synthetic site')"),
+                         {"id": ids["site"]})
+            conn.execute(text("INSERT INTO py_patients(id,site_id,first_name,last_name) "
+                              "VALUES (:id,:site,'Synthetic','Existing')"),
+                         {"id": ids["patient"], "site": ids["site"]})
+            conn.execute(text("INSERT INTO py_prescribers(id,site_id,first_name,last_name,practice_level) "
+                              "VALUES (:id,:site,'Demo','Prescriber','MD')"),
+                         {"id": ids["prescriber"], "site": ids["site"]})
+            conn.execute(text("INSERT INTO py_drugs(id,name,strength,dosage_form,controlled,"
+                              "controlled_substance_schedule) "
+                              "VALUES (:id,'Migration-Old-Drug','10 mg','tablet',0,'NONE')"),
+                         {"id": ids["drug"]})
+            conn.execute(text("INSERT INTO py_products(id,drug_id,ndc,manufacturer,description,unit,unit_price) "
+                              "VALUES (:id,:drug,'12121-0001-01','Demo','Synthetic old','each',0)"),
+                         {"id": ids["product"], "drug": ids["drug"]})
+            conn.execute(text("INSERT INTO py_prescriptions "
+                              "(id,site_id,patient_id,prescriber_id,drug_id,rx_number,sig,"
+                              "quantity,refills_allowed,refills_used,status,version) "
+                              "VALUES (:id,:site,:patient,:prescriber,:drug,'OLD-DEMAND-RX',"
+                              "'daily',10,0,0,'PRODUCT_FILL',0)"),
+                         {**ids, "site": ids["site"]})
+            conn.execute(text("INSERT INTO py_fills "
+                              "(id,prescription_id,fill_number,attempt,status,quantity,billed_quantity) "
+                              "VALUES (:id,:rx,0,1,'PRODUCT_FILL',10,10)"),
+                         {"id": ids["fill"], "rx": ids["rx"]})
+    finally:
+        engine.dispose()
+    command.upgrade(migration_config(), "head")
+    svc = PharmacyService(url)
+    try:
+        with svc.sessions() as s:
+            assert s.query(InventoryDemand).count() == 0
+            assert s.execute(text("SELECT quantity FROM py_fills WHERE id=:id"),
+                             {"id": ids["fill"]}).scalar_one() == 10
+        assert revision_at_head(svc.engine)
+        assert not verify_mapped_schema(svc.engine)
+    finally:
+        svc.engine.dispose()
