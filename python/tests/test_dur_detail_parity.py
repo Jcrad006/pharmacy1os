@@ -99,3 +99,18 @@ def test_original_clinical_dur_routes_and_permissions(env):
     assert api.patch(resolve, headers={
         "x-demo-staff-id": foreign["PHARMACIST"].id},
         json={"note": "Other site must not resolve DUR"}).status_code == 409
+
+
+def test_clinical_record_orders_open_dur_first_and_identifies_resolver(env):
+    svc, a, foreign, rx, clinical = env
+    earlier = clinical.create_issue(a["PHARMACIST"], rx,
+        "FIRST", "Synthetic first issue", severity="INFO")
+    later = clinical.create_issue(a["PHARMACIST"], rx,
+        "SECOND", "Synthetic unresolved issue", severity="WARNING")
+    clinical.resolve_issue(a["PHARMACIST"], earlier["id"],
+        "Pharmacist completed synthetic clinical issue assessment")
+    record = clinical.clinical_record(a["AUDITOR"], rx)
+    assert [item["status"] for item in record["issues"]] == ["OPEN", "RESOLVED"]
+    assert record["issues"][0]["id"] == later["id"]
+    assert record["issues"][1]["resolved_by"]["display_name"] == "Demo Pharmacist"
+    assert record["issues"][1]["resolved_by"]["role"] == "PHARMACIST"
