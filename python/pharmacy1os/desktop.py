@@ -31,6 +31,7 @@ from .label_printing import LabelPrintService
 from .fill_completion import FillCompletionService, FillObligation
 from .emergency_supply import EmergencySupplyService
 from .provider_directory import ProviderDirectory
+from .provider_parity import PrescriberParityService, PrescriberContractIn
 from .scheduling import SchedulingService
 from .billing import BillingService
 from .insurance import InsuranceDirectory
@@ -100,6 +101,7 @@ def main() -> None:
     completion_service = FillCompletionService(service)
     emergency_service = EmergencySupplyService(service)
     directory_service = ProviderDirectory(service)
+    provider_parity = PrescriberParityService(service)
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
     insurance_service = InsuranceDirectory(service)
@@ -252,7 +254,10 @@ def main() -> None:
                 widget = self.toolbar.takeAt(0).widget()
                 if widget:
                     widget.deleteLater()
-            self.search.setVisible(page in (0, 1, 4))
+            self.search.setVisible(page in (0, 1, 4, 5))
+            self.search.setPlaceholderText(
+                "Search provider name, NPI, phone, or practice level"
+                if page == 5 else "Search Rx number, patient, or drug")
             if page == 0:
                 self.action("Advance → DUR", self.advance)
                 self.action("Start Fill", self.start_fill)
@@ -424,9 +429,13 @@ def main() -> None:
                                       x["date_of_birth"] or "", x["phone"] or "", x["email"] or "")
                                      for x in patient_directory.search(self.actor, query=self.search.text())]
                     elif page == 5:
-                        headers = ["Last", "First", "Credential", "NPI"]
-                        self.rows = [(x.id, x.last_name, x.first_name, x.practice_level, x.npi or "")
-                                     for x in s.scalars(select(Prescriber).where(Prescriber.site_id == self.actor.site_id)).all()]
+                        headers = ["Last", "First", "Credential", "DOB", "NPI"]
+                        providers = provider_parity.search(self.actor, query=self.search.text())
+                        self.rows = [(p["id"], p["lastName"], p["firstName"],
+                                      p["practiceLevel"], p["dateOfBirth"] or "",
+                                      next((x["number"] for x in p["identifiers"]
+                                            if x["type"] == "NPI"), ""))
+                                     for p in providers]
                     elif page == 6:
                         headers = ["Drug", "Strength", "Form", "Controlled"]
                         self.rows = [(x.id, x.name, x.strength, x.dosage_form, str(x.controlled))
@@ -1042,8 +1051,22 @@ def main() -> None:
             QMessageBox.information(self, "Synthetic patient record", summary)
 
         def add_provider(self):
-            service.add_prescriber(self.actor, self.ask("Provider", "First name"),
-                                   self.ask("Provider", "Last name"), self.ask("Provider", "Practice level (MD/NP/etc)") )
+            first = self.ask("Provider", "First name")
+            last = self.ask("Provider", "Last name")
+            level = self.ask("Provider", "Practice level (MD/NP/etc)", "UNKNOWN")
+            def optional(label: str) -> str | None:
+                value, ok = QInputDialog.getText(self, "Provider registration", label)
+                if not ok:
+                    raise ValueError("Provider registration cancelled")
+                return value.strip() or None
+            dob = optional("Date of birth (optional; YYYY-MM-DD or MM/DD/YYYY)")
+            npi = optional("NPI (optional; synthetic only)")
+            phone = optional("Main phone (optional)")
+            fax = optional("Main fax (optional)")
+            payload = PrescriberContractIn.model_validate({
+                "firstName": first, "lastName": last, "practiceLevel": level,
+                "dateOfBirth": dob, "npi": npi, "phone": phone, "fax": fax})
+            provider_parity.create(self.actor, payload)
 
         def provider_add_identifier(self):
             prescriber_id = self.selected_id()
