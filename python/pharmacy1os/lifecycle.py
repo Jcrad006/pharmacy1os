@@ -63,7 +63,11 @@ class LifecycleService:
             ):
                 raise WorkflowError("Cannot cancel a completed/transferred prescription with this workflow")
             from .fill_completion import FillObligation
-            from .models import Fill as DbFill
+            from .emergency_supply import EmergencySupply
+            if s.scalar(select(EmergencySupply.id).where(
+                EmergencySupply.prescription_id == rx.id,
+                EmergencySupply.site_id == actor.site_id)):
+                raise WorkflowError("Emergency supply linked to a prior sale requires professional reconciliation")
             outstanding = s.scalars(select(FillObligation).where(
                 FillObligation.prescription_id == rx.id,
                 FillObligation.site_id == actor.site_id,
