@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -299,11 +299,15 @@ class PharmacyService:
             ScheduledFill.prescription_id == rx.id, ScheduledFill.status == "PENDING"))
         if pending and pending != scheduled_id:
             raise WorkflowError("A pending future fill must be started through its scheduled action")
+        from .fill_completion import guard_new_logical_fill, FillCompletion, FillObligation
+        guard_new_logical_fill(s, rx)
         active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
         if any(f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"} for f in active):
             raise WorkflowError("A fill is already active")
+        completion_ids = set(s.scalars(select(FillCompletion.fill_id).where(
+            FillCompletion.site_id == actor.site_id)).all())
         returned = next((f for f in sorted(active, key=lambda f: (f.fill_number, f.attempt), reverse=True)
-                         if f.status == "RETURNED"), None)
+                         if f.status == "RETURNED" and f.id not in completion_ids), None)
         fillnum = returned.fill_number if returned else (max((f.fill_number for f in active), default=-1) + 1)
         if fillnum > rx.refills_allowed:
             raise WorkflowError("No refills remaining")
@@ -316,6 +320,10 @@ class PharmacyService:
         s.add(f)
         rx.status = "PRODUCT_FILL"
         s.flush()
+        if qty < rx.quantity:
+            s.add(FillObligation(site_id=actor.site_id, prescription_id=rx.id,
+                anchor_fill_id=f.id, intended=rx.quantity, dispensed=Decimal("0"),
+                remaining=rx.quantity, status="OPEN"))
         self._audit(s, actor, "FILL_STARTED", f.id,
                     {"fill_number": f.fill_number, "dispense_qty": str(qty),
                      "bill_qty": str(rx.quantity)})
@@ -379,6 +387,10 @@ class PharmacyService:
             payers = payer_names or []
             if len(payers) > 4 or any(not name.strip() for name in payers):
                 raise WorkflowError("Maximum four named COB payers")
+            from .fill_completion import FillCompletion
+            is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
+            if is_completion and payers:
+                raise WorkflowError("Linked completion cannot create another synthetic payer claim")
             # Label ordering: largest physical source first.
             sorted_sources = sorted(sources, key=lambda x: (-x.quantity, x.stock_id))
             labels = []
@@ -412,8 +424,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PHARMACIST_REVIEW":
                 raise WorkflowError("Fill not awaiting pharmacist review")
-            from .date_rules import require_date_eligible
-            require_date_eligible(s, rx)
+            from .fill_completion import require_fill_date_eligible
+            require_fill_date_eligible(s, rx, f)
             if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
                         DUR.severity == "HIGH", DUR.resolved.is_(False))):
                 raise WorkflowError("Unresolved high-severity DUR issue")
@@ -461,8 +473,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "READY" or not identity_verified or not signed:
                 raise WorkflowError("Ready fill, identity verification and signature required")
-            from .date_rules import require_date_eligible
-            require_date_eligible(s, rx)
+            from .fill_completion import require_fill_date_eligible
+            require_fill_date_eligible(s, rx, f)
             from .inventory_advanced import assert_not_recalled
             for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
                 stock = s.get(Stock, src.stock_id)
@@ -487,6 +499,8 @@ class PharmacyService:
                 from .willcall import record_closed
                 record_closed(s, actor, f, "SOLD", "Pickup completed with verified identity and signature")
                 bag.status = "SOLD"
+            from .fill_completion import record_physical_sale
+            record_physical_sale(s, actor, f)
             f.status = "SOLD"; rx.status = "SOLD"
             if f.fill_number > 0:
                 rx.refills_used = max(rx.refills_used, f.fill_number)
@@ -519,7 +533,10 @@ class PharmacyService:
                 from .willcall import record_closed
                 record_closed(s, actor, f, "RETURNED", reason)
                 bag.status = "RETURNED"
-            f.status = "RETURNED"; rx.status = "DUR_REVIEW"
+            from .fill_completion import FillCompletion, void_unissued_obligation
+            void_unissued_obligation(s, actor, f, reason)
+            linked_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id))
+            f.status = "RETURNED"; rx.status = "SOLD" if linked_completion else "DUR_REVIEW"
             self._audit(s, actor, "FILL_RETURNED_TO_STOCK", f.id, {"reason": reason})
 
     def queue(self, actor: Actor, term: str = "") -> list[dict[str, Any]]:
