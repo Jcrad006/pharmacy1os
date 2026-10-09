@@ -459,8 +459,7 @@ class PharmacyService:
         rx.status = "PRODUCT_FILL"
         s.flush()
         from .inventory_demands import record_fill_demand_tx
-        record_fill_demand_tx(s, actor, f, rx,
-                              source="COMPLETION" if scheduled_id is not None else "FILL")
+        record_fill_demand_tx(s, actor, f, rx, source="FILL")
         if qty < rx.quantity:
             s.add(FillObligation(site_id=actor.site_id, prescription_id=rx.id,
                 anchor_fill_id=f.id, intended=rx.quantity, dispensed=Decimal("0"),
