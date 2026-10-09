@@ -39,6 +39,7 @@ from .claim_transactions import SandboxClaimService
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
+from .prescription_directory import PrescriptionDirectory
 from .exceptions import ExceptionService
 from .communications import CommunicationService
 from .structured_changes import StructuredChangeService
@@ -109,6 +110,7 @@ def main() -> None:
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
+    rx_directory = PrescriptionDirectory(service)
     exception_service = ExceptionService(service)
     communication_service = CommunicationService(service, document_service)
     structured_changes = StructuredChangeService(service, document_service)
@@ -259,6 +261,8 @@ def main() -> None:
                 "Search provider name, NPI, phone, or practice level"
                 if page == 5 else "Search Rx number, patient, or drug")
             if page == 0:
+                self.action("View Full Prescription / Fill History", self.view_rx_details)
+                self.action("Review Rx Audit Timeline", self.view_rx_audit)
                 self.action("Advance → DUR", self.advance)
                 self.action("Start Fill", self.start_fill)
                 self.action("Stop / Convert To Partial", self.convert_to_partial)
@@ -299,6 +303,7 @@ def main() -> None:
                 self.action("Custody History", self.will_call_history)
             elif page == 3:
                 self.action("Enter New Prescription", self.new_rx)
+                self.action("View Full Prescription / Fill History", self.view_rx_details)
             elif page == 4:
                 self.action("Register Patient", self.add_patient)
                 self.action("View Patient Details", self.view_patient_detail)
@@ -1025,6 +1030,16 @@ def main() -> None:
         def return_stock(self):
             fid = self.fill_for_rx(self.selected_id())
             service.return_to_stock(self.actor, fid, self.ask("Return to stock", "Reason"))
+
+        def view_rx_details(self):
+            details = rx_directory.detail(self.actor, self.selected_id())
+            QMessageBox.information(self, "SYNTHETIC prescription details",
+                json.dumps(details, indent=2, default=str))
+
+        def view_rx_audit(self):
+            timeline = rx_directory.audit(self.actor, self.selected_id())
+            QMessageBox.information(self, "SYNTHETIC prescription audit timeline",
+                json.dumps(timeline, indent=2, default=str))
 
         def add_patient(self):
             first = self.ask("Patient", "First name")
