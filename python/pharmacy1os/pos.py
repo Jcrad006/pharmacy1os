@@ -186,12 +186,15 @@ class PosService:
             s.add(tx); s.flush()
             from .date_rules import require_date_eligible, record_sale_time
             for fid, price, fill, rx, bag in selected:
-                require_date_eligible(s, rx)
+                from .fill_completion import require_fill_date_eligible
+                require_fill_date_eligible(s, rx, fill)
                 s.add(PosLine(transaction_id=tx.id, fill_id=fid, amount=price,
                               scanned_bag=bag_values[fid] or None))
                 s.add(Sale(fill_id=fid, verified_identity=True, signature_attested=True,
                            tender="SPLIT_SYNTHETIC", amount=price))
                 record_sale_time(s, actor, fill)
+                from .fill_completion import record_physical_sale
+                record_physical_sale(s, actor, fill)
                 fill.status = "SOLD"; rx.status = "SOLD"
                 if fill.fill_number > 0:
                     rx.refills_used = max(rx.refills_used, fill.fill_number)
