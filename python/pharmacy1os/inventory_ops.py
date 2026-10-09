@@ -24,7 +24,8 @@ def snapshot(stock: Stock) -> dict[str, str]:
 
 def record_movement(s, actor: Actor, stock: Stock, kind: str,
                     *, on_hand: Decimal = ZERO, reserved: Decimal = ZERO,
-                    quarantined: Decimal = ZERO, reason: str | None = None) -> str:
+                    quarantined: Decimal = ZERO, reason: str | None = None,
+                    location_id: str | None = None) -> str:
     """Adjust a site-owned balance and stage an append-only movement atomically."""
     if stock.site_id != actor.site_id:
         raise WorkflowError("Stock is outside the actor's pharmacy site")
@@ -40,6 +41,10 @@ def record_movement(s, actor: Actor, stock: Stock, kind: str,
     stock.on_hand = next_hand
     stock.reserved = next_reserved
     stock.quarantined = next_quarantine
+    from .inventory_locations import mirror_movement
+    mirror_movement(s, actor, stock, on_hand=on_hand, reserved=reserved,
+                    quarantined=quarantined, kind=kind, reason=reason,
+                    location_id=location_id)
     movement = InventoryMovement(site_id=actor.site_id, stock_id=stock.id,
             actor_id=actor.id, kind=kind, on_hand_delta=on_hand,
             reserved_delta=reserved, quarantined_delta=quarantined,
