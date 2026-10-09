@@ -296,6 +296,7 @@ def main() -> None:
                 self.action("Enter New Prescription", self.new_rx)
             elif page == 4:
                 self.action("Register Patient", self.add_patient)
+                self.action("View Patient Details", self.view_patient_detail)
             elif page == 5:
                 self.action("Register Provider", self.add_provider)
                 self.action("Add Identifier", self.provider_add_identifier)
@@ -418,8 +419,9 @@ def main() -> None:
                         self.rows = [(x["id"], x["rx_number"], x["patient"], x["status"])
                                      for x in service.queue(self.actor)]
                     elif page == 4:
-                        headers = ["Last", "First", "DOB", "Phone"]
-                        self.rows = [(x["id"], x["last_name"], x["first_name"], x["date_of_birth"] or "", x["phone"] or "")
+                        headers = ["Last", "First", "DOB", "Phone", "Email"]
+                        self.rows = [(x["id"], x["last_name"], x["first_name"],
+                                      x["date_of_birth"] or "", x["phone"] or "", x["email"] or "")
                                      for x in patient_directory.search(self.actor, query=self.search.text())]
                     elif page == 5:
                         headers = ["Last", "First", "Credential", "NPI"]
@@ -1016,7 +1018,28 @@ def main() -> None:
             service.return_to_stock(self.actor, fid, self.ask("Return to stock", "Reason"))
 
         def add_patient(self):
-            service.add_patient(self.actor, self.ask("Patient", "First name"), self.ask("Patient", "Last name"))
+            first = self.ask("Patient", "First name")
+            last = self.ask("Patient", "Last name")
+            def optional(label: str) -> str | None:
+                value, ok = QInputDialog.getText(self, "Patient registration", label)
+                if not ok:
+                    raise ValueError("Patient registration cancelled")
+                return value.strip() or None
+            dob = optional("Date of birth (optional; YYYY-MM-DD or MM/DD/YYYY)")
+            phone = optional("Phone (optional)")
+            email = optional("Email (optional)")
+            patient_directory.create(self.actor, first, last,
+                                     dob=dob, phone=phone, email=email)
+
+        def view_patient_detail(self):
+            with service.sessions() as session:
+                service._authorized(session, self.actor, "read")
+                patient = service._site(session, Patient, self.selected_id(), self.actor)
+                summary = (f"Patient: {patient.last_name}, {patient.first_name}\\n"
+                           f"DOB: {patient.date_of_birth or 'Not provided'}\\n"
+                           f"Phone: {patient.phone or 'Not provided'}\\n"
+                           f"Email: {patient.email or 'Not provided'}")
+            QMessageBox.information(self, "Synthetic patient record", summary)
 
         def add_provider(self):
             service.add_prescriber(self.actor, self.ask("Provider", "First name"),
