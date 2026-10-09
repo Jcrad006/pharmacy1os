@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .models import Base, Drug, Fill, Label, Patient, Prescription, utcnow, uuid
+from .models import Base, Drug, Fill, FillSource, Label, Patient, Prescription, Product, Stock, utcnow, uuid
 from .service import Actor, PharmacyService, WorkflowError
 
 SYNTHETIC_MARK = "SYNTHETIC TEST LABEL - NOT FOR PATIENT USE"
@@ -75,7 +75,21 @@ def enqueue_label_jobs(s: Session, actor: Actor, fill: Fill) -> None:
         Label.fill_id == fill.id).order_by(Label.bottle_number)).all()
     if not labels:
         raise WorkflowError("No bottles to queue for printing")
-    for label in labels:
+    # Both the fill and these immutable label snapshots use the same
+    # deterministic quantity-descending source ordering.
+    sources = s.scalars(select(FillSource).where(
+        FillSource.fill_id == fill.id)).all()
+    sources = sorted(sources, key=lambda src: (-src.quantity, src.stock_id))
+    if len(sources) != len(labels):
+        raise WorkflowError("Cannot map every synthetic bottle to its scanned source")
+    for label, source in zip(labels, sources):
+        stock = s.get(Stock, source.stock_id)
+        product = s.get(Product, stock.product_id) if stock else None
+        if (stock is None or stock.site_id != actor.site_id or product is None
+                or product.ndc != label.ndc or product.description != label.description
+                or source.quantity != label.quantity
+                or label.bottle_count != len(labels)):
+            raise WorkflowError("Bottle label and scanned manufacturer/lot source mismatch")
         snap = {
             "banner": SYNTHETIC_MARK,
             "rx_number": rx.rx_number,
@@ -84,6 +98,16 @@ def enqueue_label_jobs(s: Session, actor: Actor, fill: Fill) -> None:
             "sig": rx.sig,
             "ndc": label.ndc,
             "manufacturer_description": label.description,
+            "scanned_source_id": source.id,
+            "scanned_stock_id": stock.id,
+            "manufacturer_lot": stock.lot,
+            "manufacturer_expiration": stock.expires,
+            "dispensed_in_original_container": fill.dispensed_in_original_container,
+            "patient_discard_date_status": (
+                "ORIGINAL_CONTAINER_MANUFACTURER_EXPIRATION_APPLIES"
+                if fill.dispensed_in_original_container else
+                "PENDING_PHARMACIST_VERIFICATION"
+            ),
             "physical_bottle_quantity": str(label.quantity),
             "physical_total_quantity": str(label.total),
             "bottle_number": label.bottle_number,
@@ -126,6 +150,14 @@ def _as_text(job: LabelPrintJob) -> str:
         f"INSTRUCTIONS: {payload['sig']}",
         f"NDC: {payload['ndc']}",
         f"PRODUCT: {payload['manufacturer_description']}",
+        f"SCANNED LOT: {payload.get('manufacturer_lot', 'NOT RECORDED IN LEGACY SNAPSHOT')}",
+        f"MANUFACTURER EXP: {payload.get('manufacturer_expiration', 'NOT RECORDED IN LEGACY SNAPSHOT')}",
+        "PACKAGING: " + (
+            "ORIGINAL MANUFACTURER CONTAINER" if payload.get("dispensed_in_original_container")
+            else "REPACKAGED / PRESCRIPTION CONTAINER"
+        ),
+        "PATIENT DISCARD DATE: " + payload.get(
+            "patient_discard_date_status", "LEGACY SNAPSHOT / NOT VERIFIED"),
         f"QUANTITY: {payload['physical_bottle_quantity']} / {payload['physical_total_quantity']}",
         f"BOTTLE {payload['bottle_number']} OF {payload['bottle_count']}",
         "=" * 42, SYNTHETIC_MARK,
