@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, pool
 
 from pharmacy1os.models import Base
 from pharmacy1os import provider_directory  # noqa: F401 -- register extension tables
-from pharmacy1os import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion  # noqa: F401 -- register Python extension tables
+from pharmacy1os import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply  # noqa: F401 -- register Python extension tables
 
 config = context.config
 target_metadata = Base.metadata
