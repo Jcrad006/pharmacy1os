@@ -15,6 +15,8 @@ from .models import Drug, Prescription, Product, Staff
 from .service import AccessDenied, Actor, PharmacyService, WorkflowError
 from .documents import DocumentService, decode_base64
 from .inventory_ops import InventoryService
+from .inventory_fefo import FefoPolicyService
+from .inventory_fefo_api import make_fefo_router
 from .inventory_locations import InventoryLocationService
 from .inventory_locations_api import make_inventory_location_router
 from .inventory_demands import InventoryDemandService
@@ -157,6 +159,7 @@ class SourceIn(BaseModel):
     expires: str
     quantity: str
     location_id: str | None = None
+    fefo_override_note: str | None = Field(default=None, max_length=1000)
 
 
 class PackagingIn(BaseModel):
@@ -339,6 +342,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
     app.include_router(make_planning_router(InventoryPlanningService(svc), staff_actor))
     app.include_router(make_inventory_location_router(InventoryLocationService(svc), staff_actor))
+    app.include_router(make_fefo_router(FefoPolicyService(svc), staff_actor))
     app.include_router(make_demand_router(InventoryDemandService(svc), staff_actor))
     app.include_router(make_discrepancy_router(ReceivingDiscrepancyService(svc), staff_actor))
     app.include_router(make_asof_router(HistoricalInventoryService(svc), staff_actor))
