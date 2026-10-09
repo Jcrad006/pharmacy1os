@@ -127,6 +127,8 @@ class Stock(Base):
     on_hand: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal("0"))
     reserved: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal("0"))
     quarantined: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal("0"))
+    location_tracking_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
     __table_args__ = (
         UniqueConstraint("site_id", "product_id", "lot", "expires"),
         CheckConstraint("on_hand >= 0 AND reserved >= 0 AND quarantined >= 0"),
