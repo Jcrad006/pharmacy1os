@@ -69,6 +69,9 @@ def test_original_atomic_create_with_nested_records_and_aliases(env):
         row = session.get(Prescriber, provider["id"])
         assert row.date_of_birth == "1975-01-30"
         assert row.npi == "12345 67893"
+        assert row.dea == "AB 1234567"
+        assert row.phone == "(919) 555-0100"
+        assert row.fax == "919-555-0199"
         audit = session.scalars(select(Audit).where(
             Audit.kind == "PRESCRIBER_CREATED", Audit.subject_id == row.id)).all()
         assert len(audit) == 1
