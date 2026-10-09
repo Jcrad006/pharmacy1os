@@ -58,7 +58,6 @@ def test_payer_and_coverage_registration_is_site_isolated_and_redacted(env):
     assert [p["position"] for p in public] == [1, 2]
     assert public[0]["member_id_masked"].endswith("1111")
     assert "SYN-MEMBER-1111" not in repr(public)
-    assert flow.list_coverages(foreign["AUDITOR"], patient) == pytest.fail if False else public
     # Correct cross-site denial must not leak whether patient exists.
     with pytest.raises(WorkflowError, match="site|not found|pharmacy"):
         flow.list_coverages(foreign["AUDITOR"], patient)
@@ -91,7 +90,7 @@ def test_connected_cob_claims_preserve_snapshot_and_do_not_duplicate_intended_qu
         assert len(snapshots) == 2
         assert snapshots[0].member_id_snapshot == "SYN-MEMBER-1111"
         assert snapshots[1].coverage_id == c2
-        assert snapshots[0].physical_quantity_snapshot == "60"
+        assert snapshots[0].physical_quantity_snapshot == "60.000"
         assert snapshots[0].intended_quantity_snapshot == "90.000"
     history = flow.fill_claim_history(a["AUDITOR"], fill)
     assert len(history) == 2
@@ -228,5 +227,5 @@ def test_api_payer_and_four_position_coverage_routes_and_synthetic_gating(env):
     assert claim_history.status_code == 200
     assert claim_history.json()["items"][0]["coverage_id"] == cov_id
     assert "SECRET-SYN-3456" not in claim_history.text
-    assert api.delete(covurl, headers=pharm,
-                      json={"reason": "Active paid claim"}).status_code == 409
+    assert api.request("DELETE", covurl, headers=pharm,
+                       json={"reason": "Active paid claim"}).status_code == 409
