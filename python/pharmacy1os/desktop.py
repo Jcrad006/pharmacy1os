@@ -25,6 +25,7 @@ from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
 from .billing import BillingService
 from .insurance import InsuranceDirectory
+from .claim_transactions import SandboxClaimService
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
@@ -84,6 +85,7 @@ def main() -> None:
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
     insurance_service = InsuranceDirectory(service)
+    sandbox_claims = SandboxClaimService(service)
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
@@ -295,6 +297,10 @@ def main() -> None:
                 self.action("Deactivate Patient Coverage", self.deactivate_coverage)
                 self.action("New Payer Rule Version", self.configure_payer)
                 self.action("Coverage-Linked Claim History", self.covered_claim_history)
+                self.action("Synthetic Claim Transactions", self.view_claim_transactions)
+                self.action("View Rejection Queue", self.show_test_rejections)
+                self.action("Inject Development Test Rejection", self.inject_test_rejection)
+                self.action("Pharmacist Clear Test Rejection", self.clear_test_rejection)
                 self.action("Claim History", self.claim_history)
             elif page == 12:
                 self.action("New Communication Task", self.communication_create)
@@ -506,6 +512,55 @@ def main() -> None:
                 self.actor, fid, [], coverage_ids=selected)
             QMessageBox.information(self, "Synthetic label creation",
                 "\\n".join(labels))
+
+        def view_claim_transactions(self):
+            fill_id = self.ask("Synthetic claim history", "Fill ID")
+            history = sandbox_claims.list_for_fill(self.actor, fill_id)
+            QMessageBox.information(self, "Immutable synthetic claim operations",
+                json.dumps(history, indent=2)[:12000] or "No synthetic claim operations")
+
+        def show_test_rejections(self):
+            records = sandbox_claims.rejection_queue(self.actor)
+            QMessageBox.information(self, "Synthetic rejection queue",
+                json.dumps(records, indent=2)[:12000] or "No development-only rejections")
+
+        def inject_test_rejection(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+                candidates = s.scalars(select(Fill).join(Prescription, Fill.prescription_id == Prescription.id)
+                    .where(Prescription.site_id == self.actor.site_id,
+                           Fill.status == "PRODUCT_FILL")).all()
+                fill_rows = [(f.id, s.get(Prescription, f.prescription_id).rx_number,
+                              s.get(Prescription, f.prescription_id).patient_id)
+                             for f in candidates]
+            selected = self.choose_item("Active fills", "Choose target for TEST rejection",
+                fill_rows, lambda row: f"{row[1]} [{row[0][:8]}]")
+            covs = insurance_service.list_coverages(self.actor, selected[2])
+            cov = self.choose_item("Patient coverages", "Choose synthetic coverage",
+                covs, lambda row: f"#{row['position']} {row['payer_name']} [{row['member_id_masked']}]")
+            code = self.choose_item("Development rejection code",
+                "Simulated reject only — NOT a real payer response",
+                ["TEST_70", "TEST_75", "TEST_79"], lambda row: row)
+            reason = self.ask("Synthetic rejection", "Document testing reason")
+            ident = "gui-reject-" + str(uuid4())
+            sandbox_claims.inject_rejection(self.actor, selected[0], cov["id"],
+                code, ident, reason)
+            QMessageBox.information(self, "Development test rejection",
+                "TEST rejection saved locally and fill review is blocked. "
+                "No insurance claim was transmitted or rejected by an insurer.")
+
+        def clear_test_rejection(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+            rejects = [row for row in sandbox_claims.rejection_queue(self.actor)
+                       if row["status"] == "OPEN_TEST_REJECTION"]
+            chosen = self.choose_item("Development rejections", "Select test hold",
+                rejects, lambda row: f"{row['code']} | Fill {row['fill_id'][:8]}")
+            note = self.ask("Pharmacist test resolution",
+                "Document independently reviewed simulated test hold")
+            sandbox_claims.resolve_rejection(self.actor, chosen["id"], note)
+            QMessageBox.information(self, "Test hold cleared",
+                "Local development hold cleared; NO insurance approval was obtained.")
 
         def configure_payer(self):
             payer = self.ask("Payer", "Payer name")
