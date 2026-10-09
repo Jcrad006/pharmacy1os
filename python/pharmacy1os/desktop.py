@@ -9,6 +9,7 @@ import os
 import json
 from pathlib import Path
 from decimal import Decimal
+from uuid import uuid4
 
 from .documents import DocumentService
 from .inventory_ops import InventoryService
@@ -16,6 +17,7 @@ from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
 from .prescription_transfer import TransferService
+from .label_printing import LabelPrintService
 from .fill_completion import FillCompletionService, FillObligation
 from .emergency_supply import EmergencySupplyService
 from .provider_directory import ProviderDirectory
@@ -72,6 +74,7 @@ def main() -> None:
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
     transfer_service = TransferService(service)
+    label_printer = LabelPrintService(service)
     completion_service = FillCompletionService(service)
     emergency_service = EmergencySupplyService(service)
     directory_service = ProviderDirectory(service)
@@ -236,6 +239,7 @@ def main() -> None:
                 self.action("Complete Emergency Follow-up", self.emergency_followup)
                 self.action("Scan Product Source", self.scan)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
+                self.action("Preview / Print Synthetic Bottle", self.print_test_label)
                 self.action("Pharmacist Verify", self.verify)
                 self.action("Stage Will Call", self.stage)
                 self.action("Sell / Pickup", self.sell)
@@ -696,6 +700,42 @@ def main() -> None:
             names = [] if payers.upper() == "CASH" else [p.strip() for p in payers.split(",")]
             labels = service.prepare_for_review(self.actor, fid, names)
             QMessageBox.information(self, "Synthetic bottle labels", "\n".join(labels))
+
+        def print_test_label(self):
+            """Operator-initiated native OS dialog; all output visibly marked synthetic."""
+            fill_id = self.fill_for_rx(self.selected_id())
+            jobs = label_printer.list(self.actor, fill_id)
+            job = self.choose_item("Bottle label snapshots", "Select physical bottle",
+                jobs, lambda x: f"Bottle {x['bottle_number']} | {x['status']} | {x['id'][:8]}")
+            label_text = label_printer.preview(self.actor, job["id"])
+            QMessageBox.information(self, "SYNTHETIC bottle label preview", label_text)
+            decision = QMessageBox.question(self, "Development-only local printing",
+                "Open your operating system's native print dialog for this clearly "
+                "watermarked SYNTHETIC TEST LABEL? Never print or dispense for patients.")
+            if decision != QMessageBox.StandardButton.Yes:
+                return
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "verify")
+            try:
+                from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+                from PySide6.QtGui import QTextDocument
+            except ImportError as exc:
+                raise ValueError("Native OS print support is not installed") from exc
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer.setDocName("Pharmacy1OS SYNTHETIC TEST LABEL")
+            dialogue = QPrintDialog(printer, self)
+            if dialogue.exec() != QDialog.DialogCode.Accepted:
+                return
+            reason = self.ask("Test print audit", "Document print/reprint reason")
+            event_id = label_printer.record_output_attempt(
+                self.actor, job["id"], f"QT-{uuid4()}", reason,
+                dialog_accepted=True)
+            paper = QTextDocument()
+            paper.setPlainText(label_text)
+            paper.print_(printer)
+            QMessageBox.information(self, "Test spool requested",
+                f"Recorded output attempt {event_id[:8]}. The application cannot "
+                "confirm that the printer physically produced a label.")
 
         def verify(self):
             service.verify(self.actor, self.fill_for_rx(self.selected_id()))
