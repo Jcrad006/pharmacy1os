@@ -21,6 +21,7 @@ from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
 from .exceptions import ExceptionService
+from .communications import CommunicationService
 from .date_rules import DateRulesService
 
 from sqlalchemy import select
@@ -32,7 +33,7 @@ from .service import Actor, PharmacyService
 VIEWS = [
     "Dashboard", "Exceptions", "Will Call", "New Prescription", "Patients",
     "Providers", "Drug / Product", "Receiving", "Inventory", "Third Party",
-    "Supply Chain", "Future Fills",
+    "Supply Chain", "Future Fills", "Communications",
 ]
 
 
@@ -66,6 +67,7 @@ def main() -> None:
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
     exception_service = ExceptionService(service)
+    communication_service = CommunicationService(service, document_service)
     date_rules_service = DateRulesService(service)
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
@@ -223,6 +225,12 @@ def main() -> None:
             elif page == 9:
                 self.action("New Payer Rule Version", self.configure_payer)
                 self.action("Claim History", self.claim_history)
+            elif page == 12:
+                self.action("New Communication Task", self.communication_create)
+                self.action("Approve / Review", self.communication_review)
+                self.action("Manual Contact Attempt", self.communication_attempt)
+                self.action("Cancel Communication", self.communication_cancel)
+                self.action("Event History", self.communication_history)
             elif page == 11:
                 self.action("Schedule Fill", self.schedule_new)
                 self.action("Start Due Fill", self.schedule_start)
@@ -239,7 +247,12 @@ def main() -> None:
         def refresh(self):
             self.rows = []
             page = self.selected_view
-            if page == 11:
+            if page == 12:
+                headers = ["Rx", "Direction", "Channel", "Status", "Purpose"]
+                self.rows = [(x["id"], x["prescription_id"][:8], x["direction"],
+                              x["channel"], x["status"], x["summary"])
+                             for x in communication_service.list(self.actor)]
+            elif page == 11:
                 headers = ["Rx", "Due", "Status", "Quantity"]
                 self.rows = [(x["id"], x["prescription_id"][:8], x["due_date"],
                               x["status"], x["quantity"] or "Full")
@@ -413,6 +426,54 @@ def main() -> None:
                 raise ValueError("Unknown synthetic POS adjustment")
             QMessageBox.information(self, "Synthetic financial record",
                                     json.dumps(result, indent=2))
+
+        def communication_create(self):
+            number = self.ask("Communication", "Existing prescription number")
+            with service.sessions() as session:
+                rx = session.scalar(select(Prescription).where(
+                    Prescription.site_id == self.actor.site_id,
+                    Prescription.rx_number == number))
+                if rx is None:
+                    raise ValueError("Prescription not found at this pharmacy")
+            sources = document_service.list_sources(self.actor, rx.id)
+            if not sources:
+                raise ValueError("An immutable document must be stored before opening a communication task")
+            doc = self.ask("Communication", "Immutable source document ID", sources[-1]["id"])
+            direction = self.ask("Communication", "INBOUND or OUTBOUND", "OUTBOUND")
+            channel = self.ask("Communication", "FAX or PHONE; ERX inbound only", "FAX")
+            destination = self.ask("Communication", "Office or communication party")
+            reason = self.ask("Communication", "Purpose of contact")
+            key = self.ask("Communication", "Unique request key")
+            communication_service.create(self.actor, rx.id, doc, direction,
+                                         channel, destination, reason, key)
+
+        def communication_review(self):
+            task_id = self.selected_id()
+            task = next((x for x in communication_service.list(self.actor)
+                         if x["id"] == task_id), None)
+            if task is None:
+                raise ValueError("Communication task no longer exists")
+            action = "REVIEWED" if task["direction"] == "INBOUND" else "APPROVED"
+            reason = self.ask("Communication", "Document pharmacist review")
+            key = self.ask("Communication", "Unique review key")
+            communication_service.change(self.actor, task_id, action, reason, key)
+
+        def communication_attempt(self):
+            task_id = self.selected_id()
+            detail = self.ask("Contact attempt", "Describe manual attempt; delivery is NOT verified")
+            key = self.ask("Contact attempt", "Unique event key")
+            communication_service.change(self.actor, task_id, "ATTEMPT_RECORDED", detail, key)
+
+        def communication_cancel(self):
+            task_id = self.selected_id()
+            detail = self.ask("Communication cancel", "Cancellation reason")
+            key = self.ask("Communication cancel", "Unique cancellation key")
+            communication_service.change(self.actor, task_id, "CANCELLED", detail, key)
+
+        def communication_history(self):
+            events = communication_service.history(self.actor, self.selected_id())
+            QMessageBox.information(self, "Communication events — NOT proof of delivery",
+                                    json.dumps(events, indent=2))
 
         def selected_will_call_fill(self):
             with service.sessions() as session:

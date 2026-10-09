@@ -33,6 +33,8 @@ from .exceptions import ExceptionService
 from .exceptions_api import make_exceptions_router
 from .date_rules import DateRulesService
 from .date_rules_api import make_date_rules_router
+from .communications import CommunicationService
+from .communications_api import make_communications_router
 
 
 class PatientIn(BaseModel):
@@ -254,6 +256,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_patient_router(PatientDirectory(svc), staff_actor))
     app.include_router(make_exceptions_router(ExceptionService(svc), staff_actor))
     app.include_router(make_date_rules_router(DateRulesService(svc), staff_actor))
+    app.include_router(make_communications_router(CommunicationService(svc, docs), staff_actor))
 
     @app.get("/health")
     def health():
