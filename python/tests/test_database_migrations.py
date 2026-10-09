@@ -143,3 +143,63 @@ def test_incremental_upgrade_preserves_prior_patient_rows(monkeypatch, tmp_path)
     assert revision_at_head(engine)
     assert not verify_mapped_schema(engine)
     engine.dispose()
+
+
+
+def test_rx_metadata_migration_preserves_populated_previous_revision(monkeypatch, tmp_path):
+    """Prove upgrade from the prior deployed synthetic schema retains all records."""
+    from uuid import uuid4
+    from pharmacy1os.models import Drug, Prescription, Product, Patient
+    url = setup_env(monkeypatch, tmp_path / "prior-rx-metadata.db")
+    command.upgrade(migration_config(), "a8f167bf70d2")
+    ids = {name: str(uuid4()) for name in (
+        "site", "patient", "prescriber", "drug", "product", "rx")}
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO py_sites(id, name) VALUES (:id, :name)"),
+                {"id": ids["site"], "name": "Original synthetic pharmacy"})
+            conn.execute(text("INSERT INTO py_patients(id, site_id, first_name, last_name) "
+                              "VALUES (:id, :site, 'Synthetic', 'Preserved')"),
+                {"id": ids["patient"], "site": ids["site"]})
+            conn.execute(text("INSERT INTO py_prescribers "
+                              "(id, site_id, first_name, last_name, practice_level) "
+                              "VALUES (:id, :site, 'Synthetic', 'Prescriber', 'MD')"),
+                {"id": ids["prescriber"], "site": ids["site"]})
+            conn.execute(text("INSERT INTO py_drugs "
+                              "(id, name, strength, dosage_form, controlled) "
+                              "VALUES (:id, 'OldDrug', '10 mg', 'tablet', 0)"),
+                {"id": ids["drug"]})
+            conn.execute(text("INSERT INTO py_products "
+                              "(id, drug_id, ndc, manufacturer, description, unit, unit_price) "
+                              "VALUES (:id, :drug, '88888-8888-01', 'Demo', 'Old product', "
+                              "'each', 0)"),
+                {"id": ids["product"], "drug": ids["drug"]})
+            conn.execute(text("INSERT INTO py_prescriptions "
+                              "(id, site_id, patient_id, prescriber_id, drug_id, rx_number, "
+                              "sig, quantity, refills_allowed, refills_used, status, version) "
+                              "VALUES (:id, :site, :patient, :prescriber, :drug, "
+                              "'SYNTH-OLD-RX', 'one daily', 30, 0, 0, 'DATA_ENTRY', 0)"),
+                {"id": ids["rx"], "site": ids["site"],
+                 "patient": ids["patient"], "prescriber": ids["prescriber"],
+                 "drug": ids["drug"]})
+    finally:
+        engine.dispose()
+    command.upgrade(migration_config(), "head")
+    svc = PharmacyService(url)
+    try:
+        with svc.sessions() as s:
+            rx = s.get(Prescription, ids["rx"])
+            drug = s.get(Drug, ids["drug"])
+            product = s.get(Product, ids["product"])
+            patient = s.get(Patient, ids["patient"])
+            assert rx.source_type == "MANUAL"
+            assert rx.product_selection_directive == "UNSPECIFIED"
+            assert rx.prescribed_product_id is None
+            assert rx.sig == "one daily"
+            assert drug.controlled_substance_schedule == "UNCLASSIFIED"
+            assert drug.active and product.active and patient.email is None
+        assert revision_at_head(svc.engine)
+        assert not verify_mapped_schema(svc.engine)
+    finally:
+        svc.engine.dispose()
