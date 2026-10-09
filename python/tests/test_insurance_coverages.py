@@ -64,7 +64,7 @@ def test_payer_and_coverage_registration_is_site_isolated_and_redacted(env):
     with pytest.raises(WorkflowError, match="active payer"):
         flow.upsert_coverage(a["PHARMACIST"], patient, 3,
                              "00000000-0000-0000-0000-000000000000", "SYN")
-    with pytest.raises(WorkflowError, match="active payer"):
+    with pytest.raises(WorkflowError, match="not found at actor's pharmacy site"):
         flow.upsert_coverage(foreign["PHARMACIST"], patient, 1, p1, "CROSS-SITE")
     with svc.sessions() as s:
         assert len(s.scalars(select(InsurancePayer)).all()) == 2
