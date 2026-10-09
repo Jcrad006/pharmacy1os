@@ -223,6 +223,9 @@ class FillCompletionService:
                         status="PRODUCT_FILL")
             s.add(fill)
             s.flush()
+            from .inventory_demands import record_fill_demand_tx
+            record_fill_demand_tx(s, actor, fill, rx, source="COMPLETION",
+                                  note="Physical completion of a partially supplied prescription")
             link = FillCompletion(site_id=actor.site_id, obligation_id=obligation.id,
                                   fill_id=fill.id,
                                   part_number=max((x.part_number for x in existing), default=1) + 1)
