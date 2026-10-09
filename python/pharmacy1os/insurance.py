@@ -47,7 +47,10 @@ def _day(value: Any, name: str) -> str | None:
 
 
 def _mask(value: str) -> str:
-    return "*" * max(0, len(value) - 4) + value[-4:]
+    # Short synthetic identifiers must never be returned in full.
+    if len(value) <= 4:
+        return "*" * len(value)
+    return "*" * (len(value) - 4) + value[-4:]
 
 
 def _payer_view(row: InsurancePayer) -> dict[str, Any]:
