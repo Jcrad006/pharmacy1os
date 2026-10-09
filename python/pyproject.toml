@@ -21,6 +21,7 @@ pharmacy1os-db = "pharmacy1os.db_cli:main"
 pharmacy1os-backup = "pharmacy1os.backup:main"
 pharmacy1os-postgres-backup = "pharmacy1os.postgres_backup:main"
 pharmacy1os-recovery = "pharmacy1os.recovery:main"
+pharmacy1os-auth = "pharmacy1os.auth_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

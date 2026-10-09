@@ -37,6 +37,8 @@ from .communications import CommunicationService
 from .communications_api import make_communications_router
 from .structured_changes import StructuredChangeService
 from .structured_changes_api import make_structured_changes_router
+from .auth import AuthService, AuthenticationFailed
+from .auth_api import make_auth_router
 
 
 class PatientIn(BaseModel):
@@ -207,13 +209,17 @@ class RecallIn(BaseModel):
     lot: str | None = None
 
 
-def create_app(service: PharmacyService | None = None, *, synthetic_enabled: bool = False) -> FastAPI:
+def create_app(service: PharmacyService | None = None, *, synthetic_enabled: bool = False,
+               auth_mode: str = "demo") -> FastAPI:
+    if auth_mode not in {"demo", "session"}:
+        raise ValueError("Only explicit demo or session authentication modes are supported")
     app = FastAPI(title="Pharmacy1OS Python migration — synthetic only", version="0.1.0")
     svc = service or PharmacyService(os.getenv("PHARMACY1OS_PY_DATABASE_URL", "sqlite+pysqlite:///pharmacy1os_demo.sqlite3"))
     docs = DocumentService.from_demo_env(svc)
     stock_ops = InventoryService(svc)
     advanced_ops = AdvancedInventoryService(svc)
     lifecycle = LifecycleService(svc)
+    authentication = AuthService(svc)
 
     @app.middleware("http")
     async def guarded(request, call_next):
@@ -230,6 +236,12 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
         from starlette.responses import JSONResponse
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
+    @app.exception_handler(AuthenticationFailed)
+    async def authentication_required(_request, _exc: AuthenticationFailed):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"detail": "Authentication required"}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
+
     @app.exception_handler(AccessDenied)
     async def denied(_request, _exc: AccessDenied):
         from starlette.responses import JSONResponse
@@ -240,7 +252,15 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
         from starlette.responses import JSONResponse
         return JSONResponse({"detail": "Duplicate or invalid database record"}, status_code=409)
 
-    def staff_actor(x_demo_staff_id: Annotated[str | None, Header()] = None) -> Actor:
+    def staff_actor(x_demo_staff_id: Annotated[str | None, Header()] = None,
+                    authorization: Annotated[str | None, Header()] = None) -> Actor:
+        if auth_mode == "session":
+            if x_demo_staff_id is not None or not authorization:
+                raise HTTPException(401, "Bearer session required", headers={"WWW-Authenticate": "Bearer"})
+            scheme, separator, token = authorization.partition(" ")
+            if scheme.lower() != "bearer" or not separator or not token or " " in token:
+                raise HTTPException(401, "Bearer session required", headers={"WWW-Authenticate": "Bearer"})
+            return authentication.verify(token)
         if not x_demo_staff_id:
             raise HTTPException(403, "Development actor required")
         with svc.sessions() as s:
@@ -250,6 +270,8 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
             return Actor(id=user.id, site_id=user.site_id, role=user.role)
 
     DemoActor = Annotated[Actor, Depends(staff_actor)]
+    if auth_mode == "session":
+        app.include_router(make_auth_router(authentication, staff_actor))
     app.include_router(make_provider_router(ProviderDirectory(svc), staff_actor))
     app.include_router(make_schedule_router(SchedulingService(svc), staff_actor))
     app.include_router(make_billing_router(BillingService(svc), staff_actor))
@@ -514,7 +536,7 @@ def main() -> None:
         raise SystemExit("Demo API only supports isolated SQLite. PostgreSQL migration is not yet ready.")
     svc = PharmacyService(url)
     svc.create_schema()
-    uvicorn.run(create_app(svc, synthetic_enabled=True), host="127.0.0.1", port=8008)
+    uvicorn.run(create_app(svc, synthetic_enabled=True,\n                           auth_mode=os.getenv("PHARMACY1OS_API_AUTH_MODE", "demo")),\n                host="127.0.0.1", port=8008)
 
 
 if __name__ == "__main__":

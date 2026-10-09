@@ -24,6 +24,7 @@ from .exceptions import ExceptionService
 from .communications import CommunicationService
 from .structured_changes import StructuredChangeService
 from .date_rules import DateRulesService
+from .auth import AuthService, AuthenticationFailed
 
 from sqlalchemy import select
 
@@ -55,8 +56,12 @@ def main() -> None:
 
     base = Path.home() / ".pharmacy1os" / "synthetic"
     base.mkdir(parents=True, exist_ok=True)
+    mode = os.getenv("PHARMACY1OS_NATIVE_AUTH_MODE", "demo")
+    if mode not in ("demo", "session"):
+        raise SystemExit("Unsupported synthetic workstation authentication mode")
     service = PharmacyService(f"sqlite+pysqlite:///{base / 'pharmacy1os.sqlite3'}")
     service.create_schema()
+    auth_service = AuthService(service)
     document_service = DocumentService.from_demo_env(service)
     inventory_service = InventoryService(service)
     advanced_service = AdvancedInventoryService(service)
@@ -74,6 +79,8 @@ def main() -> None:
     with service.sessions() as session:
         users = session.scalars(select(Staff).order_by(Staff.name)).all()
     if not users:
+        if mode == "session":
+            raise SystemExit("No synthetic user enrolled; provision a synthetic administrator offline first")
         service.bootstrap_demo()
 
     app = QApplication([])
@@ -109,7 +116,8 @@ def main() -> None:
                 shortcut = QShortcut(QKeySequence(f"F{i + 1}"), self)
                 shortcut.activated.connect(lambda index=i: self.navigate(index))
             menu.addStretch(1)
-            menu.addWidget(QLabel("Development identity (NOT authentication)"))
+            menu.addWidget(QLabel("Development identity (NOT authentication)" if mode == "demo"
+                                  else "Signed-in synthetic session"))
             self.actor_box = QComboBox()
             self.actors = {}
             with service.sessions() as s:
@@ -117,6 +125,25 @@ def main() -> None:
                     self.actors[staff.id] = Actor(staff.id, staff.site_id, staff.role)
                     self.actor_box.addItem(f"{staff.name} — {staff.role}", staff.id)
             menu.addWidget(self.actor_box)
+            self.actor_box.setVisible(mode == "demo")
+            self.auth_token = None
+            if mode == "session":
+                username, ok = QInputDialog.getText(self, "Synthetic login", "Username")
+                if not ok:
+                    raise SystemExit("Synthetic login cancelled")
+                password, ok = QInputDialog.getText(
+                    self, "Synthetic login", "Password", QLineEdit.EchoMode.Password)
+                if not ok:
+                    raise SystemExit("Synthetic login cancelled")
+                try:
+                    session = auth_service.login(username, password)
+                except AuthenticationFailed:
+                    raise SystemExit("Invalid synthetic account credentials")
+                self.auth_token = session["access_token"]
+                menu.addWidget(QLabel("Signed in as " + session["role"]))
+                logout_button = QPushButton("Sign out")
+                logout_button.clicked.connect(self.sign_out)
+                menu.addWidget(logout_button)
             menu.addWidget(QLabel("No real patient information.", objectName="warning"))
             frame.addWidget(left)
 
@@ -145,7 +172,15 @@ def main() -> None:
 
         @property
         def actor(self) -> Actor:
+            if mode == "session":
+                return auth_service.verify(self.auth_token)
             return self.actors[self.actor_box.currentData()]
+
+        def sign_out(self):
+            if self.auth_token:
+                auth_service.logout(self.auth_token)
+                self.auth_token = None
+            self.close()
 
         def action(self, title: str, handler):
             btn = QPushButton(title)
