@@ -113,6 +113,14 @@ class ProviderDirectory:
         with self.pharmacy.sessions.begin() as s:
             self.pharmacy._authorized(s, actor, "correct")
             self.pharmacy._site(s, Prescriber, prescriber_id, actor)
+            # Original TypeScript registration permits only one NPI. Enforce
+            # the same invariant for later directory edits, not just create.
+            if kind == "NPI" and s.scalar(select(ProviderIdentifier.id).where(
+                    ProviderIdentifier.site_id == actor.site_id,
+                    ProviderIdentifier.prescriber_id == prescriber_id,
+                    ProviderIdentifier.type == "NPI",
+                    ProviderIdentifier.active.is_(True))):
+                raise WorkflowError("A prescriber may have only one active NPI")
             if is_primary:
                 s.execute(update(ProviderIdentifier).where(
                     ProviderIdentifier.prescriber_id == prescriber_id,
