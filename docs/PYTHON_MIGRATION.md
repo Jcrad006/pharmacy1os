@@ -184,3 +184,8 @@ Added request/attest/withdraw transfer-out handoff with no external transmission
 ## Twentieth Python increment — original provenance, catalog metadata and reviewed edits
 
 See [PYTHON_PARITY_PROGRESS_INCREMENT_20.md](PYTHON_PARITY_PROGRESS_INCREMENT_20.md). The Python rewrite now retains original prescription source, written-date, DAW and electronic-reference fields; medication/classification and product package metadata; and patient email. It adds synthetic catalog/Rx detail endpoints, versioned pharmacist-reviewed Rx edit history and native Qt entry/edit controls. New isolated additive migrations `c6d923e46a10` and `60a79f2cc141` follow the synthetic transfer/print schema. Specialized NTI, biologic, cold-chain, controlled and transfer-in dispensing remains **blocked** until the original workflows are rebuilt and reviewed. The original Prisma data and API contracts are not migrated. **Feature parity remains incomplete.**
+
+
+## Twenty-first Python increment — synthetic payer and patient coverage parity
+
+See [PYTHON_PARITY_PROGRESS_INCREMENT_21.md](PYTHON_PARITY_PROGRESS_INCREMENT_21.md). Added site-scoped insurance payer masters, patient COB coverage positions 1–4, masked member-ID reads, pharmacist-guarded coverage modification, and immutable coverage-linked synthetic claim snapshots distinguishing full intended quantity from physical quantities. Added standalone Python API routes and native Qt controls. The original name-only sandbox payer path stays available for legacy tests but has **no fabricated coverage provenance**. Migration `d1c21b5981aa` extends only `py_*` tables after `60a79f2cc141`. **This is not actual eligibility checking, insurance adjudication or finalized COB parity.**
