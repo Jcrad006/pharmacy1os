@@ -47,6 +47,7 @@ class Patient(Base):
     last_name: Mapped[str] = mapped_column(String(100), index=True)
     date_of_birth: Mapped[str | None] = mapped_column(String(10), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
 
 
 class Prescriber(Base):
@@ -69,6 +70,19 @@ class Drug(Base):
     strength: Mapped[str] = mapped_column(String(70))
     dosage_form: Mapped[str] = mapped_column(String(70))
     controlled: Mapped[bool] = mapped_column(Boolean, default=False)
+    brand_name: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    route: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    controlled_substance_schedule: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="UNCLASSIFIED", server_default="UNCLASSIFIED")
+    nc_narrow_therapeutic_index: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+    is_biological: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+    has_fda_interchangeable_biologic_alternative: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+    requires_cold_chain: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
 
 class Product(Base):
@@ -80,6 +94,20 @@ class Product(Base):
     description: Mapped[str] = mapped_column(String(200))
     unit: Mapped[str] = mapped_column(String(10), default="each")
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"))
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    package_description: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    package_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    units_per_package: Mapped[Decimal | None] = mapped_column(Numeric(12, 3), nullable=True)
+    package_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    therapeutic_equivalence_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_interchangeable_biological: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+    __table_args__ = (
+        CheckConstraint("units_per_package IS NULL OR units_per_package > 0",
+                        name="ck_py_product_package_units_positive"),
+        CheckConstraint("package_price IS NULL OR package_price >= 0",
+                        name="ck_py_product_package_price_nonnegative"),
+    )
 
 
 class Barcode(Base):
@@ -123,8 +151,22 @@ class Prescription(Base):
     do_not_fill_before: Mapped[str | None] = mapped_column(String(10))
     expiration_date: Mapped[str | None] = mapped_column(String(10))
     version: Mapped[int] = mapped_column(Integer, default=0)
+    source_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="MANUAL", server_default="MANUAL")
+    written_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    electronic_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    electronic_raw_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prescribed_product_id: Mapped[str | None] = mapped_column(
+        ForeignKey("py_products.id"), nullable=True)
+    product_selection_directive: Mapped[str] = mapped_column(
+        String(35), nullable=False, default="UNSPECIFIED", server_default="UNSPECIFIED")
     __table_args__ = (
         UniqueConstraint("site_id", "rx_number"),
+        CheckConstraint("source_type IN ('MANUAL','PAPER','FAX','ELECTRONIC','VERBAL','TRANSFER')",
+                        name="ck_py_rx_source_type"),
+        CheckConstraint("product_selection_directive IN "
+                        "('UNSPECIFIED','SELECTION_PERMITTED','DISPENSE_AS_WRITTEN')",
+                        name="ck_py_rx_product_selection"),
         CheckConstraint("quantity > 0 AND refills_used >= 0 AND refills_allowed >= 0"),
     )
 
