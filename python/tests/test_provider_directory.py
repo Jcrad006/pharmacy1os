@@ -35,6 +35,13 @@ def test_identifiers_can_hold_npi_multiple_dea_state_identifiers(env):
     assert len(directory.search(a["TECHNICIAN"], "Moore")) == 1
 
 
+def test_subsequent_active_npi_is_uniquely_enforced(env):
+    _, directory, actors, rx = env
+    directory.add_identifier(actors["PHARMACIST"], rx, "NPI", "1234567893")
+    with pytest.raises(WorkflowError, match="one active NPI"):
+        directory.add_identifier(actors["PHARMACIST"], rx, "NPI", "9876543210")
+
+
 def test_contacts_primary_per_kind_and_search(env):
     _, directory, a, rx = env
     first = directory.add_contact(a["TECHNICIAN"], rx, "PHONE", "919-555-0101", "Office", is_primary=True)
