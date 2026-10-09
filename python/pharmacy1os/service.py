@@ -349,6 +349,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
                 raise WorkflowError("Fill is not at Product Fill")
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
             b = s.scalar(select(Barcode).where(Barcode.value == barcode))
             if not b:
                 raise WorkflowError("Unregistered barcode")
@@ -384,6 +386,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PRODUCT_FILL":
                 raise WorkflowError("Wrong fill state")
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
             sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
             if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
                 raise WorkflowError("Physical source quantities must match dispensed quantity")
@@ -429,6 +433,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PHARMACIST_REVIEW":
                 raise WorkflowError("Fill not awaiting pharmacist review")
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
             from .fill_completion import require_fill_date_eligible
             require_fill_date_eligible(s, rx, f)
             if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
@@ -478,6 +484,8 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "READY" or not identity_verified or not signed:
                 raise WorkflowError("Ready fill, identity verification and signature required")
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
             from .fill_completion import require_fill_date_eligible
             require_fill_date_eligible(s, rx, f)
             from .inventory_advanced import assert_not_recalled
