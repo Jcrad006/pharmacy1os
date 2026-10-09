@@ -125,6 +125,7 @@ def test_expired_idle_and_malformed_sessions(env):
 def test_api_uses_bearer_and_rejects_demo_impersonation(tmp_path, monkeypatch):
     # This integration test runs with the assembled current GitHub branch and its API modules.
     from pharmacy1os.api import create_app
+    monkeypatch.setenv("PHARMACY1OS_SYNTHETIC_DEMO", "1")
     monkeypatch.setenv("DOCUMENT_STORAGE_ROOT", str(tmp_path / "vault"))
     svc = PharmacyService(f"sqlite+pysqlite:///{tmp_path / 'api.db'}")
     svc.create_schema()
