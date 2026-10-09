@@ -58,6 +58,8 @@ class SchedulingService:
                 if (prior.prescription_id, prior.due_date, prior.quantity) != (prescription_id, due_date, q):
                     raise WorkflowError("Idempotency key already used with different scheduling details")
                 return prior.id
+            from .fill_completion import guard_new_logical_fill
+            guard_new_logical_fill(s, rx)
             if rx.status not in {"DUR_REVIEW", "SOLD"}:
                 raise WorkflowError("Schedule only after DUR review or from a previously sold prescription")
             if rx.expiration_date and due.isoformat() > rx.expiration_date:
@@ -104,6 +106,8 @@ class SchedulingService:
             rx = self.service._site(s, Prescription, prescription_id, actor)
             if rx.status != "SOLD":
                 raise WorkflowError("Refill review is only available after a sold fill")
+            from .fill_completion import guard_new_logical_fill
+            guard_new_logical_fill(s, rx)
             fills = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
             if any(f.status in ("PRODUCT_FILL", "PHARMACIST_REVIEW", "READY") for f in fills):
                 raise WorkflowError("An active fill prevents refill review")
