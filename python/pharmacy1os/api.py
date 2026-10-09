@@ -34,6 +34,8 @@ from .scheduling import SchedulingService
 from .scheduling_api import make_schedule_router
 from .billing import BillingService
 from .billing_api import make_billing_router
+from .insurance import InsuranceDirectory
+from .insurance_api import make_insurance_router
 from .willcall import WillCallService
 from .willcall_api import make_willcall_router
 from .pos import PosService
@@ -146,6 +148,7 @@ class SourceIn(BaseModel):
 
 class PrepareIn(BaseModel):
     payers: list[str] = Field(default_factory=list, max_length=4)
+    coverage_ids: list[str] | None = Field(default=None, max_length=4)
 
 
 class StageIn(BaseModel):
@@ -319,6 +322,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_emergency_supply_router(EmergencySupplyService(svc), staff_actor))
     app.include_router(make_schedule_router(SchedulingService(svc), staff_actor))
     app.include_router(make_billing_router(BillingService(svc), staff_actor))
+    app.include_router(make_insurance_router(InsuranceDirectory(svc), staff_actor))
     app.include_router(make_willcall_router(WillCallService(svc), staff_actor))
     app.include_router(make_pos_router(PosService(svc), staff_actor))
     app.include_router(make_patient_router(PatientDirectory(svc), staff_actor))
@@ -460,7 +464,8 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
 
     @app.post("/api/fills/{fill_id}/prepare")
     def prepare(fill_id: str, payload: PrepareIn, actor: DemoActor):
-        return {"labels": svc.prepare_for_review(actor, fill_id, payload.payers)}
+        return {"labels": svc.prepare_for_review(actor, fill_id, payload.payers,
+                                                 coverage_ids=payload.coverage_ids)}
 
     @app.post("/api/fills/{fill_id}/verify")
     def verify(fill_id: str, actor: DemoActor):
