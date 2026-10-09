@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import (Audit, Claim, Drug, Fill, FillSource, Label, Patient,
-                     Prescriber, Prescription, Product, Stock, WillCall)
+                     Prescriber, Prescription, Product, Staff, Stock, WillCall)
 from .service import Actor, PharmacyService, TRANSITIONS, WorkflowError
 
 
@@ -200,8 +200,7 @@ class PrescriptionDirectory:
                 .order_by(Audit.created_at.desc(), Audit.id.desc()).limit(limit)).all()
             returned = []
             for event in events:
-                author = s.get(__import__("pharmacy1os.models", fromlist=["Staff"]).Staff,
-                               event.actor_id)
+                author = s.get(Staff, event.actor_id)
                 if author is None or author.site_id != actor.site_id:
                     raise WorkflowError("Prescription audit actor site mismatch")
                 returned.append({
