@@ -17,6 +17,7 @@ from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
 from .prescription_transfer import TransferService
+from .prescription_edit import PrescriptionEditService
 from .label_printing import LabelPrintService
 from .fill_completion import FillCompletionService, FillObligation
 from .emergency_supply import EmergencySupplyService
