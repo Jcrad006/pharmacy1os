@@ -173,6 +173,8 @@ class FillCompletionService:
             # Require an explicit fresh scan for the *actual* physical part; never silently
             # assume a source remains trustworthy after a reported shortage.
             fill.quantity = physical
+            from .inventory_demands import update_fill_demand_tx
+            update_fill_demand_tx(s, actor, fill, rx, reason=note)
             obligation = FillObligation(site_id=actor.site_id, prescription_id=rx.id,
                 anchor_fill_id=fill.id, intended=fill.billed_quantity, dispensed=ZERO,
                 remaining=fill.billed_quantity, status="OPEN")
