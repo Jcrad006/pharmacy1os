@@ -99,3 +99,44 @@ def test_postgres_synthetic_pos_checkout_and_refund():
             assert {x.kind for x in events} == {"CAPTURE_SIMULATED", "REFUND_SIMULATED"}
     finally:
         service.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"), reason="requires isolated PostgreSQL CI service")
+def test_postgres_communication_task_integrity_and_events(tmp_path):
+    """Exercise communication custody on the migrated PostgreSQL schema."""
+    from pharmacy1os.communications import CommunicationService, CommunicationTask, CommunicationEvent
+    from pharmacy1os.documents import DocumentService
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Requires isolated PostgreSQL test database")
+    pharmacy = PharmacyService(url)
+    try:
+        assert revision_at_head(pharmacy.engine)
+        actors = pharmacy.bootstrap_demo()["actors"]
+        tech, pharmacist = actors["TECHNICIAN"], actors["PHARMACIST"]
+        patient = pharmacy.add_patient(tech, "Communication", "Synthetic")
+        doctor = pharmacy.add_prescriber(tech, "Communication", "Fictional", "MD")
+        drug = pharmacy.add_drug(pharmacist, "COMM-FICTIONAL-DRUG", "1 mg", "tablet")
+        rx = pharmacy.add_prescription(tech, patient, doctor, drug, "COMM-PG-001", "Synthetic", "30")
+        vault = DocumentService(pharmacy, tmp_path / "comm-vault")
+        doc = vault.create_source(tech, rx, b"%PDF synthetic record", "application/pdf")
+        communications = CommunicationService(pharmacy, vault)
+        task_id = communications.create(tech, rx, doc["id"], "OUTBOUND", "FAX",
+                                        "Demo office", "Clarification requested", "COMM-PG-CREATE")
+        communications.change(pharmacist, task_id, "APPROVED",
+                              "Source checked against immutable original", "COMM-PG-APPROVE")
+        event_id = communications.change(tech, task_id, "ATTEMPT_RECORDED",
+                                          "Manual attempt; delivery not verified", "COMM-PG-ATTEMPT")
+        assert communications.change(tech, task_id, "ATTEMPT_RECORDED",
+                                     "Manual attempt; delivery not verified", "COMM-PG-ATTEMPT") == event_id
+        with pharmacy.sessions() as session:
+            task = session.get(CommunicationTask, task_id)
+            assert task.status == "ACTIVITY_RECORDED"
+            assert task.document_sha256 == doc["sha256"]
+            events = session.scalars(select(CommunicationEvent).where(
+                CommunicationEvent.task_id == task_id).order_by(CommunicationEvent.sequence)).all()
+            assert [e.action for e in events] == ["CREATED", "APPROVED", "ATTEMPT_RECORDED"]
+            assert [e.sequence for e in events] == [1, 2, 3]
+    finally:
+        pharmacy.engine.dispose()
