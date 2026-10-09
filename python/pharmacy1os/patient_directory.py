@@ -43,7 +43,8 @@ class PatientDirectory:
         self.service = service
 
     def create(self, actor: Actor, first: str, last: str, *,
-               dob: str | None = None, phone: str | None = None) -> str:
+               dob: str | None = None, phone: str | None = None,
+               email: str | None = None) -> str:
         if not isinstance(first, str) or not isinstance(last, str):
             raise WorkflowError("Patient first and last names are required")
         first, last = first.strip(), last.strip()
@@ -52,7 +53,9 @@ class PatientDirectory:
         if phone is not None and len(phone) > 50:
             raise WorkflowError("Phone number is too long")
         return self.service.add_patient(actor, first, last,
-                                        dob=normalize_date(dob), phone=phone.strip() if phone else None)
+                                        dob=normalize_date(dob),
+                                        phone=phone.strip() if phone else None,
+                                        email=email.strip() or None if isinstance(email, str) else None)
 
     def search(self, actor: Actor, *, query: str = "", first_name: str = "",
                last_name: str = "", date_of_birth: str | None = None,
@@ -94,7 +97,8 @@ class PatientDirectory:
                         continue
                 matches.append({"id": p.id, "first_name": p.first_name,
                                 "last_name": p.last_name, "date_of_birth": p.date_of_birth,
-                                "phone": p.phone, "site_id": p.site_id})
+                                "phone": p.phone, "email": p.email,
+                                "site_id": p.site_id})
                 if len(matches) == limit:
                     break
             return matches
