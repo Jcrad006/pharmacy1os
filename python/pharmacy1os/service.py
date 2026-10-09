@@ -87,7 +87,7 @@ class PharmacyService:
         This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
         production design must use reviewed Alembic migrations instead.
         """
-        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply  # noqa: F401 -- register extension tables
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer  # noqa: F401 -- register extension tables
         Base.metadata.create_all(self.engine)
         if self.engine.dialect.name == "sqlite":
             with self.engine.begin() as conn:
@@ -300,6 +300,8 @@ class PharmacyService:
         if pending and pending != scheduled_id:
             raise WorkflowError("A pending future fill must be started through its scheduled action")
         from .fill_completion import guard_new_logical_fill, FillCompletion, FillObligation
+        from .prescription_transfer import require_no_pending_transfer
+        require_no_pending_transfer(s, rx)
         guard_new_logical_fill(s, rx)
         active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
         if any(f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"} for f in active):
