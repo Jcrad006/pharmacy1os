@@ -121,10 +121,20 @@ def test_incremental_upgrade_preserves_prior_patient_rows(monkeypatch, tmp_path)
     """Version 2 must be additive to a populated version 1 synthetic database."""
     url = setup_env(monkeypatch, tmp_path / "forward.db")
     command.upgrade(migration_config(), "63ff0bb0a4d8")
-    pharmacy = PharmacyService(url)
-    demo = pharmacy.bootstrap_demo()
-    patient_id = pharmacy.add_patient(demo["actors"]["TECHNICIAN"], "Synthetic", "Preserved")
-    pharmacy.engine.dispose()
+    # Seed an *old-revision* fixture with old-revision SQL, not the latest ORM,
+    # which now references columns that did not yet exist at revision 63ff.
+    from uuid import uuid4
+    patient_id, site_id = str(uuid4()), str(uuid4())
+    old_engine = create_engine(url)
+    with old_engine.begin() as connection:
+        connection.execute(text("INSERT INTO py_sites (id, name) VALUES (:id, :name)"),
+                           {"id": site_id, "name": "Original synthetic site"})
+        connection.execute(text("INSERT INTO py_patients "
+                                "(id, site_id, first_name, last_name) "
+                                "VALUES (:id, :site_id, :first_name, :last_name)"),
+                           {"id": patient_id, "site_id": site_id,
+                            "first_name": "Synthetic", "last_name": "Preserved"})
+    old_engine.dispose()
     command.upgrade(migration_config(), "head")
     engine = create_engine(url)
     with engine.connect() as connection:
