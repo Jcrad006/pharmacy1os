@@ -203,3 +203,47 @@ def test_rx_metadata_migration_preserves_populated_previous_revision(monkeypatch
         assert not verify_mapped_schema(svc.engine)
     finally:
         svc.engine.dispose()
+
+
+
+def test_location_tracking_upgrade_preserves_old_stock_without_fabricating_shelf(monkeypatch, tmp_path):
+    """Older synthetic inventory is not assigned an invented physical shelf on upgrade."""
+    from uuid import uuid4
+    from pharmacy1os.models import Stock
+    from pharmacy1os.inventory_location_models import InventoryStockPosition
+    url = setup_env(monkeypatch, tmp_path / "before-location-parity.db")
+    command.upgrade(migration_config(), "e48f2d6a47cb")
+    ids = {name: str(uuid4()) for name in ("site", "drug", "product", "stock")}
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO py_sites(id,name) VALUES (:id, 'Older synthetic site')"),
+                         {"id": ids["site"]})
+            conn.execute(text("INSERT INTO py_drugs(id,name,strength,dosage_form,controlled,"
+                              "controlled_substance_schedule) VALUES "
+                              "(:id,'TEST-OLD','10 mg','tablet',0,'NONE')"),
+                         {"id": ids["drug"]})
+            conn.execute(text("INSERT INTO py_products "
+                              "(id,drug_id,ndc,manufacturer,description,unit,unit_price) "
+                              "VALUES (:id,:drug,'99999-1111-22','Test','Synthetic old units','each',0)"),
+                         {"id": ids["product"], "drug": ids["drug"]})
+            conn.execute(text("INSERT INTO py_stock "
+                              "(id,site_id,product_id,lot,expires,on_hand,reserved,quarantined) "
+                              "VALUES (:id,:site,:product,'STOCK-OLD','2099-01-01',100,0,0)"),
+                         {"id": ids["stock"], "site": ids["site"],
+                          "product": ids["product"]})
+    finally:
+        engine.dispose()
+    command.upgrade(migration_config(), "head")
+    svc = PharmacyService(url)
+    try:
+        with svc.sessions() as session:
+            old = session.get(Stock, ids["stock"])
+            assert old.on_hand == 100
+            assert old.reserved == 0 and old.quarantined == 0
+            assert old.location_tracking_enabled is False
+            assert session.query(InventoryStockPosition).filter_by(stock_id=old.id).count() == 0
+        assert revision_at_head(svc.engine)
+        assert not verify_mapped_schema(svc.engine)
+    finally:
+        svc.engine.dispose()
