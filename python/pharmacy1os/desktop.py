@@ -25,6 +25,7 @@ from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
 from .prescription_transfer import TransferService
 from .prescription_edit import PrescriptionEditService
+from .clinical_records import ClinicalRecordService
 from .label_printing import LabelPrintService
 from .fill_completion import FillCompletionService, FillObligation
 from .emergency_supply import EmergencySupplyService
@@ -92,6 +93,7 @@ def main() -> None:
     lifecycle_service = LifecycleService(service)
     transfer_service = TransferService(service)
     edit_service = PrescriptionEditService(service)
+    clinical_records = ClinicalRecordService(service)
     label_printer = LabelPrintService(service)
     completion_service = FillCompletionService(service)
     emergency_service = EmergencySupplyService(service)
@@ -271,6 +273,8 @@ def main() -> None:
                 self.action("Resume Rx", self.resume_rx)
                 self.action("Cancel Rx", self.cancel_rx)
                 self.action("Pharmacist Edit Unfilled Rx", self.edit_unfilled_rx)
+                self.action("Record Pharmacist Intervention", self.record_pharmacist_intervention)
+                self.action("Review Rx Clinical Record", self.review_rx_clinical_record)
                 self.action("Request Transfer Out", self.request_transfer_out)
                 self.action("Attest External Transfer", self.attest_transfer_out)
                 self.action("Withdraw Transfer Request", self.withdraw_transfer_out)
@@ -1114,6 +1118,20 @@ def main() -> None:
 
         def cancel_rx(self):
             lifecycle_service.cancel(self.actor, self.selected_id(), self.ask("Cancel Rx", "Reason"))
+
+        def record_pharmacist_intervention(self):
+            rx_id = self.selected_id()
+            note = self.ask("Pharmacist intervention",
+                "Document clinical assessment, professional communication or intervention")
+            result = clinical_records.record_intervention(self.actor, rx_id, note)
+            QMessageBox.information(self, "Intervention recorded",
+                f"Append-only clinical note {result['id']} recorded.\n"
+                "This note does not resolve DUR or amend the prescription.")
+
+        def review_rx_clinical_record(self):
+            record = clinical_records.clinical_record(self.actor, self.selected_id())
+            QMessageBox.information(self, "Prescription clinical record",
+                json.dumps(record, indent=2)[:16000])
 
         def edit_unfilled_rx(self):
             """Audited pharmacist edit; never overwrites scanned original or previous fill."""
