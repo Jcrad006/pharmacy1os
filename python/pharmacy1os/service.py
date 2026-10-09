@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -520,6 +520,38 @@ class PharmacyService:
             self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
                         {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
 
+    def set_fill_packaging(self, actor: Actor, fill_id: str, *,
+                           dispensed_in_original_container: bool,
+                           note: str) -> dict[str, Any]:
+        """Record packaging choice before billing/labels or pharmacist verification."""
+        if type(dispensed_in_original_container) is not bool:
+            raise WorkflowError("Original-container status must be true or false")
+        reason = note.strip() if isinstance(note, str) else ""
+        if not 12 <= len(reason) <= 2000:
+            raise WorkflowError("Packaging decision requires a 12–2000 character explanation")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Packaging can only be revised during Product Fill")
+            before = fill.dispensed_in_original_container
+            fill.dispensed_in_original_container = dispensed_in_original_container
+            fill.packaging_reviewed_by_id = actor.id
+            fill.packaging_reviewed_at = datetime.now(timezone.utc)
+            fill.packaging_note = reason
+            self._audit(s, actor, "FILL_PACKAGING_STATUS_UPDATED", fill.id, {
+                "before": before, "after": dispensed_in_original_container,
+                "note": reason, "patient_discard_date": None,
+                "computed_at_pharmacist_verification": True,
+            })
+            return {"fill_id": fill.id,
+                    "dispensed_in_original_container": dispensed_in_original_container,
+                    "patient_discard_date": None,
+                    "reviewed_by_id": actor.id, "note": reason}
+
     def scanned_sources(self, actor: Actor, fill_id: str) -> list[dict[str, Any]]:
         """Show physical source reservations for a pharmacy-site-owned fill."""
         with self.sessions() as s:
@@ -715,10 +747,29 @@ class PharmacyService:
                                 location_id=allocation_location_id(s, allocation))
                 transition_allocation(s, actor, allocation, "CONSUMED",
                     "Pharmacist verified and consumed the scanned physical allocation")
+            # Match original TS packaging metadata behavior: for a repackaged
+            # synthetic prescription, choose the earlier of one calendar year
+            # after verification and the first source's manufacturer expiration.
+            # Original-container fills intentionally have no calculated discard date.
+            if f.dispensed_in_original_container:
+                f.patient_discard_date = None
+            else:
+                verified_day = date.today()
+                try:
+                    annual_limit = verified_day.replace(year=verified_day.year + 1)
+                except ValueError:
+                    annual_limit = verified_day.replace(year=verified_day.year + 1, day=28)
+                source_limit = min(date.fromisoformat(s.get(Stock, src.stock_id).expires)
+                                   for src in sources)
+                f.patient_discard_date = min(annual_limit, source_limit).isoformat()
             from .inventory_demands import fulfill_fill_demand_tx
             fulfill_fill_demand_tx(s, actor, f, rx)
             f.status = "READY"; rx.status = "READY"
-            self._audit(s, actor, "PHARMACIST_VERIFIED", f.id, {"quantity": str(f.quantity)})
+            self._audit(s, actor, "PHARMACIST_VERIFIED", f.id, {
+                "quantity": str(f.quantity),
+                "dispensed_in_original_container": f.dispensed_in_original_container,
+                "patient_discard_date": f.patient_discard_date,
+            })
 
     def stage_will_call(self, actor: Actor, fill_id: str, bin_name: str, bag_barcode: str) -> None:
         with self.sessions.begin() as s:
