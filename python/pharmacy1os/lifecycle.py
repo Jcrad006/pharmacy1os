@@ -62,6 +62,14 @@ class LifecycleService:
                 rx.status == "ON_HOLD" and rx.held_from == "SOLD"
             ):
                 raise WorkflowError("Cannot cancel a completed/transferred prescription with this workflow")
+            from .fill_completion import FillObligation
+            from .models import Fill as DbFill
+            outstanding = s.scalars(select(FillObligation).where(
+                FillObligation.prescription_id == rx.id,
+                FillObligation.site_id == actor.site_id,
+                FillObligation.status == "OPEN")).all()
+            if any(item.dispensed > 0 for item in outstanding):
+                raise WorkflowError("Previously sold partial requires separate professional reconciliation")
             active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id,
                           Fill.status.in_(["PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"]))).all()
             if len(active) > 1:
@@ -89,6 +97,8 @@ class LifecycleService:
                 bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
                 if bag is not None:
                     bag.status = "CANCELLED"
+                from .fill_completion import void_unissued_obligation
+                void_unissued_obligation(s, actor, f, reason)
                 f.status = "CANCELLED"
             before = rx.status
             rx.status = "CANCELLED"
