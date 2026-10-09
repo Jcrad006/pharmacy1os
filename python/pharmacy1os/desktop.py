@@ -24,6 +24,7 @@ from .emergency_supply import EmergencySupplyService
 from .provider_directory import ProviderDirectory
 from .scheduling import SchedulingService
 from .billing import BillingService
+from .insurance import InsuranceDirectory
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
@@ -82,6 +83,7 @@ def main() -> None:
     directory_service = ProviderDirectory(service)
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
+    insurance_service = InsuranceDirectory(service)
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
@@ -241,6 +243,7 @@ def main() -> None:
                 self.action("Complete Emergency Follow-up", self.emergency_followup)
                 self.action("Scan Product Source", self.scan)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
+                self.action("Prepare With Patient Coverages", self.prepare_with_coverages)
                 self.action("Preview / Print Synthetic Bottle", self.print_test_label)
                 self.action("Pharmacist Verify", self.verify)
                 self.action("Stage Will Call", self.stage)
@@ -285,7 +288,13 @@ def main() -> None:
                 self.action("Adjust Stock", self.adjust_stock)
                 self.action("Stock Ledger", self.stock_ledger)
             elif page == 9:
+                self.action("Create Synthetic Payer", self.create_payer)
+                self.action("View Payers", self.show_payers)
+                self.action("Set Patient Coverage Position", self.set_coverage)
+                self.action("View Patient Coverages", self.view_coverages)
+                self.action("Deactivate Patient Coverage", self.deactivate_coverage)
                 self.action("New Payer Rule Version", self.configure_payer)
+                self.action("Coverage-Linked Claim History", self.covered_claim_history)
                 self.action("Claim History", self.claim_history)
             elif page == 12:
                 self.action("New Communication Task", self.communication_create)
@@ -411,6 +420,92 @@ def main() -> None:
                     raise ValueError("Prescription not found at this pharmacy")
             scheduling_service.begin_refill_review(self.actor, rx.id,
                                                     self.ask("Refill", "Reason for new DUR review"))
+
+        def choose_insurance_patient(self):
+            with service.sessions() as s:
+                users = s.scalars(select(Patient).where(
+                    Patient.site_id == self.actor.site_id)
+                    .order_by(Patient.last_name, Patient.first_name)).all()
+                options = [(x.id, x.last_name, x.first_name) for x in users]
+            return self.choose_item("Patients", "Select patient",
+                options, lambda x: f"{x[1]}, {x[2]} [{x[0][:8]}]")[0]
+
+        def create_payer(self):
+            payer = self.ask("Insurance payer", "Payer display name")
+            bin = self.ask("Insurance payer", "Six-digit BIN (optional)", "")
+            pcn = self.ask("Insurance payer", "Processor control number (optional)", "")
+            group = self.ask("Insurance payer", "Default group number (optional)", "")
+            insurance_service.create_payer(self.actor, payer,
+                bin=bin or None, pcn=pcn or None, default_group_id=group or None)
+            QMessageBox.information(self, "Synthetic insurance",
+                "Payer record created. No payer network eligibility or claims integration was enabled.")
+
+        def show_payers(self):
+            records = insurance_service.list_payers(self.actor)
+            QMessageBox.information(self, "Site payers (synthetic)",
+                json.dumps(records, indent=2))
+
+        def set_coverage(self):
+            patient = self.choose_insurance_patient()
+            payers = insurance_service.list_payers(self.actor)
+            chosen = self.choose_item("Payers", "Select payer",
+                [x for x in payers if x["active"]],
+                lambda x: f"{x['name']} [{x['id'][:8]}]")
+            position = int(self.ask("Coverage", "Coordination order (1-4)", "1"))
+            member = self.ask("Coverage", "Synthetic member ID (not real patient data)")
+            group = self.ask("Coverage", "Group ID (optional)", "")
+            relation = self.choose_item("Relationship", "Cardholder relationship",
+                ["SELF", "SPOUSE", "CHILD", "OTHER"], lambda x: x)
+            insurance_service.upsert_coverage(self.actor, patient, position, chosen["id"],
+                member, group_id=group or None, relationship=relation)
+
+        def view_coverages(self):
+            patient = self.choose_insurance_patient()
+            rows = insurance_service.list_coverages(self.actor, patient)
+            QMessageBox.information(self, "Synthetic coverage (member IDs masked)",
+                json.dumps(rows, indent=2))
+
+        def deactivate_coverage(self):
+            patient = self.choose_insurance_patient()
+            rows = insurance_service.list_coverages(self.actor, patient)
+            choice = self.choose_item("Coverage positions", "Select to deactivate",
+                [x for x in rows if x["active"]],
+                lambda x: f"{x['position']} – {x['payer_name']} ({x['member_id_masked']})")
+            reason = self.ask("Coverage", "Reason for deactivation")
+            insurance_service.deactivate_coverage(self.actor, patient,
+                choice["position"], reason)
+
+        def covered_claim_history(self):
+            rx_id = self.ask("Coverage claim history", "Prescription ID")
+            fid = self.fill_for_rx(rx_id)
+            history = insurance_service.fill_claim_history(self.actor, fid)
+            QMessageBox.information(self, "Coverage-linked synthetic history",
+                json.dumps(history, indent=2))
+
+        def prepare_with_coverages(self):
+            rx_id = self.selected_id()
+            fid = self.fill_for_rx(rx_id)
+            with service.sessions() as s:
+                rx = service._site(s, Prescription, rx_id, self.actor)
+                patient = rx.patient_id
+            available = insurance_service.list_coverages(self.actor, patient)
+            ordered = sorted([x for x in available if x["active"] and x["payer_active"]],
+                             key=lambda x: x["position"])
+            if not ordered:
+                raise ValueError("No active patient payer coverages; use the Third Party page")
+            selected = [x["id"] for x in ordered]
+            question = "\\n".join(
+                f"{x['position']}: {x['payer_name']} [{x['member_id_masked']}]"
+                for x in ordered)
+            answer = QMessageBox.question(self, "Synthetic insurance coverage",
+                "Prepare using these coverage positions? This does NOT transmit insurance "
+                "claims, verify eligibility or calculate real COB.\\n" + question)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            labels = service.prepare_for_review(
+                self.actor, fid, [], coverage_ids=selected)
+            QMessageBox.information(self, "Synthetic label creation",
+                "\\n".join(labels))
 
         def configure_payer(self):
             payer = self.ask("Payer", "Payer name")
