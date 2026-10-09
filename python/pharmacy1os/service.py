@@ -337,7 +337,10 @@ class PharmacyService:
     def start_fill(self, actor: Actor, rx_id: str, dispense_quantity: str | None = None) -> str:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
-            rx = self._site(s, Prescription, rx_id, actor)
+            rx = s.scalar(select(Prescription).where(
+                Prescription.id == rx_id, Prescription.site_id == actor.site_id).with_for_update())
+            if rx is None:
+                raise WorkflowError("Prescription not found at actor's pharmacy site")
             return self._start_fill_tx(s, actor, rx, dispense_quantity)
 
     def scan_source(self, actor: Actor, fill_id: str, barcode: str, lot: str,
@@ -345,7 +348,7 @@ class PharmacyService:
         qty = positive(quantity)
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
-            f = s.get(Fill, fill_id)
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
             if not f:
                 raise WorkflowError("Fill not found")
             rx = self._site(s, Prescription, f.prescription_id, actor)
@@ -360,7 +363,7 @@ class PharmacyService:
             if product is None or product.drug_id != rx.drug_id:
                 raise WorkflowError("Scanned NDC does not belong to Data Entry drug")
             stock = s.scalar(select(Stock).where(Stock.site_id == actor.site_id,
-                Stock.product_id == product.id, Stock.lot == lot, Stock.expires == expires))
+                Stock.product_id == product.id, Stock.lot == lot, Stock.expires == expires).with_for_update())
             if not stock or stock.expires <= date.today().isoformat():
                 raise WorkflowError("Lot/expiration mismatch or expired stock")
             from .inventory_advanced import assert_not_recalled
@@ -382,7 +385,7 @@ class PharmacyService:
         """Sandbox claims and separate bottle-label records; no real payer transport."""
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
-            f = s.get(Fill, fill_id)
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
             if not f:
                 raise WorkflowError("Fill not found")
             rx = self._site(s, Prescription, f.prescription_id, actor)
@@ -431,7 +434,7 @@ class PharmacyService:
     def verify(self, actor: Actor, fill_id: str) -> None:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "verify")
-            f = s.get(Fill, fill_id)
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
             if not f:
                 raise WorkflowError("Fill not found")
             rx = self._site(s, Prescription, f.prescription_id, actor)
@@ -447,9 +450,10 @@ class PharmacyService:
             sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
             if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
                 raise WorkflowError("Physical sources incomplete")
-            for src in sources:
-                stock = s.get(Stock, src.stock_id)
-                if stock.expires <= date.today().isoformat() or stock.reserved < src.quantity:
+            for src in sorted(sources, key=lambda item: item.stock_id):
+                stock = s.scalar(select(Stock).where(
+                    Stock.id == src.stock_id, Stock.site_id == actor.site_id).with_for_update())
+                if stock is None or stock.expires <= date.today().isoformat() or stock.reserved < src.quantity:
                     raise WorkflowError("Source expired or reservation invalid")
                 from .inventory_advanced import assert_not_recalled
                 assert_not_recalled(s, stock)
@@ -462,7 +466,7 @@ class PharmacyService:
     def stage_will_call(self, actor: Actor, fill_id: str, bin_name: str, bag_barcode: str) -> None:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
-            f = s.get(Fill, fill_id)
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
             if not f:
                 raise WorkflowError("Fill not found")
             self._site(s, Prescription, f.prescription_id, actor)
@@ -482,7 +486,7 @@ class PharmacyService:
              amount: str, tender: str, scanned_bag: str | None = None) -> None:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "sell")
-            f = s.get(Fill, fill_id)
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
             if not f:
                 raise WorkflowError("Fill not found")
             rx = self._site(s, Prescription, f.prescription_id, actor)
@@ -526,7 +530,7 @@ class PharmacyService:
     def return_to_stock(self, actor: Actor, fill_id: str, reason: str) -> None:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "correct")
-            f = s.get(Fill, fill_id)
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
             if not f:
                 raise WorkflowError("Fill not found")
             rx = self._site(s, Prescription, f.prescription_id, actor)
@@ -538,8 +542,12 @@ class PharmacyService:
                 from .billing import record_reversal
                 record_reversal(s, actor, claim, reason)
                 claim.status = "REVERSED_SYNTHETIC"
-            for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
-                stock = s.get(Stock, src.stock_id)
+            sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+            for src in sorted(sources, key=lambda item: item.stock_id):
+                stock = s.scalar(select(Stock).where(
+                    Stock.id == src.stock_id, Stock.site_id == actor.site_id).with_for_update())
+                if stock is None:
+                    raise WorkflowError("Return-to-stock source missing at pharmacy site")
                 from .inventory_ops import record_movement
                 record_movement(s, actor, stock, "RETURN_TO_STOCK", on_hand=src.quantity,
                                 reason=reason.strip())
