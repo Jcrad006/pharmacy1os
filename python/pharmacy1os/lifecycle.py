@@ -96,8 +96,15 @@ class LifecycleService:
                         from .inventory_advanced import quarantine_recalled_receipt
                         quarantine_recalled_receipt(s, actor, stock, src.quantity)
                     else:
+                        from .inventory_allocations import (
+                            source_allocation, allocation_location_id, transition_allocation,
+                        )
+                        allocation = source_allocation(s, actor, f, stock, src)
                         record_movement(s, actor, stock, "CANCEL_RELEASE", reserved=-src.quantity,
-                                        reason=reason.strip())
+                                        reason=reason.strip(),
+                                        location_id=allocation_location_id(s, allocation))
+                        transition_allocation(s, actor, allocation, "RELEASED",
+                            "Prescription cancelled; verified physical reservation released")
                 bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
                 if bag is not None:
                     bag.status = "CANCELLED"
