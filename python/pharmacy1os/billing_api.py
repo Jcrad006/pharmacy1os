@@ -9,6 +9,7 @@ from .service import Actor
 
 class ProfileVersionIn(BaseModel):
     payer_name: str = Field(min_length=1, max_length=120)
+    payer_id: str | None = None
     max_physical_sources: int = Field(ge=1, le=4)
     billing_ndc_strategy: str = "MAJORITY_NDC"
     full_authorized_quantity: bool = True
