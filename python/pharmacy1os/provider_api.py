@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from typing import Callable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from .provider_directory import ProviderDirectory
+from .provider_parity import PrescriberParityService
 from .service import Actor
 
 
@@ -45,6 +46,18 @@ class IdentifierRetireIn(BaseModel):
 
 def make_provider_router(directory: ProviderDirectory, actor_dependency: Callable[..., Actor]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["synthetic-prescriber-directory"])
+
+    @router.get("/prescribers")
+    def original_prescribers(
+            actor: Actor = Depends(actor_dependency), query: str = "",
+            first_name: str = Query("", alias="firstName"),
+            last_name: str = Query("", alias="lastName"),
+            date_of_birth: str | None = Query(None, alias="dateOfBirth"),
+            phone: str = ""):
+        return {"prescribers": PrescriberParityService(directory.pharmacy).search(
+            actor, query=query, first_name=first_name,
+            last_name=last_name, date_of_birth=date_of_birth,
+            phone=phone)}
 
     @router.get("/prescribers/search")
     def search_providers(q: str = "", actor: Actor = Depends(actor_dependency)):
