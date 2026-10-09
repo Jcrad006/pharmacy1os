@@ -16,6 +16,7 @@ from .inventory_ops import InventoryService
 from .inventory_locations import InventoryLocationService
 from .inventory_allocations import InventoryAllocationService
 from .inventory_demands import InventoryDemandService
+from .inventory_discrepancies import ReceivingDiscrepancyService, DISCREPANCY_TYPES
 from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
@@ -79,6 +80,7 @@ def main() -> None:
     inventory_locations = InventoryLocationService(service)
     inventory_allocations = InventoryAllocationService(service)
     inventory_demands = InventoryDemandService(service)
+    receiving_discrepancies = ReceivingDiscrepancyService(service)
     advanced_service = AdvancedInventoryService(service)
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
@@ -290,6 +292,10 @@ def main() -> None:
                 self.action("Register Barcode", self.register_barcode)
             elif page == 7:
                 self.action("Receive Scanned Product", self.receive)
+                self.action("View Receiving Discrepancies", self.view_receiving_discrepancies)
+                self.action("Report Receiving Discrepancy", self.report_receiving_discrepancy)
+                self.action("Resolve Receiving Discrepancy (Pharmacist)", self.resolve_receiving_discrepancy)
+                self.action("View Discrepancy Audit History", self.view_receiving_discrepancy_history)
             elif page == 8:
                 self.action("Quarantine", self.quarantine_stock)
                 self.action("Resolve Hold", self.resolve_stock_hold)
@@ -1190,6 +1196,47 @@ def main() -> None:
             reason = self.ask("Physical inventory move", "Reason for physical custody change")
             inventory_locations.move(self.actor, stock_id, original["id"], destination["id"],
                                      quantity, reason)
+
+        def view_receiving_discrepancies(self):
+            rows = receiving_discrepancies.list(self.actor)
+            QMessageBox.information(self, "Receiving discrepancy register",
+                (json.dumps(rows, indent=2) if rows else "No discrepancies recorded")[:16000]
+                + "\n\nClosing a discrepancy never changes stock on its own.")
+
+        def report_receiving_discrepancy(self):
+            category = self.choose_item("Receiving discrepancy", "Select problem category",
+                sorted(DISCREPANCY_TYPES), lambda x: x.replace("_", " "))
+            po_id = self.ask("Receiving discrepancy", "Purchase order ID (optional)", "")
+            line_id = self.ask("Receiving discrepancy", "PO line ID (optional)", "")
+            receipt_id = self.ask("Receiving discrepancy", "Receipt ID (optional)", "")
+            expected = self.ask("Receiving discrepancy", "Expected units (optional)", "")
+            observed = self.ask("Receiving discrepancy", "Observed units (optional)", "")
+            note = self.ask("Receiving discrepancy", "Document observed issue and evidence")
+            new_id = receiving_discrepancies.open(self.actor, category, note=note,
+                purchase_order_id=po_id or None, purchase_order_line_id=line_id or None,
+                receipt_id=receipt_id or None, expected_quantity=expected or None,
+                observed_quantity=observed or None)
+            QMessageBox.information(self, "Discrepancy recorded", new_id)
+
+        def resolve_receiving_discrepancy(self):
+            open_rows = [row for row in receiving_discrepancies.list(self.actor)
+                         if row["status"] == "OPEN"]
+            row = self.choose_item("Receiving discrepancy", "Choose open discrepancy",
+                open_rows, lambda x: f"{x['type']} | {x['id'][:8]} | {x['note'][:65]}")
+            reason = self.ask("Pharmacist discrepancy resolution",
+                "Document investigation, corrective action and disposition")
+            movement_id = self.ask("Stock correction evidence",
+                "Existing MANUAL_ADJUST movement ID (optional; receipt linkage required)", "")
+            receiving_discrepancies.resolve(self.actor, row["id"], reason,
+                adjustment_movement_id=movement_id or None)
+
+        def view_receiving_discrepancy_history(self):
+            rows = receiving_discrepancies.list(self.actor)
+            selected = self.choose_item("Receiving discrepancy history", "Choose record",
+                rows, lambda x: f"{x['status']} | {x['type']} | {x['id'][:8]}")
+            QMessageBox.information(self, "Append-only discrepancy events",
+                json.dumps(receiving_discrepancies.history(self.actor, selected["id"]),
+                           indent=2)[:16000])
 
         def view_inventory_demands(self):
             rows = inventory_demands.list(self.actor)
