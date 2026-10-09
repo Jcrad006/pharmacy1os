@@ -75,6 +75,8 @@ class PosService:
         rx = self.service._site(s, Prescription, f.prescription_id, actor)
         if f.status != "READY" or rx.status != "READY":
             raise WorkflowError("Only pharmacist-verified Ready fills may be checked out")
+        from .emergency_supply import require_emergency_dispense_eligible
+        require_emergency_dispense_eligible(s, rx, f)
         if s.scalar(select(Sale.id).where(Sale.fill_id == f.id)) or s.scalar(
                 select(PosLine.id).where(PosLine.fill_id == f.id)):
             raise WorkflowError("Fill already sold in a previous checkout")
