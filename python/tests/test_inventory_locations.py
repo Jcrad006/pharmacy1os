@@ -77,7 +77,7 @@ def test_stock_receiving_reservation_release_and_pharmacist_dispense_mirror_posi
     svc, a, _, med, product, stock, exp, a_id, b_id, locations = env
     locations.activate_stock(a["PHARMACIST"], stock, a_id,
         "The pharmacist confirmed the counted lot at the receiving shelf.")
-    locations.move(a["TECHNICIAN"], stock, a_id, b_id, "40", "Supply secondary bin")
+    locations.move(a["TECHNICIAN"], stock, a_id, b_id, "25", "Supply initial secondary bin")
     patient = svc.add_patient(a["TECHNICIAN"], "Synthetic", "FEFOPatient")
     provider = svc.add_prescriber(a["TECHNICIAN"], "Sample", "Doctor", "MD")
     rx = svc.add_prescription(a["TECHNICIAN"], patient, provider, med,
@@ -86,7 +86,9 @@ def test_stock_receiving_reservation_release_and_pharmacist_dispense_mirror_posi
     fill = svc.start_fill(a["TECHNICIAN"], rx)
     with pytest.raises(WorkflowError, match="Insufficient stock in the selected physical location"):
         svc.scan_source(a["TECHNICIAN"], fill, "LOCATION-TEST-BC", "LOT-MAIN",
-                        exp, "45", location_id=b_id)
+                        exp, "30", location_id=b_id)
+    locations.move(a["TECHNICIAN"], stock, a_id, b_id, "15",
+                   "Complete physical bin supply after failed insufficient pick")
     with pytest.raises(WorkflowError, match="exceeds actual fill"):
         svc.scan_source(a["TECHNICIAN"], fill, "LOCATION-TEST-BC", "LOT-MAIN",
                         exp, "31", location_id=b_id)
