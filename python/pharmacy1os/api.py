@@ -20,6 +20,7 @@ from .inventory_planning import InventoryPlanningService
 from .inventory_planning_api import make_planning_router
 from .lifecycle import LifecycleService
 from .prescription_transfer import TransferService
+from .prescription_edit import PrescriptionEditService
 from .prescription_transfer_api import make_transfer_router
 from .label_printing import LabelPrintService
 from .label_printing_api import make_label_print_router
