@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from .inventory_locations import InventoryLocationService
+from .inventory_allocations import InventoryAllocationService
 from .service import Actor
 
 
@@ -59,6 +60,11 @@ def make_inventory_location_router(directory: InventoryLocationService,
     def move(payload: MovePositionIn, actor: Actor = Depends(actor_dependency)):
         directory.move(actor, **payload.model_dump())
         return {"ok": True}
+
+    @router.get("/fills/{fill_id}/allocations")
+    def fill_allocations(fill_id: str, actor: Actor = Depends(actor_dependency)):
+        return {"allocations": InventoryAllocationService(directory.service).for_fill(
+            actor, fill_id)}
 
     @router.get("/fefo")
     def fefo(product_id: str, minimum_shelf_life_days: int = 0,
