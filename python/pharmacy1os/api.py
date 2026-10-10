@@ -50,6 +50,7 @@ from .provider_parity import PrescriberParityService, PrescriberContractIn
 from .scheduling import SchedulingService
 from .scheduling_api import make_schedule_router
 from .billing import BillingService
+from .fill_billing_details import FillBillingDetailService
 from .billing_api import make_billing_router
 from .insurance import InsuranceDirectory
 from .insurance_api import make_insurance_router
@@ -159,6 +160,12 @@ class RxEditIn(BaseModel):
 
 class FillIn(BaseModel):
     dispense_quantity: str | None = None
+    days_supply: int | None = Field(default=None, strict=True)
+
+
+class FillBillingDetailsIn(BaseModel):
+    days_supply: int | None = Field(default=None, strict=True)
+    billing_product_id: str | None = None
 
 
 class SourceIn(BaseModel):
@@ -489,7 +496,13 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
 
     @app.post("/api/prescriptions/{rx_id}/fills")
     def start_fill(rx_id: str, payload: FillIn, actor: DemoActor):
-        return {"id": svc.start_fill(actor, rx_id, payload.dispense_quantity)}
+        return {"id": svc.start_fill(actor, rx_id, payload.dispense_quantity,
+                                     days_supply=payload.days_supply)}
+
+    @app.put("/api/fills/{fill_id}/billing-details")
+    def update_fill_billing_details(fill_id: str, payload: FillBillingDetailsIn, actor: DemoActor):
+        return FillBillingDetailService(svc).update(
+            actor, fill_id, payload.model_dump(exclude_unset=True))
 
     @app.post("/api/fills/{fill_id}/sources")
     def scan(fill_id: str, payload: SourceIn, actor: DemoActor):

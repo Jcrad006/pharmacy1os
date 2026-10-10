@@ -103,6 +103,8 @@ class PharmacyService:
                 fill_columns = {row[1] for row in conn.exec_driver_sql(
                     "PRAGMA table_info('py_fills')").all()}
                 packaging_columns = {
+                    "days_supply": "INTEGER",
+                    "billing_product_id": "VARCHAR(36) REFERENCES py_products(id)",
                     "nti_at_start": "BOOLEAN NOT NULL DEFAULT 0",
                     "dispensed_in_original_container": "BOOLEAN NOT NULL DEFAULT 0",
                     "patient_discard_date": "VARCHAR(10)",
@@ -475,7 +477,8 @@ class PharmacyService:
                 "resolved_by_id": actor.id})
 
     def _start_fill_tx(self, s: Session, actor: Actor, rx: Prescription,
-                       dispense_quantity: str | None = None, *, effective_date: date | None = None,
+                       dispense_quantity: str | None = None, *, days_supply: int | None = None,
+                       effective_date: date | None = None,
                        scheduled_id: str | None = None) -> str:
         """Start a fill inside the caller's existing transaction (including scheduled starts)."""
         if rx.status != "DUR_REVIEW":
@@ -516,12 +519,15 @@ class PharmacyService:
             raise WorkflowError("No refills remaining")
         attempt = returned.attempt + 1 if returned else 1
         qty = positive(dispense_quantity or rx.quantity)
+        from .fill_billing_details import validate_days_supply
+        days_supply = validate_days_supply(days_supply, allow_none=True)
         if qty > rx.quantity:
             raise WorkflowError("Cannot dispense more than authorized quantity")
         from .models import Drug
         selected_drug = s.get(Drug, rx.drug_id)
         f = Fill(prescription_id=rx.id, fill_number=fillnum, attempt=attempt,
-                 quantity=qty, billed_quantity=rx.quantity, status="PRODUCT_FILL",
+                 quantity=qty, billed_quantity=rx.quantity, days_supply=days_supply,
+                 status="PRODUCT_FILL",
                  nti_at_start=bool(selected_drug.nc_narrow_therapeutic_index))
         s.add(f)
         rx.status = "PRODUCT_FILL"
@@ -534,17 +540,18 @@ class PharmacyService:
                 remaining=rx.quantity, status="OPEN"))
         self._audit(s, actor, "FILL_STARTED", f.id,
                     {"fill_number": f.fill_number, "dispense_qty": str(qty),
-                     "bill_qty": str(rx.quantity)})
+                     "bill_qty": str(rx.quantity), "days_supply": days_supply})
         return f.id
 
-    def start_fill(self, actor: Actor, rx_id: str, dispense_quantity: str | None = None) -> str:
+    def start_fill(self, actor: Actor, rx_id: str, dispense_quantity: str | None = None,
+                   days_supply: int | None = None) -> str:
         with self.sessions.begin() as s:
             self._authorized(s, actor, "process")
             rx = s.scalar(select(Prescription).where(
                 Prescription.id == rx_id, Prescription.site_id == actor.site_id).with_for_update())
             if rx is None:
                 raise WorkflowError("Prescription not found at actor's pharmacy site")
-            return self._start_fill_tx(s, actor, rx, dispense_quantity)
+            return self._start_fill_tx(s, actor, rx, dispense_quantity, days_supply=days_supply)
 
     def scan_source(self, actor: Actor, fill_id: str, barcode: str, lot: str,
                     expires: str, quantity: str, location_id: str | None = None,
@@ -693,6 +700,13 @@ class PharmacyService:
                 Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
             if stock is None or stock.reserved < source.quantity:
                 raise WorkflowError("Physical stock reservation is inconsistent")
+            if fill.billing_product_id == stock.product_id:
+                other_source = s.scalar(select(FillSource.id).join(
+                    Stock, FillSource.stock_id == Stock.id).where(
+                    FillSource.fill_id == fill.id, FillSource.id != source.id,
+                    Stock.product_id == fill.billing_product_id).limit(1))
+                if other_source is None:
+                    raise WorkflowError("Clear the selected billing product before removing its last physical source")
             from .inventory_allocations import (
                 source_allocation, allocation_location_id, transition_allocation,
             )
@@ -731,6 +745,9 @@ class PharmacyService:
             sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
             if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
                 raise WorkflowError("Physical source quantities must match dispensed quantity")
+            if f.billing_product_id is not None and not any(
+                    s.get(Stock, src.stock_id).product_id == f.billing_product_id for src in sources):
+                raise WorkflowError("Selected billing product no longer matches a scanned source")
             payers = payer_names or []
             selected_coverages = None
             if coverage_ids is not None:

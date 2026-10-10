@@ -140,6 +140,8 @@ class PrescriptionDirectory:
                 "attempt": fill.attempt, "status": fill.status,
                 "quantity": str(fill.quantity),
                 "billedQuantity": str(fill.billed_quantity),
+                "daysSupply": fill.days_supply,
+                "billingProductId": fill.billing_product_id,
                 "patientDiscardDate": fill.patient_discard_date,
                 "dispensedInOriginalContainer": fill.dispensed_in_original_container,
                 "sources": sources,

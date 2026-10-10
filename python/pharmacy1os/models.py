@@ -202,6 +202,9 @@ class Fill(Base):
     status: Mapped[str] = mapped_column(String(30), default="PRODUCT_FILL")
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     billed_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3))
+    days_supply: Mapped[int | None] = mapped_column(Integer)
+    billing_product_id: Mapped[str | None] = mapped_column(
+        ForeignKey("py_products.id", name="fk_py_fills_billing_product"))
     nti_at_start: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false")
     dispensed_in_original_container: Mapped[bool] = mapped_column(

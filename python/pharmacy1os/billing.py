@@ -63,15 +63,25 @@ def record_paid(s, actor: Actor, claim: Claim, sources: list[FillSource]) -> Non
         product = s.get(Product, stock.product_id)
         if product is None:
             raise WorkflowError("Physical source product not found")
-        enriched.append({"ndc": product.ndc, "stock_id": stock.id,
+        enriched.append({"ndc": product.ndc, "product_id": product.id, "stock_id": stock.id,
                          "quantity": str(src.quantity), "lot": stock.lot, "expires": stock.expires})
     if not enriched:
         raise WorkflowError("Claims require verified physical source records")
-    if cfg["billing_ndc_strategy"] == "FIRST_SCANNED":
+    fill = s.get(Fill, claim.fill_id)
+    if fill is None:
+        raise WorkflowError("Claim parent fill not found")
+    selected_product_id = fill.billing_product_id
+    if selected_product_id:
+        selected = [item for item in enriched if item["product_id"] == selected_product_id]
+        if not selected:
+            raise WorkflowError("Billing product no longer matches scanned physical sources")
+        chosen = sorted(selected, key=lambda r: (-Decimal(r["quantity"]), r["stock_id"]))[0]
+    elif cfg["billing_ndc_strategy"] == "FIRST_SCANNED":
         chosen = enriched[0]
     else:
         chosen = sorted(enriched, key=lambda r: (-Decimal(r["quantity"]), r["ndc"], r["stock_id"]))[0]
     payload = {"physical_sources": enriched, "billing_profile": cfg,
+               "days_supply": fill.days_supply, "selected_billing_product_id": selected_product_id,
                "warning": "SYNTHETIC_ONLY; DO_NOT_SEND_TO_PAYER"}
     s.add(ClaimOperation(site_id=actor.site_id, claim_id=claim.id,
                          profile_id=cfg["profile_id"], operation="SYNTHETIC_PAID",

@@ -88,6 +88,8 @@ def record_test_paid(s, actor: Actor, claim: Claim) -> None:
         "billed_ndc": paid.selected_ndc,
         "payer_intended_quantity": str(claim.billed_quantity),
         "physical_part_quantity": str(fill.quantity),
+        "days_supply": fill.days_supply,
+        "selected_billing_product_id": fill.billing_product_id,
         "source_snapshot": cfg["physical_sources"],
         "billing_profile": cfg["billing_profile"],
         # No member ID, person code, DOB, or group ID in this public-safe ledger.

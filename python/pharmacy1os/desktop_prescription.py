@@ -11,13 +11,14 @@ from typing import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .prescription_directory import PrescriptionDirectory
 from .prescription_edit import DATE_FIELDS, PrescriptionEditService
+from .fill_billing_details import FillBillingDetailService
 from .service import AccessDenied, Actor, PharmacyService, WorkflowError
 
 
@@ -62,6 +63,7 @@ class PrescriptionDetailDialog(QDialog):
         self.prescription_id = prescription_id
         self.directory = PrescriptionDirectory(service)
         self.edits = PrescriptionEditService(service)
+        self.fill_billing = FillBillingDetailService(service)
         self.loaded_actor: Actor | None = None
         self.snapshot = None
         self.context = None
@@ -133,7 +135,7 @@ class PrescriptionDetailDialog(QDialog):
         fills_page = QWidget()
         fills_layout = QVBoxLayout(fills_page)
         self.fill_table = _table(["Fill / attempt", "Status", "Physical qty", "Billed qty",
-                                  "Original container", "Discard date", "Bag / bin"])
+                                  "Days supply", "Billing NDC", "Original container", "Discard date", "Bag / bin"])
         self.fill_table.setObjectName("fill_history")
         fills_layout.addWidget(self.fill_table, 1)
         self.fill_table.itemSelectionChanged.connect(self._show_fill)
@@ -145,6 +147,10 @@ class PrescriptionDetailDialog(QDialog):
                             ("Synthetic claims", self.claim_table), ("Bottle labels", self.label_table)):
             parts.addTab(table, name)
         fills_layout.addWidget(parts, 1)
+        self.fill_billing_button = QPushButton("Edit selected fill billing details")
+        self.fill_billing_button.setObjectName("edit_fill_billing")
+        fills_layout.addWidget(self.fill_billing_button)
+        self.fill_billing_button.clicked.connect(self.edit_fill_billing)
         self.tabs.addTab(fills_page, "Fill history")
 
         audit_page = QWidget()
@@ -295,7 +301,10 @@ class PrescriptionDetailDialog(QDialog):
                 "Save all reviewed changes together. Editing a DUR prescription returns it to Data Entry.")
             self.fills = rx["fills"]
             _rows(self.fill_table, ((f"{f['fillNumber']} / {f['attempt']}", f["status"],
-                f["quantity"], f["billedQuantity"], "Yes" if f["dispensedInOriginalContainer"] else "No",
+                f["quantity"], f["billedQuantity"], f["daysSupply"],
+                next((src["ndc"] for src in f["sources"]
+                      if src["productId"] == f["billingProductId"]), "Auto"),
+                "Yes" if f["dispensedInOriginalContainer"] else "No",
                 f["patientDiscardDate"],
                 f"{f['willCall']['bagBarcode']} / {f['willCall']['binName']} ({f['willCall']['status']})"
                 if f["willCall"] else "—") for f in self.fills))
@@ -336,6 +345,69 @@ class PrescriptionDetailDialog(QDialog):
             for c in (fill["claims"] if fill else [])))
         _rows(self.label_table, ((f"{l['bottleNumber']} of {l['bottleCount']}", l["ndc"],
             f"{l['quantity']} / {l['total']}") for l in (fill["labels"] if fill else [])))
+        self.fill_billing_button.setEnabled(
+            bool(fill and fill["status"] == "PRODUCT_FILL" and not fill["claims"] and not fill["labels"]))
+
+    def edit_fill_billing(self) -> None:
+        if self.editing:
+            self.message.setText("Save or reload prescription edits first.")
+            return
+        index = self.fill_table.currentRow()
+        if not (0 <= index < len(self.fills)):
+            return
+        fill = self.fills[index]
+        try:
+            self._current_actor()
+        except Exception as exc:
+            self._clear()
+            self.message.setText(f"Billing edit blocked: {exc}")
+            return
+        if fill["status"] != "PRODUCT_FILL":
+            self.message.setText("Billing edits require an active Product Fill.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Synthetic fill billing details")
+        form = QFormLayout(dialog)
+        days = QLineEdit("" if fill["daysSupply"] is None else str(fill["daysSupply"]))
+        days.setObjectName("fill_days_supply")
+        days.setPlaceholderText("Positive whole number (leave blank to keep unknown)")
+        product = QComboBox()
+        product.setObjectName("fill_billing_product")
+        product.addItem("Auto-select per sandbox payer profile", None)
+        used = set()
+        for source in fill["sources"]:
+            if source["productId"] not in used:
+                product.addItem(f"{source['ndc']} — {source['manufacturer']}", source["productId"])
+                used.add(source["productId"])
+        product.setCurrentIndex(max(0, product.findData(fill["billingProductId"])))
+        form.addRow("Days supply", days)
+        form.addRow("Billing physical product", product)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        value = days.text().strip()
+        if value and (not value.isascii() or not value.isdecimal() or int(value) < 1):
+            self.message.setText("Days supply must be a positive whole number.")
+            return
+        changes = {}
+        if value and int(value) != fill["daysSupply"]:
+            changes["days_supply"] = int(value)
+        if product.currentData() != fill["billingProductId"]:
+            changes["billing_product_id"] = product.currentData()
+        if not changes:
+            return
+        try:
+            actor = self._current_actor()
+            self.fill_billing.update(actor, fill["id"], changes)
+        except Exception as exc:
+            self.message.setText(f"Billing edit blocked: {exc}")
+            return
+        if self.reload():
+            self.message.setText("Synthetic fill billing details updated and audited.")
 
     def _current_actor(self) -> Actor:
         actor = self.actor_provider()
