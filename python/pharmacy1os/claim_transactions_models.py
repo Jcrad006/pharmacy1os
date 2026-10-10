@@ -32,10 +32,10 @@ class SandboxClaimTransaction(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                    nullable=False, default=utcnow)
     __table_args__ = (
-        CheckConstraint("operation IN ('BILL','REVERSE','TEST_REJECT','TEST_RESOLVE')",
+        CheckConstraint("operation IN ('BILL','REVERSE','TEST_REJECT','TEST_RESOLVE','TEST_RETRY')",
                         name="ck_py_sandbox_claim_operation"),
         CheckConstraint("outcome IN ('PAID_SYNTHETIC','REVERSED_SYNTHETIC',"
-                        "'REJECTED_SYNTHETIC','CLEARED_TEST_HOLD')",
+                        "'REJECTED_SYNTHETIC','CLEARED_TEST_HOLD','RETRIED_SYNTHETIC')",
                         name="ck_py_sandbox_claim_outcome"),
         UniqueConstraint("original_transaction_id", "operation",
                          name="uq_py_sandbox_claim_original_operation"),

@@ -575,3 +575,73 @@ def test_postgres_two_pharmacists_cannot_double_reverse_and_restart_rebill():
             assert len(s.scalars(select(Claim).where(Claim.fill_id == new_id)).all()) == 0
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_concurrent_pharmacist_retries_only_bill_once():
+    """Two operators retrying one resolved simulated hold produce one paid attempt."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+    from pharmacy1os.claim_transactions import SandboxClaimService
+    from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+    from pharmacy1os.insurance import InsuranceDirectory
+    from pharmacy1os.models import Claim, Fill, Label, Stock
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Requires migrated PostgreSQL")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        patient = svc.add_patient(tech, "Race", "RetryClaim")
+        provider = svc.add_prescriber(tech, "Race", "Doctor", "MD")
+        drug = svc.add_drug(pharm, "PG retry example", "3mg", "tablet")
+        product = svc.add_product(pharm, drug, "60111-2222-34", "Demo", "Tablet")
+        svc.register_barcode(tech, product, "PG-CONC-RETRY")
+        exp = (date.today() + timedelta(days=250)).isoformat()
+        stock_id = svc.receive(tech, "PG-CONC-RETRY", "PG-RETRY-LOT", exp, "50")
+        rx = svc.add_prescription(tech, patient, provider, drug,
+            "PG-CONC-RETRY-RX", "daily", "30")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, fill, "PG-CONC-RETRY", "PG-RETRY-LOT", exp, "30")
+        covdb = InsuranceDirectory(svc)
+        payer = covdb.create_payer(pharm, "Synthetic retry race payer")
+        cov = covdb.upsert_coverage(pharm, patient, 1, payer, "LOCAL-MEMBER-ONLY")
+        ledger = SandboxClaimService(svc)
+        rejection = ledger.inject_rejection(pharm, fill, cov, "TEST_75",
+            "PG-RETRY-RACE-KEY", "Simulate rejected local prior auth request")
+        resolution = ledger.resolve_rejection(pharm, rejection,
+            "Pharmacist reviewed and cleared simulated hold before retry")
+        ready = Barrier(2)
+        def attempt(index):
+            ready.wait(timeout=15)
+            try:
+                return ledger.retry_cleared_rejection(pharm, rejection,
+                    expected_resolution_id=resolution, coverage_ids=[cov],
+                    reason=f"Concurrent pharmacist {index} approved local synthetic retry")
+            except WorkflowError as exc:
+                return str(exc)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(attempt, (1, 2)))
+        assert sum(isinstance(item, dict) for item in results) == 1, results
+        assert sum(isinstance(item, str) for item in results) == 1, results
+        with svc.sessions() as s:
+            fill_record = s.get(Fill, fill)
+            assert fill_record.status == "PHARMACIST_REVIEW"
+            assert s.get(Stock, stock_id).reserved == 30
+            assert len(s.scalars(select(Claim).where(Claim.fill_id == fill)).all()) == 1
+            assert len(s.scalars(select(Label).where(Label.fill_id == fill)).all()) == 1
+            assert len(s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.fill_id == fill,
+                SandboxClaimTransaction.operation == "TEST_RETRY")).all()) == 1
+            assert len(s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.fill_id == fill,
+                SandboxClaimTransaction.operation == "BILL")).all()) == 1
+    finally:
+        svc.engine.dispose()

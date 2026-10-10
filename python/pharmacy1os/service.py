@@ -813,75 +813,86 @@ class PharmacyService:
 
     def prepare_for_review(self, actor: Actor, fill_id: str, payer_names: list[str] | None = None,
                            *, coverage_ids: list[str] | None = None) -> list[str]:
-        """Sandbox claims and separate bottle-label records; no real payer transport."""
+        """One atomic synthetic claim-and-label preparation transaction."""
         with self.sessions.begin() as s:
-            self._authorized(s, actor, "process")
-            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
-            if not f:
-                raise WorkflowError("Fill not found")
-            rx = self._site(s, Prescription, f.prescription_id, actor)
-            if f.status != "PRODUCT_FILL":
-                raise WorkflowError("Wrong fill state")
-            from .product_selection import require_fill_sources_eligible
-            require_fill_sources_eligible(s, rx, f)
-            from .emergency_supply import require_emergency_dispense_eligible
-            require_emergency_dispense_eligible(s, rx, f)
-            sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
-            if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
-                raise WorkflowError("Physical source quantities must match dispensed quantity")
-            if f.billing_product_id is not None and not any(
-                    s.get(Stock, src.stock_id).product_id == f.billing_product_id for src in sources):
-                raise WorkflowError("Selected billing product no longer matches a scanned source")
-            payers = payer_names or []
-            selected_coverages = None
-            if coverage_ids is not None:
-                if payers:
-                    raise WorkflowError("Do not mix legacy payer names and patient coverage IDs")
-                from .insurance import require_coverages
-                selected_coverages = require_coverages(s, actor, rx, coverage_ids)
-                payers = [payer.name for _, payer in selected_coverages]
-            from .emergency_supply import require_emergency_claim_separation
-            require_emergency_claim_separation(s, f.id, actor.site_id, payers)
-            if (len(payers) > 4 or
-                    any(not isinstance(name, str) or not name.strip() for name in payers)):
-                raise WorkflowError("Maximum four named COB payers")
-            from .claim_transactions import require_no_open_test_rejections
-            require_no_open_test_rejections(s, actor, f)
-            from .fill_completion import FillCompletion
-            is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
-            if is_completion and payers:
-                raise WorkflowError("Linked completion cannot create another synthetic payer claim")
-            # Label ordering: largest physical source first.
-            sorted_sources = sorted(sources, key=lambda x: (-x.quantity, x.stock_id))
-            labels = []
-            for index, src in enumerate(sorted_sources, start=1):
-                stock = s.get(Stock, src.stock_id)
-                prod = s.get(Product, stock.product_id)
-                label = Label(fill_id=f.id, bottle_number=index,
-                              bottle_count=len(sorted_sources), ndc=prod.ndc,
-                              quantity=src.quantity, total=f.quantity,
-                              description=prod.description)
-                s.add(label)
-                labels.append(f"{prod.ndc} {src.quantity}/{f.quantity} — Bottle {index} of {len(sorted_sources)}")
-            for seq, payer in enumerate(payers, start=1):
-                claim = Claim(fill_id=f.id, payer=payer, sequence=seq,
-                              status="PAID_SYNTHETIC", billed_quantity=f.billed_quantity)
-                s.add(claim)
-                s.flush()
-                from .billing import record_paid
-                record_paid(s, actor, claim, sources)
-                if selected_coverages is not None:
-                    from .insurance import snapshot_paid_coverage
-                    snapshot_paid_coverage(s, actor, f, claim, selected_coverages[seq - 1])
-                from .claim_transactions import record_test_paid
-                record_test_paid(s, actor, claim)
-            from .label_printing import enqueue_label_jobs
-            enqueue_label_jobs(s, actor, f)
-            f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
-            self._audit(s, actor, "FILL_PREPARED", f.id,
-                        {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX",
-                         "coverage_linked": selected_coverages is not None})
-            return labels
+            return self._prepare_for_review_tx(s, actor, fill_id, payer_names, coverage_ids=coverage_ids)
+
+    def _prepare_for_review_tx(self, s: Session, actor: Actor, fill_id: str,
+                               payer_names: list[str] | None = None, *,
+                               coverage_ids: list[str] | None = None) -> list[str]:
+        """Internal transaction-scoped preparation, used by explicit resolved-test retry.
+
+        NEVER open an independent transaction here. A simulated retry and the
+        related labels/claims must either commit together or all roll back.
+        """
+        self._authorized(s, actor, "process")
+        f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+        if not f:
+            raise WorkflowError("Fill not found")
+        rx = self._site(s, Prescription, f.prescription_id, actor)
+        if f.status != "PRODUCT_FILL":
+            raise WorkflowError("Wrong fill state")
+        from .product_selection import require_fill_sources_eligible
+        require_fill_sources_eligible(s, rx, f)
+        from .emergency_supply import require_emergency_dispense_eligible
+        require_emergency_dispense_eligible(s, rx, f)
+        sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+        if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
+            raise WorkflowError("Physical source quantities must match dispensed quantity")
+        if f.billing_product_id is not None and not any(
+                s.get(Stock, src.stock_id).product_id == f.billing_product_id for src in sources):
+            raise WorkflowError("Selected billing product no longer matches a scanned source")
+        payers = payer_names or []
+        selected_coverages = None
+        if coverage_ids is not None:
+            if payers:
+                raise WorkflowError("Do not mix legacy payer names and patient coverage IDs")
+            from .insurance import require_coverages
+            selected_coverages = require_coverages(s, actor, rx, coverage_ids)
+            payers = [payer.name for _, payer in selected_coverages]
+        from .emergency_supply import require_emergency_claim_separation
+        require_emergency_claim_separation(s, f.id, actor.site_id, payers)
+        if (len(payers) > 4 or
+                any(not isinstance(name, str) or not name.strip() for name in payers)):
+            raise WorkflowError("Maximum four named COB payers")
+        from .claim_transactions import require_no_open_test_rejections
+        require_no_open_test_rejections(s, actor, f)
+        from .fill_completion import FillCompletion
+        is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
+        if is_completion and payers:
+            raise WorkflowError("Linked completion cannot create another synthetic payer claim")
+        # Label ordering: largest physical source first.
+        sorted_sources = sorted(sources, key=lambda x: (-x.quantity, x.stock_id))
+        labels = []
+        for index, src in enumerate(sorted_sources, start=1):
+            stock = s.get(Stock, src.stock_id)
+            prod = s.get(Product, stock.product_id)
+            label = Label(fill_id=f.id, bottle_number=index,
+                          bottle_count=len(sorted_sources), ndc=prod.ndc,
+                          quantity=src.quantity, total=f.quantity,
+                          description=prod.description)
+            s.add(label)
+            labels.append(f"{prod.ndc} {src.quantity}/{f.quantity} — Bottle {index} of {len(sorted_sources)}")
+        for seq, payer in enumerate(payers, start=1):
+            claim = Claim(fill_id=f.id, payer=payer, sequence=seq,
+                          status="PAID_SYNTHETIC", billed_quantity=f.billed_quantity)
+            s.add(claim)
+            s.flush()
+            from .billing import record_paid
+            record_paid(s, actor, claim, sources)
+            if selected_coverages is not None:
+                from .insurance import snapshot_paid_coverage
+                snapshot_paid_coverage(s, actor, f, claim, selected_coverages[seq - 1])
+            from .claim_transactions import record_test_paid
+            record_test_paid(s, actor, claim)
+        from .label_printing import enqueue_label_jobs
+        enqueue_label_jobs(s, actor, f)
+        f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
+        self._audit(s, actor, "FILL_PREPARED", f.id,
+                    {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX",
+                     "coverage_linked": selected_coverages is not None})
+        return labels
+
 
     def verify(self, actor: Actor, fill_id: str) -> None:
         with self.sessions.begin() as s:

@@ -23,6 +23,12 @@ class ClearTestRejectionIn(BaseModel):
     note: str = Field(min_length=12, max_length=2000)
 
 
+class RetryTestRejectionIn(BaseModel):
+    expected_resolution_id: str = Field(min_length=1)
+    coverage_ids: list[str] = Field(min_length=1, max_length=4)
+    reason: str = Field(min_length=12, max_length=2000)
+
+
 def make_claim_transaction_router(service: SandboxClaimService,
                                   actor_dependency: Callable[..., Actor]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["synthetic-claim-operations"])
@@ -45,5 +51,11 @@ def make_claim_transaction_router(service: SandboxClaimService,
               actor: Actor = Depends(actor_dependency)):
         return {"id": service.resolve_rejection(actor, rejection_id, payload.note),
                 "synthetic_only": True, "external_approval": False}
+
+    @router.post("/third-party/test-rejections/{rejection_id}/retry")
+    def retry(rejection_id: str, payload: RetryTestRejectionIn,
+              actor: Actor = Depends(actor_dependency)):
+        return service.retry_cleared_rejection(
+            actor, rejection_id, **payload.model_dump())
 
     return router

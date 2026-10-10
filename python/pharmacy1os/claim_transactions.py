@@ -183,14 +183,19 @@ class SandboxClaimService:
                     SandboxClaimTransaction.site_id == actor.site_id,
                     SandboxClaimTransaction.original_transaction_id == item.id,
                     SandboxClaimTransaction.operation == "TEST_RESOLVE"))
+                retry = s.scalar(select(SandboxClaimTransaction.id).where(
+                    SandboxClaimTransaction.site_id == actor.site_id,
+                    SandboxClaimTransaction.original_transaction_id == item.id,
+                    SandboxClaimTransaction.operation == "TEST_RETRY"))
                 details = json.loads(item.response_json)
                 output.append({
                     "id": item.id, "fill_id": item.fill_id,
                     "payer_id": item.payer_id, "coverage_id": item.coverage_id,
                     "code": details["reject_codes"][0],
                     "message": details["messages"][0],
-                    "status": "CLEARED_TEST_HOLD" if resolution else "OPEN_TEST_REJECTION",
-                    "resolution_id": resolution,
+                    "status": ("RETRY_PREPARED_SYNTHETIC" if retry else
+                               "CLEARED_TEST_HOLD" if resolution else "OPEN_TEST_REJECTION"),
+                    "resolution_id": resolution, "retry_id": retry,
                     "warning": "MANUALLY_INJECTED_DEVELOPMENT_REJECTION",
                 })
             return output
@@ -287,3 +292,96 @@ class SandboxClaimService:
                 "external_approval": False,
             })
             return event.id
+
+
+
+    def retry_cleared_rejection(self, actor: Actor, rejection_id: str, *,
+                                expected_resolution_id: str, coverage_ids: list[str],
+                                reason: str) -> dict[str, Any]:
+        """Atomically record a resolved test-hold retry and prepare local claims.
+
+        Never calls a payer. The pharmacist must explicitly choose every
+        active ordered COB coverage; the original test reject's position must
+        remain selected. A failed preparation rolls back TEST_RETRY and BILL
+        events, label jobs and claims together.
+        """
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 2000:
+            raise WorkflowError("Documented pharmacist retry reason must be 12–2000 characters")
+        if not isinstance(expected_resolution_id, str) or not expected_resolution_id:
+            raise WorkflowError("Expected test resolution ID is required")
+        if (not isinstance(coverage_ids, list) or not 1 <= len(coverage_ids) <= 4
+                or any(not isinstance(cid, str) or not cid for cid in coverage_ids)
+                or len(set(coverage_ids)) != len(coverage_ids)):
+            raise WorkflowError("Retry requires one to four unique ordered coverage IDs")
+        with self.service.sessions.begin() as s:
+            self.service._authorized(s, actor, "correct")
+            original = s.scalar(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.id == rejection_id,
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.operation == "TEST_REJECT"))
+            if original is None:
+                raise WorkflowError("Synthetic rejection not found at pharmacy site")
+            fill = s.scalar(select(Fill).where(Fill.id == original.fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Rejected fill was not found")
+            rx = self.service._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Only an active Product Fill can retry a synthetic rejection")
+            if s.scalar(select(Claim.id).where(Claim.fill_id == fill.id)):
+                raise WorkflowError("Fill already has claim history; use an approved correction workflow")
+            from .models import Label
+            if s.scalar(select(Label.id).where(Label.fill_id == fill.id)):
+                raise WorkflowError("Fill already has bottle labels; use a separate correction workflow")
+            original_event = _view(original)
+            if original_event["outcome"] != "REJECTED_SYNTHETIC":
+                raise WorkflowError("Original transaction is not a synthetic rejection")
+            resolution = s.scalar(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.original_transaction_id == original.id,
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.operation == "TEST_RESOLVE"))
+            if resolution is None:
+                raise WorkflowError("Pharmacist must first resolve the simulated rejection")
+            _view(resolution)  # Reject modified or unreadable immutable historical evidence.
+            if resolution.id != expected_resolution_id:
+                raise WorkflowError("Resolution changed; refresh before retrying")
+            if s.scalar(select(SandboxClaimTransaction.id).where(
+                SandboxClaimTransaction.original_transaction_id == original.id,
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.operation == "TEST_RETRY")):
+                raise WorkflowError("Synthetic rejection already retried")
+            rejects = s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.fill_id == fill.id,
+                SandboxClaimTransaction.operation == "TEST_REJECT")).all()
+            rejected_coverage_ids = {event.coverage_id for event in rejects}
+            if not rejected_coverage_ids.issubset(set(coverage_ids)):
+                raise WorkflowError("Every previously rejected coverage must remain in the retry COB selection")
+            require_no_open_test_rejections(s, actor, fill)
+            # The preparation helper revalidates product scans, current payer
+            # eligibility, coverage ordering, clinical guards and profile rules.
+            retry_event = _record(s, actor, fill.id, "TEST_RETRY", "RETRIED_SYNTHETIC",
+                "synthetic-retry:" + original.id,
+                {"original_rejection_id": original.id,
+                 "resolution_id": resolution.id,
+                 "coverage_ids": coverage_ids, "reason": note},
+                {"outcome": "RETRIED_SYNTHETIC",
+                 "message": "Local test retry initiated; NO insurer contacted"},
+                payer_id=original.payer_id, coverage_id=original.coverage_id,
+                original_id=original.id)
+            labels = self.service._prepare_for_review_tx(
+                s, actor, fill.id, [], coverage_ids=coverage_ids)
+            claim_ids = s.scalars(select(Claim.id).where(
+                Claim.fill_id == fill.id).order_by(Claim.sequence)).all()
+            self.service._audit(s, actor, "SYNTHETIC_TEST_REJECTION_RETRIED", retry_event.id, {
+                "fill_id": fill.id, "rejection_id": original.id,
+                "resolution_id": resolution.id, "coverage_ids": coverage_ids,
+                "claim_ids": claim_ids, "reason": note, "external_contact": False,
+            })
+            return {
+                "id": retry_event.id, "original_rejection_id": original.id,
+                "resolution_id": resolution.id, "fill_id": fill.id,
+                "claim_ids": claim_ids, "labels": labels,
+                "synthetic_only": True, "external_submission": False,
+                "requires_pharmacist_verification": True,
+            }

@@ -399,6 +399,7 @@ def main() -> None:
                 self.action("View Rejection Queue", self.show_test_rejections)
                 self.action("Inject Development Test Rejection", self.inject_test_rejection)
                 self.action("Pharmacist Clear Test Rejection", self.clear_test_rejection)
+                self.action("Pharmacist Retry Cleared Test Rejection", self.retry_test_rejection)
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
@@ -673,6 +674,35 @@ def main() -> None:
             sandbox_claims.resolve_rejection(self.actor, chosen["id"], note)
             QMessageBox.information(self, "Test hold cleared",
                 "Local development hold cleared; NO insurance approval was obtained.")
+
+        def retry_test_rejection(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+            rows = [r for r in sandbox_claims.rejection_queue(self.actor)
+                    if r["status"] == "CLEARED_TEST_HOLD"]
+            selected = self.choose_item("Synthetic corrected-claim retry",
+                "Choose a pharmacist-cleared test hold to retry once",
+                rows, lambda r: f"{r['code']} | Fill {r['fill_id'][:8]}")
+            with service.sessions() as s:
+                fill = s.get(Fill, selected["fill_id"])
+                rx = service._site(s, Prescription, fill.prescription_id, self.actor)
+                patient = rx.patient_id
+            available = insurance_service.list_coverages(self.actor, patient)
+            selected_coverages = [x["id"] for x in sorted(available,
+                key=lambda r: r["position"]) if x["active"] and x["payer_active"]]
+            note = self.ask("Pharmacist synthetic retry",
+                "Document the test correction and justification for another local attempt")
+            confirmation = QMessageBox.question(self,
+                "Synthetic retry — no insurer transport",
+                "Record retry provenance and create local synthetic claims/labels for "
+                f"{len(selected_coverages)} COB payer positions? No insurer will be contacted.")
+            if confirmation != QMessageBox.StandardButton.Yes:
+                return
+            result = sandbox_claims.retry_cleared_rejection(
+                self.actor, selected["id"], expected_resolution_id=selected["resolution_id"],
+                coverage_ids=selected_coverages, reason=note)
+            QMessageBox.information(self, "Local synthetic retry result",
+                json.dumps(result, indent=2)[:12000])
 
         def configure_payer(self):
             payer = self.ask("Payer", "Payer name")
