@@ -8,6 +8,7 @@ from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
 from .fill_claim_review import FillClaimReview
 from .cob_correction_plan import CobCorrectionPlanner
+from .cob_attempts import CobAttemptRegistry
 from .service import Actor
 
 
@@ -64,6 +65,10 @@ def make_billing_router(billing: BillingService, actor_dependency: Callable[...,
                             actor: Actor = Depends(actor_dependency)):
         return CobCorrectionPlanner(billing.service).plan(
             actor, fill_id, target_position=target_position)
+
+    @router.get("/third-party/fills/{fill_id}/cob-attempts")
+    def cob_attempts(fill_id: str, actor: Actor = Depends(actor_dependency)):
+        return CobAttemptRegistry(billing.service).history(actor, fill_id)
 
     @router.get("/fills/{fill_id}/claims")
     def fill_claims(fill_id: str, actor: Actor = Depends(actor_dependency)):

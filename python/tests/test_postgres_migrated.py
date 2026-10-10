@@ -780,5 +780,11 @@ def test_postgres_concurrent_four_payer_cob_reverse_replays_one_chain():
             assert len(s.scalars(select(Claim).where(
                 Claim.fill_id == results[0]["replacement_fill_id"])).all()) == 0
             assert s.get(Fill, results[0]["replacement_fill_id"]).status == "PRODUCT_FILL"
+            from pharmacy1os.cob_attempts import CobAttemptRegistry
+            mirrored = CobAttemptRegistry(svc).history(pharm, fill)
+            assert mirrored["total_attempts"] == 4
+            assert mirrored["active_local_paid_positions"] == 0
+            assert all(position["attempts"][0]["reversal_transaction_id"]
+                       for position in mirrored["claim_positions"])
     finally:
         svc.engine.dispose()

@@ -102,11 +102,13 @@ def record_test_paid(s, actor: Actor, claim: Claim) -> None:
         "amount_paid": None, "patient_responsibility": None,
         "reject_codes": [], "messages": ["Simulated acceptance; no payer contacted"],
     }
-    _record(s, actor, fill.id, "BILL", "PAID_SYNTHETIC",
+    paid_event = _record(s, actor, fill.id, "BILL", "PAID_SYNTHETIC",
             f"synthetic-bill:{claim.id}", request, response,
             claim_id=claim.id,
             payer_id=coverage.payer_id if coverage else None,
             coverage_id=coverage.coverage_id if coverage else None)
+    from .cob_attempts import mirror_paid_attempt_tx
+    mirror_paid_attempt_tx(s, actor, claim, paid_event)
 
 
 def record_test_reversal(s, actor: Actor, claim: Claim, reason: str) -> None:
@@ -127,12 +129,15 @@ def record_test_reversal(s, actor: Actor, claim: Claim, reason: str) -> None:
         "message": "Local simulation only; no remote payer reversal",
         "transaction_reference": None,
     }
-    _record(s, actor, fill.id, "REVERSE", "REVERSED_SYNTHETIC",
+    reversal_event = _record(s, actor, fill.id, "REVERSE", "REVERSED_SYNTHETIC",
             f"synthetic-reverse:{claim.id}", request, response,
             claim_id=claim.id,
             payer_id=paid.payer_id if paid else None,
             coverage_id=paid.coverage_id if paid else None,
             original_id=paid.id if paid else None)
+    if paid is not None:
+        from .cob_attempts import mirror_reversal_tx
+        mirror_reversal_tx(s, actor, claim, paid, reversal_event)
 
 
 def _view(tx: SandboxClaimTransaction) -> dict[str, Any]:
