@@ -852,3 +852,72 @@ def test_postgres_two_pharmacists_selective_cob_correction_is_atomic_replay():
             assert s.get(Stock, stock_id).on_hand == 50
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"), reason="requires isolated PostgreSQL CI service")
+def test_postgres_two_pharmacists_latest_corrected_cob_reverse_is_once_only():
+    """Competing operators cannot duplicate latest-attempt reversal or stock release."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+    from pharmacy1os.cob_attempts import CobAttemptRegistry
+    from pharmacy1os.cob_selective_correction import SyntheticCobCorrectionService
+    from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+    from pharmacy1os.models import Fill, Stock
+    from pharmacy1os.service import WorkflowError
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("PostgreSQL+psycopg is required")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        actors = svc.bootstrap_demo()["actors"]
+        tech, pharm = actors["TECHNICIAN"], actors["PHARMACIST"]
+        drug = svc.add_drug(pharm,"PG current COB reversal test","3mg","tablet")
+        product = svc.add_product(pharm, drug, "77555-0066-10", "Synthetic","Test tablet")
+        svc.register_barcode(tech,product,"PG-CURRENT-REV-BC")
+        exp=(date.today()+timedelta(days=240)).isoformat()
+        stock=svc.receive(tech,"PG-CURRENT-REV-BC","PG-CURRENT-REV-LOT",exp,"90")
+        patient=svc.add_patient(tech,"PG","CurrentCob")
+        prescriber=svc.add_prescriber(tech,"PG","Physician","MD")
+        rx=svc.add_prescription(tech,patient,prescriber,drug,
+                                "PG-CURRENT-REV-RX","once daily","40")
+        svc.advance_to_dur(tech,rx)
+        fill=svc.start_fill(tech,rx)
+        svc.scan_source(tech,fill,"PG-CURRENT-REV-BC","PG-CURRENT-REV-LOT",exp,"40")
+        svc.prepare_for_review(tech,fill,["Mock 1","Mock 2","Mock 3"])
+        ledger=CobAttemptRegistry(svc).history(pharm,fill)
+        suffix=[x["attempts"][-1]["paid_transaction_id"]
+                for x in reversed(ledger["claim_positions"][1:])]
+        SyntheticCobCorrectionService(svc).correct(pharm,fill,
+            "Locally correct secondary mock payer with same scanned NDC",
+            target_position=2,expected_active_paid_transaction_ids=suffix,
+            corrected_billing_ndc="77555-0066-10")
+        now=CobAttemptRegistry(svc).history(pharm,fill)
+        ids=[x["attempts"][-1]["paid_transaction_id"]
+             for x in reversed(now["claim_positions"])]
+        barrier=Barrier(2)
+        def action(i):
+            barrier.wait(timeout=15)
+            try:
+                return ClaimRebillService(svc).reverse_current_cob(
+                    pharm,fill,f"Pharmacist {i} retires corrected mock chain atomically",
+                    expected_active_paid_transaction_ids=ids)
+            except WorkflowError as exc:
+                return str(exc)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(action,(1,2)))
+        assert all(isinstance(x,dict) for x in results), results
+        assert sorted(x["replayed"] for x in results)==[False,True],results
+        assert results[0]["reversal_transaction_ids"]==results[1]["reversal_transaction_ids"]
+        with svc.sessions() as s:
+            assert len(s.scalars(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.original_fill_id==fill)).all())==1
+            assert s.get(Stock,stock).reserved==0
+            assert s.get(Fill,fill).status=="RETURNED"
+        retired=CobAttemptRegistry(svc).history(pharm,fill)
+        assert retired["active_local_paid_positions"]==0
+        assert [x["attempts"][-1]["reversal_transaction_id"]
+                for x in reversed(retired["claim_positions"])]==results[0]["reversal_transaction_ids"]
+    finally:
+        svc.engine.dispose()

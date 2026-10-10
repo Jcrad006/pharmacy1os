@@ -412,6 +412,7 @@ def main() -> None:
                 self.action("Correct Selective COB Positions (Synthetic)", self.correct_selective_cob)
                 self.action("View Versioned COB Claim Attempts", self.view_cob_attempts)
                 self.action("View COB Correction Dependencies (Read-only)", self.view_cob_correction_plan)
+                self.action("Pharmacist Reverse Latest COB / Rescan (Synthetic)", self.reverse_current_cob)
                 self.action("Pharmacist Reverse Full COB Chain (Synthetic)", self.reverse_full_cob)
                 self.action("Pharmacist Reverse One-Payer Claim (Synthetic)", self.reverse_single_claim)
                 self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
@@ -766,6 +767,29 @@ def main() -> None:
                 self.actor, fill_id, target_position=position)
             QMessageBox.information(self, "Read-only synthetic COB correction plan",
                 json.dumps(plan, indent=2)[:20000])
+
+        def reverse_current_cob(self):
+            fill_id = self.ask("Latest synthetic COB chain reversal",
+                "Prepared fill ID (supports corrected payer attempt versions)")
+            ledger = cob_attempt_registry.history(self.actor, fill_id)
+            positions = ledger["claim_positions"]
+            if not 2 <= len(positions) <= 4:
+                raise WorkflowError("Current COB reversal needs two to four payer positions")
+            expected = [item["attempts"][-1]["paid_transaction_id"]
+                        for item in reversed(positions)]
+            note = self.ask("Pharmacist corrected claim reversal attestation",
+                "Reason to reverse all active mock payers and require a fresh physical rescan")
+            confirm = QMessageBox.question(self, "Local latest-attempt COB reversal",
+                "Reverse the currently active local payer attempts last-to-first, "
+                "retire unused labels, release reservations and start a fresh fill attempt? "
+                "Historical correction attempts remain immutable. No insurer is contacted.")
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            result = rebill_service.reverse_current_cob(
+                self.actor, fill_id, note,
+                expected_active_paid_transaction_ids=expected)
+            QMessageBox.information(self, "Latest synthetic COB reversed",
+                json.dumps(result, indent=2)[:20000])
 
         def reverse_full_cob(self):
             with service.sessions() as s:

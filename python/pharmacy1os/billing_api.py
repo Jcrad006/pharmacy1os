@@ -20,6 +20,11 @@ class SelectiveCobCorrectionIn(BaseModel):
     reason: str = Field(min_length=12, max_length=1000)
 
 
+class CurrentCobReversalIn(BaseModel):
+    reason: str = Field(min_length=12, max_length=1000)
+    expected_active_paid_transaction_ids: list[str] = Field(min_length=2, max_length=4)
+
+
 class FullCobReversalIn(BaseModel):
     fill_id: str = Field(min_length=1)
     reason: str = Field(min_length=12, max_length=1000)
@@ -56,6 +61,13 @@ def make_billing_router(billing: BillingService, actor_dependency: Callable[...,
             target_position=payload.target_position,
             expected_active_paid_transaction_ids=payload.expected_active_paid_transaction_ids,
             corrected_billing_ndc=payload.corrected_billing_ndc)
+
+    @router.post("/third-party/fills/{fill_id}/reverse-current-cob")
+    def reverse_current_cob(fill_id: str, payload: CurrentCobReversalIn,
+                            actor: Actor = Depends(actor_dependency)):
+        return ClaimRebillService(billing.service).reverse_current_cob(
+            actor, fill_id, payload.reason,
+            expected_active_paid_transaction_ids=payload.expected_active_paid_transaction_ids)
 
     @router.post("/third-party/claims/reverse-cob")
     def reverse_cob(payload: FullCobReversalIn,

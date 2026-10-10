@@ -379,3 +379,179 @@ def test_versioned_correction_api_preflight_and_fill_detail_are_read_only(case):
     denied = app.get(f"/api/fills/{fill}/claims",
         headers={"x-demo-staff-id": out["AUDITOR"].id})
     assert denied.status_code == 409
+
+
+def test_increment_52_reverses_latest_corrected_four_payer_chain_and_preserves_all_attempts(case):
+    from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+    svc, a, out, rx, fill, stocks, exp = case
+    start = prepare(case)
+    correct = SyntheticCobCorrectionService(svc)
+    first = correct.correct(a["PHARMACIST"], fill,
+        "Document first mock primary source NDC change with all dependent COB payers",
+        target_position=1,
+        expected_active_paid_transaction_ids=desc(start, 1),
+        corrected_billing_ndc="60000-4444-02")
+    second_history = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    correct.correct(a["PHARMACIST"], fill,
+        "Correct third position a second time before locally reversing full chain",
+        target_position=3,
+        expected_active_paid_transaction_ids=desc(second_history, 3),
+        corrected_billing_ndc="60000-4444-01")
+    before = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    ids = desc(before, 1)
+    assert [len(x["attempts"]) for x in before["claim_positions"]] == [2, 2, 3, 3]
+    with svc.sessions() as s:
+        original_stock = {p.id:(p.on_hand,p.reserved)
+                          for p in s.scalars(select(Stock).where(Stock.id.in_(stocks)))}
+    result = ClaimRebillService(svc).reverse_current_cob(a["PHARMACIST"], fill,
+        "Pharmacist retires all latest corrected mock claims before a physical refill",
+        expected_active_paid_transaction_ids=ids)
+    assert result["coverage_positions_reversed"] == [4, 3, 2, 1]
+    assert result["original_active_paid_transaction_ids"] == ids
+    assert len(result["reversal_transaction_ids"]) == 4
+    assert result["replayed"] is False
+    assert result["requires_fresh_scans"] is True
+    assert not result["external_payer_contact"]
+    final = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    assert final["total_attempts"] == 10
+    assert final["active_local_paid_positions"] == 0
+    assert [len(x["attempts"]) for x in final["claim_positions"]] == [2, 2, 3, 3]
+    assert [x["attempts"][-1]["paid_transaction_id"] for x in reversed(final["claim_positions"])] == ids
+    assert [x["attempts"][-1]["reversal_transaction_id"]
+            for x in reversed(final["claim_positions"])] == result["reversal_transaction_ids"]
+    all_events = SandboxClaimService(svc).list_for_fill(a["AUDITOR"], fill)
+    assert len([x for x in all_events if x["operation"] == "REVERSE"]) == 10
+    assert len([x for x in all_events if x["operation"] == "BILL"]) == 10
+    assert [e["original_transaction_id"] for e in all_events
+            if e["id"] in result["reversal_transaction_ids"]] == ids
+    labels = LabelPrintService(svc).list(a["PHARMACIST"], fill)
+    assert labels and all(x["status"] == "VOIDED" for x in labels)
+    assert len(BillingService(svc).history(a["AUDITOR"], fill)) == 8
+    with svc.sessions() as s:
+        for p in s.scalars(select(Stock).where(Stock.id.in_(stocks))):
+            assert p.on_hand == original_stock[p.id][0]
+            assert p.reserved == 0
+        assert s.get(Fill, fill).status == "RETURNED"
+        assert s.get(Fill, result["replacement_fill_id"]).status == "PRODUCT_FILL"
+        assert s.scalars(select(Claim).where(
+            Claim.fill_id == result["replacement_fill_id"])).all() == []
+        assert len(s.scalars(select(SyntheticRebillLink).where(
+            SyntheticRebillLink.original_fill_id == fill)).all()) == 1
+    again = ClaimRebillService(svc).reverse_current_cob(a["PHARMACIST"], fill,
+        "Identical caller retry should not release stock or create a second replacement",
+        expected_active_paid_transaction_ids=ids)
+    assert again["replayed"] is True
+    assert again["reversal_transaction_ids"] == result["reversal_transaction_ids"]
+    assert again["replacement_fill_id"] == result["replacement_fill_id"]
+    # Replacement is still a completely fresh scan and payer workflow.
+    replacement = result["replacement_fill_id"]
+    assert svc.scanned_sources(a["TECHNICIAN"], replacement) == []
+    svc.scan_source(a["TECHNICIAN"], replacement,
+        "CORRECT-SCAN-1", "CORRECT-LOT-1", exp, "60")
+    svc.prepare_for_review(a["TECHNICIAN"], replacement, ["Primary Mock", "Secondary Mock"])
+    svc.verify(a["PHARMACIST"], replacement)
+    replay = ClaimRebillService(svc).reverse_current_cob(a["PHARMACIST"], fill,
+        "Historical replay after a later successful replacement verification",
+        expected_active_paid_transaction_ids=ids)
+    assert replay["replayed"] is True and replay["requires_fresh_scans"] is False
+
+
+def test_increment_52_stale_order_role_site_and_printed_labels_rejected(case):
+    from pharmacy1os.claim_rebilling import ClaimRebillService
+    svc, a, out, rx, fill, stocks, exp = case
+    original = prepare(case, 3)
+    SyntheticCobCorrectionService(svc).correct(a["PHARMACIST"], fill,
+        "Selective synthetic tertiary correction without physical inventory movement",
+        target_position=3, expected_active_paid_transaction_ids=desc(original,3),
+        corrected_billing_ndc="60000-4444-02")
+    recent = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    ids = desc(recent,1)
+    reversal = ClaimRebillService(svc)
+    note = "Pharmacist attests all currently active local payer versions need rescan"
+    with pytest.raises(AccessDenied):
+        reversal.reverse_current_cob(a["TECHNICIAN"], fill, note,
+            expected_active_paid_transaction_ids=ids)
+    with pytest.raises(WorkflowError, match="outside"):
+        reversal.reverse_current_cob(out["PHARMACIST"], fill, note,
+            expected_active_paid_transaction_ids=ids)
+    for bad in (ids[::-1], ids[1:], [ids[0],ids[0],ids[2]], [ids[0],ids[1],"fake"]):
+        with pytest.raises(WorkflowError):
+            reversal.reverse_current_cob(a["PHARMACIST"], fill, note,
+                expected_active_paid_transaction_ids=bad)
+    # Original attempt ID may never be substituted for the current active ID.
+    stale = list(ids)
+    stale[0] = recent["claim_positions"][-1]["attempts"][0]["paid_transaction_id"]
+    with pytest.raises(WorkflowError, match="changed"):
+        reversal.reverse_current_cob(a["PHARMACIST"], fill, note,
+            expected_active_paid_transaction_ids=stale)
+    job = LabelPrintService(svc).list(a["PHARMACIST"], fill)[0]
+    LabelPrintService(svc).record_output_attempt(a["PHARMACIST"], job["id"],
+        "INC52-CORRECTED-PRINT-1", "Synthetic label dialog acceptance blocks reopening",
+        dialog_accepted=True)
+    with pytest.raises(WorkflowError, match="printed test labels"):
+        reversal.reverse_current_cob(a["PHARMACIST"], fill, note,
+            expected_active_paid_transaction_ids=ids)
+    assert CobAttemptRegistry(svc).history(a["AUDITOR"], fill)["active_local_paid_positions"] == 3
+    with svc.sessions() as s:
+        assert s.get(Fill, fill).status == "PHARMACIST_REVIEW"
+        assert sum(x.reserved for x in s.scalars(select(Stock).where(
+            Stock.id.in_(stocks)))) == Decimal("60")
+
+
+def test_increment_52_final_current_reverse_is_fully_atomic_on_new_attempt_failure(case):
+    from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+    svc, a, out, rx, fill, stocks, exp = case
+    original = prepare(case,3)
+    SyntheticCobCorrectionService(svc).correct(a["PHARMACIST"], fill,
+        "Version two secondary test billing source corrected before final reverse",
+        target_position=2, expected_active_paid_transaction_ids=desc(original,2),
+        corrected_billing_ndc="60000-4444-02")
+    old = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    events = SandboxClaimService(svc).list_for_fill(a["AUDITOR"], fill)
+    ids = desc(old,1)
+    with patch.object(svc, "_start_fill_tx", side_effect=WorkflowError(
+        "Simulated fresh fill start error after local corrected payer reversals")):
+        with pytest.raises(WorkflowError, match="Simulated fresh fill"):
+            ClaimRebillService(svc).reverse_current_cob(a["PHARMACIST"], fill,
+                "All or nothing rollback on simulated replacement start failure",
+                expected_active_paid_transaction_ids=ids)
+    assert CobAttemptRegistry(svc).history(a["AUDITOR"], fill) == old
+    assert SandboxClaimService(svc).list_for_fill(a["AUDITOR"], fill) == events
+    with svc.sessions() as s:
+        assert s.get(Fill, fill).status == "PHARMACIST_REVIEW"
+        assert sum(x.reserved for x in s.scalars(select(Stock).where(
+            Stock.id.in_(stocks)))) == Decimal("60")
+        assert s.scalars(select(SyntheticRebillLink)).all() == []
+
+
+def test_increment_52_api_requires_demo_pharmacist_and_exact_active_positions(case):
+    from pharmacy1os.api import create_app
+    from fastapi.testclient import TestClient
+    svc, a, out, rx, fill, stocks, exp = case
+    first = prepare(case,2)
+    correction = SyntheticCobCorrectionService(svc)
+    correction.correct(a["PHARMACIST"], fill,
+        "Correction to physical split manufacturer before final COB retirement",
+        target_position=2, expected_active_paid_transaction_ids=desc(first,2),
+        corrected_billing_ndc="60000-4444-02")
+    ids = desc(CobAttemptRegistry(svc).history(a["AUDITOR"],fill),1)
+    payload = {
+        "reason": "Pharmacist restart for new synthetic fill after adjusted payer NDC",
+        "expected_active_paid_transaction_ids": ids,
+    }
+    path = f"/api/third-party/fills/{fill}/reverse-current-cob"
+    on = TestClient(create_app(svc, synthetic_enabled=True))
+    off = TestClient(create_app(svc, synthetic_enabled=False))
+    pharm = {"x-demo-staff-id":a["PHARMACIST"].id}
+    assert off.post(path,json=payload,headers=pharm).status_code == 503
+    assert on.post(path,json=payload).status_code == 403
+    assert on.post(path,json=payload,headers={"x-demo-staff-id":a["TECHNICIAN"].id}).status_code == 403
+    assert on.post(path,json={**payload,"expected_active_paid_transaction_ids":ids[:1]},
+                   headers=pharm).status_code == 422
+    first_result = on.post(path,json=payload,headers=pharm)
+    assert first_result.status_code == 200, first_result.text
+    assert first_result.json()["replayed"] is False
+    second = on.post(path,json=payload,headers=pharm)
+    assert second.status_code == 200
+    assert second.json()["replayed"] is True
+    assert second.json()["replacement_fill_id"] == first_result.json()["replacement_fill_id"]

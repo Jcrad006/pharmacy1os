@@ -60,7 +60,8 @@ class ClaimRebillService:
             return self._restart_tx(s, actor, fill_id, note, expected_claim_ids=expected_claim_ids)
 
     def _restart_tx(self, s, actor: Actor, fill_id: str, note: str, *,
-                    expected_claim_ids: list[str]) -> dict[str, Any]:
+                    expected_claim_ids: list[str],
+                    expected_active_paid_transaction_ids: list[str] | None = None) -> dict[str, Any]:
         """Atomic internals shared by full-COB and one-payer transaction action."""
         self.service._authorized(s, actor, "correct")
         fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
@@ -117,18 +118,89 @@ class ClaimRebillService:
                for f in s.scalars(select(Fill).where(Fill.prescription_id == rx.id))):
             raise WorkflowError("Other active fill prevents correction restart")
 
-        from .cob_attempts import SyntheticCobAttempt
-        if s.scalar(select(SyntheticCobAttempt.id).where(
-                SyntheticCobAttempt.fill_id == fill.id,
-                SyntheticCobAttempt.attempt_number > 1)):
-            raise WorkflowError(
-                "Versioned selective COB corrections require dedicated payer reconciliation before full rebill")
+        from .cob_attempts import CobAttemptRegistry, SyntheticCobAttempt, mirror_reversal_tx
+        has_corrections = s.scalar(select(SyntheticCobAttempt.id).where(
+            SyntheticCobAttempt.fill_id == fill.id,
+            SyntheticCobAttempt.attempt_number > 1)) is not None
+        latest = {}
+        if expected_active_paid_transaction_ids is None:
+            if has_corrections:
+                raise WorkflowError(
+                    "Versioned selective COB corrections require exact active payer IDs for full rebill")
+        else:
+            ledger = CobAttemptRegistry(self.service)._history_tx(s, actor, fill.id)
+            if ledger["active_local_paid_positions"] != len(claims):
+                raise WorkflowError("Active synthetic COB payer chain incomplete")
+            if [c.sequence for c in claims] != list(range(1, len(claims) + 1)):
+                raise WorkflowError("Non-contiguous synthetic COB coverage positions")
+            for entry in ledger["claim_positions"]:
+                last = entry["attempts"][-1]
+                if last["state"] != "PAID_SYNTHETIC_LOCAL_ONLY":
+                    raise WorkflowError("Latest synthetic payer attempt is not active")
+                latest[entry["coverage_position"]] = last
+            if [latest[c.sequence]["paid_transaction_id"] for c in reversed(claims)] != (
+                    expected_active_paid_transaction_ids):
+                raise WorkflowError("Active paid transaction IDs changed; refresh COB before reversal")
         from .billing import record_reversal
-        # COB reversals are downstream-to-upstream (4,3,2,1), matching
-        # the original claim adapter's dependency ordering.
+        # Downstream-to-upstream reversal preserves dependencies even if a
+        # payer position has already undergone several prior test corrections.
         for claim in reversed(claims):
-            record_reversal(s, actor, claim, note)
+            if has_corrections:
+                from .claim_transactions import _record, _view
+                from .billing_models import ClaimOperation
+                last = latest[claim.sequence]
+                prior = s.get(SandboxClaimTransaction, last["paid_transaction_id"])
+                if prior is None or prior.claim_id != claim.id:
+                    raise WorkflowError("Current local payer claim is missing")
+                paid_request = _view(prior)["request"]
+                reversal = _record(s, actor, fill.id, "REVERSE", "REVERSED_SYNTHETIC",
+                    f"synthetic-cob-final-reverse:{prior.id}",
+                    {"claim_id": claim.id, "original_transaction_id": prior.id,
+                     "prior_attempt_number": last["attempt_number"],
+                     "coverage_position": claim.sequence, "reason": note,
+                     "external_submission": False},
+                    {"outcome": "REVERSED_SYNTHETIC",
+                     "message": "Final local mock payer reversal; no insurer contacted",
+                     "transaction_reference": None},
+                    claim_id=claim.id, payer_id=prior.payer_id,
+                    coverage_id=prior.coverage_id, original_id=prior.id)
+                mirror_reversal_tx(s, actor, claim, prior, reversal)
+                original_op = s.scalar(select(ClaimOperation).where(
+                    ClaimOperation.claim_id == claim.id,
+                    ClaimOperation.operation == "SYNTHETIC_PAID"))
+                if original_op is None:
+                    raise WorkflowError("Missing original synthetic payer operation snapshot")
+                if s.scalar(select(ClaimOperation.id).where(
+                    ClaimOperation.claim_id == claim.id,
+                    ClaimOperation.operation == "SYNTHETIC_REVERSED")):
+                    raise WorkflowError("Existing final payer operation reversal requires reconciliation")
+                # Preserve original paid snapshot; current NDC and version
+                # are explicit in the final closure snapshot and canonical
+                # immutable BILL/REVERSE transaction chain.
+                source = json.loads(original_op.source_snapshot)
+                source["versioned_final_reversal"] = {
+                    "attempt_number": last["attempt_number"],
+                    "paid_transaction_id": prior.id,
+                    "reversal_transaction_id": reversal.id,
+                    "current_billed_ndc": paid_request.get("billed_ndc"),
+                }
+                s.add(ClaimOperation(
+                    site_id=actor.site_id, claim_id=claim.id,
+                    profile_id=original_op.profile_id,
+                    operation="SYNTHETIC_REVERSED",
+                    payer_name=claim.payer,
+                    selected_ndc=paid_request["billed_ndc"],
+                    billed_quantity=claim.billed_quantity,
+                    source_snapshot=json.dumps(source, sort_keys=True),
+                    actor_id=actor.id, reason=note[:500]))
+            else:
+                record_reversal(s, actor, claim, note)
             claim.status = "REVERSED_SYNTHETIC"
+        if has_corrections:
+            s.flush()
+            if CobAttemptRegistry(self.service)._history_tx(
+                    s, actor, fill.id)["active_local_paid_positions"] != 0:
+                raise WorkflowError("Final corrected payer reversal incomplete; rollback")
         from .inventory_allocations import (
             source_allocation, allocation_location_id, transition_allocation,
         )
@@ -187,6 +259,96 @@ class ClaimRebillService:
 
 
 
+
+
+    def reverse_current_cob(self, actor: Actor, fill_id: str, reason: str, *,
+                            expected_active_paid_transaction_ids: list[str]) -> dict[str, Any]:
+        """Final whole-fill restart from the *latest* 2–4 payer versions.
+
+        Existing uncorrected fills remain supported. Corrected history is
+        closed exactly once; an identical retry reads the previous immutable
+        replacement link rather than moving stock or issuing new labels again.
+        """
+        note = reason.strip() if isinstance(reason, str) else ""
+        txids = expected_active_paid_transaction_ids
+        if not 12 <= len(note) <= 1000:
+            raise WorkflowError("Current COB reversal requires a 12-1000 character reason")
+        if (not isinstance(txids, list) or not 2 <= len(txids) <= 4
+                or any(not isinstance(x, str) or not x.strip() for x in txids)
+                or len(set(txids)) != len(txids)):
+            raise WorkflowError("Provide 2–4 unique active synthetic payer transaction IDs")
+        from .cob_attempts import CobAttemptRegistry
+        with self.service.sessions.begin() as s:
+            self.service._authorized(s, actor, "correct")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = s.scalar(select(Prescription).where(
+                Prescription.id == fill.prescription_id,
+                Prescription.site_id == actor.site_id).with_for_update())
+            if rx is None:
+                raise WorkflowError("Fill is outside this pharmacy site")
+            ledger = CobAttemptRegistry(self.service)._history_tx(s, actor, fill.id)
+            positions = ledger["claim_positions"]
+            if (len(positions) != len(txids)
+                    or [p["coverage_position"] for p in positions] != list(range(1, len(txids) + 1))):
+                raise WorkflowError("Active full COB position list is inconsistent")
+            last_attempts = [p["attempts"][-1] for p in reversed(positions)]
+            if [x["paid_transaction_id"] for x in last_attempts] != txids:
+                raise WorkflowError("Current COB payer transaction list changed; refresh")
+            link = s.scalar(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.site_id == actor.site_id,
+                SyntheticRebillLink.original_fill_id == fill.id))
+            if link is not None:
+                if (fill.status != "RETURNED"
+                        or json.loads(link.reversed_claim_ids_json) != [
+                            entry["claim_id"] for entry in positions]
+                        or any(x["state"] != "REVERSED_SYNTHETIC" for x in last_attempts)
+                        or any(x["reversal_transaction_id"] is None for x in last_attempts)):
+                    raise WorkflowError("Partial or inconsistent final payer reversal requires manual review")
+                replacement = s.get(Fill, link.replacement_fill_id)
+                if (replacement is None or replacement.prescription_id != rx.id
+                        or replacement.fill_number != fill.fill_number
+                        or replacement.attempt != fill.attempt + 1):
+                    raise WorkflowError("Replacement fill lineage is inconsistent")
+                return {
+                    "original_fill_id": fill.id, "replacement_fill_id": replacement.id,
+                    "original_active_paid_transaction_ids": txids,
+                    "reversal_transaction_ids": [
+                        item["reversal_transaction_id"] for item in last_attempts],
+                    "coverage_positions_reversed": [
+                        item["coverage_position"] for item in last_attempts],
+                    "replayed": True, "requires_fresh_scans": replacement.status == "PRODUCT_FILL",
+                    "external_payer_contact": False, "synthetic_only": True,
+                }
+            if any(x["state"] != "PAID_SYNTHETIC_LOCAL_ONLY" for x in last_attempts):
+                raise WorkflowError("Current synthetic payer chain is not fully active")
+            result = self._restart_tx(
+                s, actor, fill.id, note,
+                expected_claim_ids=[p["claim_id"] for p in positions],
+                expected_active_paid_transaction_ids=txids)
+            s.flush()
+            completed = CobAttemptRegistry(self.service)._history_tx(s, actor, fill.id)
+            final = [p["attempts"][-1] for p in reversed(completed["claim_positions"])]
+            if (completed["active_local_paid_positions"] != 0
+                    or [x["paid_transaction_id"] for x in final] != txids
+                    or any(not x["reversal_transaction_id"] for x in final)):
+                raise WorkflowError("Final corrected payer reversal incomplete; rolled back")
+            reversal_ids = [x["reversal_transaction_id"] for x in final]
+            self.service._audit(s, actor, "SYNTHETIC_CURRENT_COB_REBILL_RESTARTED", fill.id, {
+                "current_paid_transaction_ids": txids,
+                "reversal_transaction_ids": reversal_ids,
+                "replacement_fill_id": result["replacement_fill_id"],
+                "has_corrected_attempts": completed["total_attempts"] > len(positions),
+                "reason": note, "external_payer_contact": False,
+            })
+            return {
+                **result, "original_active_paid_transaction_ids": txids,
+                "reversal_transaction_ids": reversal_ids,
+                "coverage_positions_reversed": [
+                    x["coverage_position"] for x in final],
+                "replayed": False, "external_payer_contact": False,
+            }
 
     def reverse_cob_transactions(self, actor: Actor, fill_id: str, reason: str, *,
                                  expected_paid_transaction_ids: list[str]) -> dict[str, Any]:
