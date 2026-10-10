@@ -302,6 +302,7 @@ def main() -> None:
                 self.action("Complete Emergency Follow-up", self.emergency_followup)
                 self.action("Scan Product Source", self.scan)
                 self.action("Remove Incorrect Scanned Source", self.remove_scanned_source)
+                self.action("Correct Scanned Source Quantity", self.correct_scanned_quantity)
                 self.action("Set Original Container Packaging", self.set_fill_packaging)
                 self.action("Prepare Labels / Sandbox COB", self.prepare)
                 self.action("Prepare With Patient Coverages", self.prepare_with_coverages)
@@ -985,6 +986,32 @@ def main() -> None:
                 dispensed_in_original_container=in_original, note=reason)
             QMessageBox.information(self, "Packaging choice recorded",
                 json.dumps(details, indent=2) + "\n\nPatient discard metadata is calculated at pharmacist verification.")
+
+        def correct_scanned_quantity(self):
+            fill_id = self.fill_for_rx(self.selected_id())
+            sources = service.scanned_sources(self.actor, fill_id)
+            source = self.choose_item("Source quantity correction",
+                "Select scanned lot to correct", sources,
+                lambda x: f"{x['ndc']} | {x['lot']} | {x['quantity']} | {x['description']}")
+            quantity = self.ask("Source quantity correction",
+                "Correct physically verified quantity (positive; use Remove for zero)",
+                source["quantity"])
+            reason = self.ask("Source quantity correction",
+                "Document why the previously scanned quantity was wrong")
+            try:
+                result = service.correct_scanned_source_quantity(
+                    self.actor, fill_id, source["id"], quantity, reason)
+            except Exception as exc:
+                if (not str(exc).startswith("FEFO policy requires earlier stock")
+                        or self.actor.role not in {"PHARMACIST", "ADMIN"}):
+                    raise
+                note = self.ask("Pharmacist FEFO override",
+                    "Document why an earlier lot or shelf-life policy cannot be followed")
+                result = service.correct_scanned_source_quantity(
+                    self.actor, fill_id, source["id"], quantity, reason,
+                    fefo_override_note=note)
+            QMessageBox.information(self, "Scanned source corrected",
+                json.dumps(result, indent=2))
 
         def remove_scanned_source(self):
             fill_id = self.fill_for_rx(self.selected_id())

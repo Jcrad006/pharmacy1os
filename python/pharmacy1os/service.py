@@ -667,6 +667,87 @@ class PharmacyService:
                 })
             return entries
 
+
+    def correct_scanned_source_quantity(self, actor: Actor, fill_id: str,
+                                        source_id: str, quantity: str,
+                                        reason: str, *, fefo_override_note: str | None = None
+                                        ) -> dict[str, Any]:
+        """Correct a physical scanned source before any sandbox claim or label.
+
+        Change the exact source and corresponding stock/location reservations
+        in the same transaction. Zero quantity is a separate remove operation.
+        """
+        new_qty = positive(quantity)
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 2000:
+            raise WorkflowError("Source quantity correction requires a 12–2000 character reason")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            fill = s.scalar(select(Fill).where(
+                Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Source quantities can only change during Product Fill")
+            if (s.scalar(select(Claim.id).where(Claim.fill_id == fill.id).limit(1))
+                    or s.scalar(select(Label.id).where(Label.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claimed or labeled fill requires reversal before source changes")
+            from .claim_transactions_models import SandboxClaimTransaction
+            from .label_printing import LabelPrintJob
+            if (s.scalar(select(SandboxClaimTransaction.id).where(
+                    SandboxClaimTransaction.fill_id == fill.id).limit(1))
+                    or s.scalar(select(LabelPrintJob.id).where(
+                    LabelPrintJob.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claim or print history requires separate correction workflow")
+            source = s.scalar(select(FillSource).where(
+                FillSource.id == source_id, FillSource.fill_id == fill.id).with_for_update())
+            if source is None:
+                raise WorkflowError("Scanned source not found for this fill")
+            old_qty = source.quantity
+            if old_qty == new_qty:
+                raise WorkflowError("New scanned source quantity is unchanged")
+            total = s.scalar(select(func.sum(FillSource.quantity)).where(
+                FillSource.fill_id == fill.id)) or Decimal("0")
+            if total - old_qty + new_qty > fill.quantity:
+                raise WorkflowError("Corrected sources exceed actual physical fill quantity")
+            stock = s.scalar(select(Stock).where(
+                Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
+            if stock is None or stock.reserved < old_qty:
+                raise WorkflowError("Existing physical stock reservation is inconsistent")
+            from .inventory_allocations import source_allocation, allocation_location_id
+            allocation = source_allocation(s, actor, fill, stock, source)
+            location_id = allocation_location_id(s, allocation)
+            delta = new_qty - old_qty
+            if delta > 0:
+                if stock.expires <= date.today().isoformat():
+                    raise WorkflowError("Cannot increase a source from expired stock")
+                from .inventory_advanced import assert_not_recalled
+                assert_not_recalled(s, stock)
+                if stock.on_hand - stock.reserved - stock.quarantined < delta:
+                    raise WorkflowError("Insufficient available stock for scanned quantity correction")
+                from .inventory_fefo import require_fefo_scan
+                require_fefo_scan(s, actor, fill.id, stock, fefo_override_note)
+            elif fefo_override_note is not None:
+                raise WorkflowError("FEFO override is only applicable when increasing a scanned source")
+            from .inventory_ops import record_movement
+            movement_id = record_movement(s, actor, stock, "FILL_SOURCE_QUANTITY_CORRECTION",
+                reserved=delta, location_id=location_id, reason=note)
+            source.quantity = new_qty
+            if allocation is not None:
+                from .inventory_location_models import InventoryAllocationEvent
+                allocation.quantity = new_qty
+                s.add(InventoryAllocationEvent(site_id=actor.site_id,
+                    allocation_id=allocation.id, from_status="ACTIVE", to_status="ACTIVE",
+                    actor_id=actor.id, reason=f"Corrected allocated source quantity from {old_qty} to {new_qty}: {note}"))
+            detail = {"fill_id": fill.id, "source_id": source.id, "stock_id": stock.id,
+                      "before": str(old_qty), "after": str(new_qty),
+                      "delta": str(delta), "movement_id": movement_id,
+                      "physical_fill_quantity": str(fill.quantity),
+                      "location_id": location_id, "reason": note}
+            self._audit(s, actor, "FILL_PRODUCT_SOURCE_QUANTITY_CORRECTED", fill.id, detail)
+            return detail
+
     def remove_scanned_source(self, actor: Actor, fill_id: str,
                               source_id: str, reason: str) -> dict[str, Any]:
         """Release a mistaken pre-review physical source, retaining its audit trail."""
