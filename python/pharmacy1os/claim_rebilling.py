@@ -118,7 +118,9 @@ class ClaimRebillService:
             raise WorkflowError("Other active fill prevents correction restart")
 
         from .billing import record_reversal
-        for claim in claims:
+        # COB reversals are downstream-to-upstream (4,3,2,1), matching
+        # the original claim adapter's dependency ordering.
+        for claim in reversed(claims):
             record_reversal(s, actor, claim, note)
             claim.status = "REVERSED_SYNTHETIC"
         from .inventory_allocations import (
@@ -178,6 +180,144 @@ class ClaimRebillService:
         }
 
 
+
+
+    def reverse_cob_transactions(self, actor: Actor, fill_id: str, reason: str, *,
+                                 expected_paid_transaction_ids: list[str]) -> dict[str, Any]:
+        """Reverse the complete 2-4 payer *local* COB chain in reverse order.
+
+        All source transactions must be exact, unique, in descending coverage
+        position, and each one must still be locally paid. On first invocation
+        all reversals, label voids, reservation releases and fresh attempt start
+        commit atomically. A repeat is an immutable, validated read-only replay.
+        """
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 1000:
+            raise WorkflowError("Full COB reversal requires a 12-1000 character pharmacist reason")
+        ids = expected_paid_transaction_ids
+        if (not isinstance(ids, list) or not 2 <= len(ids) <= 4
+                or any(not isinstance(x, str) or not x.strip() for x in ids)
+                or len(set(ids)) != len(ids)):
+            raise WorkflowError("Provide two to four unique original paid transaction IDs in reverse COB order")
+        from .claim_transactions_models import SandboxClaimTransaction
+        from .claim_transactions import _view
+        with self.service.sessions.begin() as s:
+            self.service._authorized(s, actor, "correct")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = s.scalar(select(Prescription).where(
+                Prescription.id == fill.prescription_id,
+                Prescription.site_id == actor.site_id).with_for_update())
+            if rx is None:
+                raise WorkflowError("Fill is outside this pharmacy site")
+            claims = s.scalars(select(Claim).where(
+                Claim.fill_id == fill.id).order_by(Claim.sequence).with_for_update()).all()
+            if len(claims) != len(ids) or [c.sequence for c in claims] != list(range(1, len(ids) + 1)):
+                raise WorkflowError("COB claim positions are incomplete or changed; refresh the complete chain")
+            paid_tx = s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.fill_id == fill.id,
+                SandboxClaimTransaction.operation == "BILL")).all()
+            if len(paid_tx) != len(claims):
+                raise WorkflowError("Ambiguous or missing original synthetic paid transactions")
+            tx_by_claim = {tx.claim_id: tx for tx in paid_tx}
+            if (len(tx_by_claim) != len(claims) or None in tx_by_claim):
+                raise WorkflowError("Duplicate or missing original paid-claim identities")
+            descending_claims = list(reversed(claims))
+            expected_order = [tx_by_claim[c.id].id for c in descending_claims
+                              if c.id in tx_by_claim]
+            if expected_order != ids:
+                raise WorkflowError("Original paid transaction list or descending COB order changed; refresh")
+            for claim in descending_claims:
+                tx = tx_by_claim[claim.id]
+                data = _view(tx)
+                req = data["request"]
+                if (tx.outcome != "PAID_SYNTHETIC"
+                        or tx.original_transaction_id is not None
+                        or tx.claim_id != claim.id or tx.fill_id != fill.id
+                        or req.get("fill_id") != fill.id
+                        or req.get("coverage_position") != claim.sequence
+                        or req.get("payer_name") != claim.payer
+                        or req.get("payer_intended_quantity") != str(claim.billed_quantity)
+                        or req.get("physical_part_quantity") != str(fill.quantity)):
+                    raise WorkflowError("Original synthetic payer snapshot is inconsistent")
+
+            # Deterministic idempotency: replay only a *complete* four-way (or
+            # two/three-way) reversal with an intact linked replacement. Never
+            # accept a partial reversal, inconsistent claim, or broken lineage.
+            link = s.scalar(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.site_id == actor.site_id,
+                SyntheticRebillLink.original_fill_id == fill.id))
+            reversed_events = s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.fill_id == fill.id,
+                SandboxClaimTransaction.operation == "REVERSE")).all()
+            if (link is not None or reversed_events
+                    or any(c.status != "PAID_SYNTHETIC" for c in claims)):
+                if (link is None or fill.status != "RETURNED"
+                        or any(c.status != "REVERSED_SYNTHETIC" for c in claims)
+                        or json.loads(link.reversed_claim_ids_json) != [c.id for c in claims]
+                        or len(reversed_events) != len(claims)):
+                    raise WorkflowError("Incomplete or inconsistent COB reversal requires manual reconciliation")
+                by_original = {tx.original_transaction_id: tx for tx in reversed_events}
+                if len(by_original) != len(ids) or set(by_original) != set(ids):
+                    raise WorkflowError("COB reversal transaction ancestry is inconsistent")
+                reversal_ids = []
+                for txid in ids:
+                    ev = by_original[txid]
+                    if ev.outcome != "REVERSED_SYNTHETIC":
+                        raise WorkflowError("COB reverse event is not a completed local reversal")
+                    _view(ev)
+                    reversal_ids.append(ev.id)
+                # A different reversal path may have created this link. Replay
+                # is safe so long as the same complete original chain was retired.
+                replacement = s.get(Fill, link.replacement_fill_id)
+                if (replacement is None or replacement.prescription_id != rx.id
+                        or replacement.fill_number != fill.fill_number
+                        or replacement.attempt != fill.attempt + 1):
+                    raise WorkflowError("COB reversal replacement attempt is inconsistent")
+                return {
+                    "original_fill_id": fill.id, "replacement_fill_id": replacement.id,
+                    "original_paid_transaction_ids": ids,
+                    "reversal_transaction_ids": reversal_ids,
+                    "coverage_positions_reversed": [c.sequence for c in descending_claims],
+                    "replayed": True, "requires_fresh_scans": replacement.status == "PRODUCT_FILL",
+                    "external_payer_contact": False, "synthetic_only": True,
+                }
+            result = self._restart_tx(s, actor, fill.id, note,
+                                       expected_claim_ids=[c.id for c in claims])
+            # Claims and source snapshots are preserved, and REVERSE references
+            # the actual preceding BILL transaction, not a fabricated claim.
+            s.flush()
+            reversal_events = s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.fill_id == fill.id,
+                SandboxClaimTransaction.operation == "REVERSE")).all()
+            by_original = {tx.original_transaction_id: tx for tx in reversal_events}
+            if len(by_original) != len(ids) or set(by_original) != set(ids):
+                raise WorkflowError("Whole-COB reversal was incomplete; transaction rolled back")
+            reversal_ids = []
+            for txid in ids:
+                ev = by_original[txid]
+                if ev.outcome != "REVERSED_SYNTHETIC":
+                    raise WorkflowError("Unexpected synthetic COB reversal outcome")
+                _view(ev)
+                reversal_ids.append(ev.id)
+            self.service._audit(s, actor, "SYNTHETIC_COB_CHAIN_REVERSED", fill.id, {
+                "original_paid_transaction_ids": ids,
+                "reversal_transaction_ids": reversal_ids,
+                "coverage_positions_reversed": [c.sequence for c in descending_claims],
+                "replacement_fill_id": result["replacement_fill_id"],
+                "external_payer_contact": False, "reason": note,
+            })
+            return {
+                **result,
+                "original_paid_transaction_ids": ids,
+                "reversal_transaction_ids": reversal_ids,
+                "coverage_positions_reversed": [c.sequence for c in descending_claims],
+                "replayed": False, "external_payer_contact": False,
+            }
 
     def reverse_single_transaction(self, actor: Actor, transaction_id: str,
                                    reason: str, *, expected_claim_id: str) -> dict[str, Any]:

@@ -403,6 +403,7 @@ def main() -> None:
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
+                self.action("Pharmacist Reverse Full COB Chain (Synthetic)", self.reverse_full_cob)
                 self.action("Pharmacist Reverse One-Payer Claim (Synthetic)", self.reverse_single_claim)
                 self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
                 self.action("Claim Rebill Lineage", self.rebill_lineage)
@@ -713,6 +714,45 @@ def main() -> None:
             reason = self.ask("Payer", "Document why this billing profile is being changed")
             billing_service.update_profile(self.actor, payer, max_physical_sources=max_sources,
                                            billing_ndc_strategy=strategy, reason=reason)
+
+        def reverse_full_cob(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+                rows = s.scalars(select(Fill).join(
+                    Prescription, Fill.prescription_id == Prescription.id).where(
+                    Prescription.site_id == self.actor.site_id,
+                    Fill.status == "PHARMACIST_REVIEW")).all()
+                choices = []
+                for f in rows:
+                    claims = s.scalars(select(Claim).where(
+                        Claim.fill_id == f.id).order_by(Claim.sequence)).all()
+                    if not 2 <= len(claims) <= 4 or any(
+                            c.status != "PAID_SYNTHETIC" for c in claims):
+                        continue
+                    events = sandbox_claims.list_for_fill(self.actor, f.id)
+                    by_claim = {event["claim_id"]: event for event in events
+                                if event["operation"] == "BILL"}
+                    if len(by_claim) != len(claims):
+                        continue
+                    tx_ids = [by_claim[c.id]["id"] for c in reversed(claims)]
+                    rx = s.get(Prescription, f.prescription_id)
+                    choices.append((f.id, rx.rx_number, tx_ids, len(claims)))
+            chosen = self.choose_item("Full COB chain reversal",
+                "Select an entire prepared multi-payer fill (secondary to primary)",
+                choices, lambda x: f"Rx {x[1]} | {x[3]} simulated payers")
+            reason = self.ask("Full COB pharmacist attestation",
+                "Document why all locally simulated payer claims require reversal and rescan")
+            confirm = QMessageBox.question(self, "Local COB reversal only",
+                "Reverse all simulated payer positions in descending COB order, "
+                "void unused test labels, release physical reservations and start "
+                "a new fill attempt? No insurance company will be contacted.")
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            result = rebill_service.reverse_cob_transactions(
+                self.actor, chosen[0], reason,
+                expected_paid_transaction_ids=chosen[2])
+            QMessageBox.information(self, "Synthetic COB chain reversed",
+                json.dumps(result, indent=2)[:12000])
 
         def reverse_single_claim(self):
             with service.sessions() as s:

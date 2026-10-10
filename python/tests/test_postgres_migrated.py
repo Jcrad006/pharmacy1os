@@ -711,3 +711,74 @@ def test_postgres_two_pharmacists_one_payer_transaction_reversal_replay():
             assert s.get(Fill, results[0]["replacement_fill_id"]).status == "PRODUCT_FILL"
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_concurrent_four_payer_cob_reverse_replays_one_chain():
+    """Two pharmacists cannot create duplicate downstream-first reversal attempts."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+    from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+    from pharmacy1os.claim_transactions import SandboxClaimService
+    from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+    from pharmacy1os.models import Claim, Fill, Stock
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Requires isolated migrated PostgreSQL")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        patient = svc.add_patient(tech, "Race", "FourPayerCob")
+        provider = svc.add_prescriber(tech, "Race", "Doctor", "MD")
+        drug = svc.add_drug(pharm, "PG synthetic COB product", "9mg", "tablet")
+        product = svc.add_product(pharm, drug, "40044-1234-05", "Demo", "White tablet")
+        svc.register_barcode(tech, product, "PG-FOUR-COB-REVERSE")
+        expiry = (date.today() + timedelta(days=300)).isoformat()
+        stock_id = svc.receive(tech, "PG-FOUR-COB-REVERSE",
+                                "PG-COB-FOUR-LOT", expiry, "100")
+        rx = svc.add_prescription(tech, patient, provider, drug,
+                                  "PG-COB-FOUR-REVERSE-RX", "daily", "40")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, fill, "PG-FOUR-COB-REVERSE",
+                        "PG-COB-FOUR-LOT", expiry, "40")
+        svc.prepare_for_review(tech, fill,
+            ["Synthetic One", "Synthetic Two", "Synthetic Three", "Synthetic Four"])
+        paid = [item for item in SandboxClaimService(svc).list_for_fill(pharm, fill)
+                if item["operation"] == "BILL"]
+        expected = [item["id"] for item in reversed(paid)]
+        start = Barrier(2)
+
+        def attempt(i):
+            start.wait(timeout=15)
+            try:
+                return ClaimRebillService(svc).reverse_cob_transactions(
+                    pharm, fill, f"Pharmacist {i} reviewed four-position mock COB correction",
+                    expected_paid_transaction_ids=expected)
+            except WorkflowError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(attempt, (1, 2)))
+        assert len(results) == 2 and all(isinstance(x, dict) for x in results), results
+        assert sorted(x["replayed"] for x in results) == [False, True], results
+        assert results[0]["replacement_fill_id"] == results[1]["replacement_fill_id"]
+        assert results[0]["reversal_transaction_ids"] == results[1]["reversal_transaction_ids"]
+        with svc.sessions() as s:
+            assert len(s.scalars(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.original_fill_id == fill)).all()) == 1
+            events = SandboxClaimService(svc).list_for_fill(pharm, fill)
+            assert [e["original_transaction_id"] for e in events
+                    if e["operation"] == "REVERSE"] == expected
+            assert s.get(Stock, stock_id).reserved == 0
+            assert len(s.scalars(select(Claim).where(
+                Claim.fill_id == results[0]["replacement_fill_id"])).all()) == 0
+            assert s.get(Fill, results[0]["replacement_fill_id"]).status == "PRODUCT_FILL"
+    finally:
+        svc.engine.dispose()

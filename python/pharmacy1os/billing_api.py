@@ -10,6 +10,12 @@ from .fill_claim_review import FillClaimReview
 from .service import Actor
 
 
+class FullCobReversalIn(BaseModel):
+    fill_id: str = Field(min_length=1)
+    reason: str = Field(min_length=12, max_length=1000)
+    expected_paid_transaction_ids: list[str] = Field(min_length=2, max_length=4)
+
+
 class SinglePayerReversalIn(BaseModel):
     expected_claim_id: str = Field(min_length=1)
     reason: str = Field(min_length=12, max_length=1000)
@@ -31,6 +37,13 @@ class ProfileVersionIn(BaseModel):
 
 def make_billing_router(billing: BillingService, actor_dependency: Callable[..., Actor]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["synthetic-billing"])
+
+    @router.post("/third-party/claims/reverse-cob")
+    def reverse_cob(payload: FullCobReversalIn,
+                    actor: Actor = Depends(actor_dependency)):
+        return ClaimRebillService(billing.service).reverse_cob_transactions(
+            actor, payload.fill_id, payload.reason,
+            expected_paid_transaction_ids=payload.expected_paid_transaction_ids)
 
     @router.post("/third-party/claims/{transaction_id}/reverse")
     def reverse_single_payer(transaction_id: str, payload: SinglePayerReversalIn,

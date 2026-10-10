@@ -1,0 +1,13 @@
+# Python parity increment 47 — downstream-first whole-COB synthetic reversal
+
+Follows [Increment 46](PYTHON_PARITY_PROGRESS_INCREMENT_46.md). Narrows original audit **BL04 / BL09 / BL10** for *2-4 payer* local synthetic claim chains, while retaining no-live-claim safeguards.
+
+## Implemented
+- Corrected existing `ClaimRebillService._restart_tx` to reverse paid local payer claims in **descending** coverage position: fourth, third, secondary, primary. The original TypeScript `reverseActivePaidClaimsForFill` uses descending COB coverage position, whereas the prior Python implementation reversed primary first.
+- New `reverse_cob_transactions(... expected_paid_transaction_ids=[fourth,third,secondary,primary])` requires pharmacist `correct` permission, site-scoped fill and Rx, *all* 2-4 original paid transactions supplied in exact descending order, matching claim sequence and original synthetic request SHA-256 and quantity/payer snapshot. Stale, duplicate, missing, out-of-order and tampered historical requests are blocked.
+- Uses the existing atomic whole-fill reverse/restart operation: all payer events reversed in order, unused test labels voided, physical source reservations and bin allocations released, original audit/claims preserved, a new fill attempt created requiring fresh scans and new claim/label preparation. Failed replacement rolls back all reversals and inventory changes. Explicitly does not reverse a subset and leave an inconsistent active COB chain.
+- Complete-chain replay verifies the linked replacement and all original reversal events, returning the same reversal IDs without any double-release or extra fill. The new `POST /api/third-party/claims/reverse-cob` and native Third Party action are available only through synthetic-mode tooling.
+- Regressions cover 4 linked patient coverages, full fresh four-payer simulated re-preparation, 2-payer replay after replacement verification, 3-payer ordering of the earlier restart path, refusal of partial/reordered COB, role/site/print/tamper guards, all-or-nothing rollback, FastAPI synthetic gate, and simultaneous full-chain reversal in migrated PostgreSQL.
+
+## Limitations
+This is deliberately a **local all-payer chain reversal plus new fill**. It does not implement the original TypeScript adapter's *individual downstream payer* reversal, partial COB correction or real claim switch responses/authorization references. A future increment should model per-position reversing and re-adjudication without changing source/verified inventory or introducing phantom payment. All tests are synthetic; PR #43 remains draft and not safe for live pharmacy data.
