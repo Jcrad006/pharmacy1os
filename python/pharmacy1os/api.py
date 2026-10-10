@@ -459,28 +459,6 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def receive(payload: ReceiveIn, actor: DemoActor):
         return {"id": svc.receive(actor, **payload.model_dump())}
 
-    @app.get("/api/prescriptions/{rx_id}")
-    def prescription_detail(rx_id: str, actor: DemoActor):
-        with svc.sessions() as s:
-            svc._authorized(s, actor, "read")
-            rx = svc._site(s, Prescription, rx_id, actor)
-            return {
-                "id": rx.id, "site_id": rx.site_id, "rx_number": rx.rx_number,
-                "patient_id": rx.patient_id, "prescriber_id": rx.prescriber_id,
-                "drug_id": rx.drug_id, "sig": rx.sig, "quantity": str(rx.quantity),
-                "refills_allowed": rx.refills_allowed, "refills_used": rx.refills_used,
-                "status": rx.status, "version": rx.version,
-                "expiration_date": rx.expiration_date,
-                "do_not_fill_before": rx.do_not_fill_before,
-                "written_date": rx.written_date,
-                "source_type": rx.source_type,
-                "electronic_message_id": rx.electronic_message_id,
-                "electronic_source_recorded": rx.electronic_raw_message is not None,
-                "prescribed_product_id": rx.prescribed_product_id,
-                "product_selection_directive": rx.product_selection_directive,
-                "warning": "SYNTHETIC_DEVELOPMENT_ONLY_NO_ELECTRONIC_MESSAGE_VALIDATION",
-            }
-
     @app.patch("/api/prescriptions/{rx_id}")
     def edit_rx(rx_id: str, payload: RxEditIn, actor: DemoActor):
         return PrescriptionEditService(svc).update(

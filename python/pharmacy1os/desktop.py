@@ -24,7 +24,6 @@ from .inventory_advanced import AdvancedInventoryService
 from .inventory_planning import InventoryPlanningService
 from .lifecycle import LifecycleService
 from .prescription_transfer import TransferService
-from .prescription_edit import PrescriptionEditService
 from .clinical_records import ClinicalRecordService
 from .nti_compliance import NtiComplianceService
 from .label_printing import LabelPrintService
@@ -39,7 +38,7 @@ from .claim_transactions import SandboxClaimService
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
-from .prescription_directory import PrescriptionDirectory
+from .prescription_directory import PrescriptionDirectory, VALID_STATUSES
 from .exceptions import ExceptionService
 from .communications import CommunicationService
 from .structured_changes import StructuredChangeService
@@ -69,10 +68,12 @@ def main() -> None:
             QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog,
             QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
             QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
-            QWidget,
+            QWidget, QToolButton, QMenu,
         )
     except ImportError as exc:
         raise SystemExit("Install the native UI dependency: pip install -e './python[desktop]'") from exc
+
+    from .desktop_prescription import PrescriptionDetailDialog
 
     base = Path.home() / ".pharmacy1os" / "synthetic"
     base.mkdir(parents=True, exist_ok=True)
@@ -95,7 +96,6 @@ def main() -> None:
     planning_service = InventoryPlanningService(service)
     lifecycle_service = LifecycleService(service)
     transfer_service = TransferService(service)
-    edit_service = PrescriptionEditService(service)
     clinical_records = ClinicalRecordService(service)
     nti_compliance = NtiComplianceService(service)
     label_printer = LabelPrintService(service)
@@ -194,7 +194,21 @@ def main() -> None:
             self.search = QLineEdit(); self.search.setPlaceholderText("Search Rx number, patient, or drug")
             self.search.returnPressed.connect(self.refresh)
             main.addWidget(self.search)
+            self.queue_filters = QWidget()
+            filters = QHBoxLayout(self.queue_filters)
+            self.queue_status = QComboBox()
+            self.queue_status.addItem("All prescription statuses", None)
+            for status in sorted(VALID_STATUSES):
+                self.queue_status.addItem(status.replace("_", " "), status)
+            self.queue_sort = QComboBox()
+            self.queue_sort.addItem("Oldest activity first", "oldest")
+            self.queue_sort.addItem("Newest activity first", "newest")
+            filters.addWidget(QLabel("Status")); filters.addWidget(self.queue_status)
+            filters.addWidget(QLabel("Order")); filters.addWidget(self.queue_sort)
+            filters.addStretch()
+            main.addWidget(self.queue_filters)
             self.toolbar = QHBoxLayout(); main.addLayout(self.toolbar)
+            self.more_actions = None
             self.table = QTableWidget()
             self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
             self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -208,6 +222,10 @@ def main() -> None:
             self.rows: list[tuple[str, ...]] = []
             self.navigate(0)
             self.actor_box.currentIndexChanged.connect(self.refresh)
+            self.queue_status.currentIndexChanged.connect(self.refresh)
+            self.queue_sort.currentIndexChanged.connect(self.refresh)
+            self.table.doubleClicked.connect(lambda _index: self.invoke(self.view_rx_details)
+                if self.selected_view in (0, 3) else None)
 
         @property
         def actor(self) -> Actor:
@@ -222,9 +240,19 @@ def main() -> None:
             self.close()
 
         def action(self, title: str, handler):
-            btn = QPushButton(title)
-            btn.clicked.connect(lambda: self.invoke(handler))
-            self.toolbar.addWidget(btn)
+            if self.toolbar.count() < 4:
+                btn = QPushButton(title)
+                btn.clicked.connect(lambda: self.invoke(handler))
+                self.toolbar.addWidget(btn)
+            else:
+                if self.more_actions is None:
+                    button = QToolButton()
+                    button.setText("More actions")
+                    button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+                    self.more_actions = QMenu(button)
+                    button.setMenu(self.more_actions)
+                    self.toolbar.addWidget(button)
+                self.more_actions.addAction(title, lambda: self.invoke(handler))
 
         def invoke(self, handler):
             try:
@@ -256,13 +284,15 @@ def main() -> None:
                 widget = self.toolbar.takeAt(0).widget()
                 if widget:
                     widget.deleteLater()
+            self.more_actions = None
+            self.queue_filters.setVisible(page == 0)
             self.search.setVisible(page in (0, 1, 4, 5))
             self.search.setPlaceholderText(
                 "Search provider name, NPI, phone, or practice level"
                 if page == 5 else "Search Rx number, patient, or drug")
             if page == 0:
-                self.action("View Full Prescription / Fill History", self.view_rx_details)
-                self.action("Review Rx Audit Timeline", self.view_rx_audit)
+                self.action("View Prescription", self.view_rx_details)
+                self.action("Audit Timeline", self.view_rx_audit)
                 self.action("Advance → DUR", self.advance)
                 self.action("Start Fill", self.start_fill)
                 self.action("Stop / Convert To Partial", self.convert_to_partial)
@@ -303,7 +333,7 @@ def main() -> None:
                 self.action("Custody History", self.will_call_history)
             elif page == 3:
                 self.action("Enter New Prescription", self.new_rx)
-                self.action("View Full Prescription / Fill History", self.view_rx_details)
+                self.action("View Prescription", self.view_rx_details)
             elif page == 4:
                 self.action("Register Patient", self.add_patient)
                 self.action("View Patient Details", self.view_patient_detail)
@@ -410,9 +440,14 @@ def main() -> None:
                                x['lot'] or 'Entire NDC')
                               for x in advanced_service.recalls(self.actor)]
             elif page == 0:
-                headers = ["Rx", "Patient", "Drug", "Workflow"]
-                self.rows = [(x["id"], x["rx_number"], x["patient"], x["drug"], x["status"])
-                             for x in service.queue(self.actor, self.search.text())]
+                headers = ["Rx", "Patient", "Drug", "Prescriber", "Workflow"]
+                result = rx_directory.queue(self.actor, query=self.search.text(),
+                    status=self.queue_status.currentData(), sort=self.queue_sort.currentData(), limit=200)
+                self.rows = [(x["id"], x["rxNumber"],
+                    f"{x['patient']['lastName']}, {x['patient']['firstName']}",
+                    f"{x['medicationName']} {x['strength']}",
+                    f"{x['prescriber']['lastName']}, {x['prescriber']['firstName']}", x["status"])
+                    for x in result["prescriptions"]]
             else:
                 with service.sessions() as s:
                     if page == 1:
@@ -1031,15 +1066,15 @@ def main() -> None:
             fid = self.fill_for_rx(self.selected_id())
             service.return_to_stock(self.actor, fid, self.ask("Return to stock", "Reason"))
 
-        def view_rx_details(self):
-            details = rx_directory.detail(self.actor, self.selected_id())
-            QMessageBox.information(self, "SYNTHETIC prescription details",
-                json.dumps(details, indent=2, default=str))
+        def view_rx_details(self, tab: int = 0, edit: bool = False):
+            dialog = PrescriptionDetailDialog(service, lambda: self.actor, self.selected_id(), self)
+            dialog.tabs.setCurrentIndex(tab)
+            if edit:
+                dialog.begin_edit()
+            dialog.exec()
 
         def view_rx_audit(self):
-            timeline = rx_directory.audit(self.actor, self.selected_id())
-            QMessageBox.information(self, "SYNTHETIC prescription audit timeline",
-                json.dumps(timeline, indent=2, default=str))
+            self.view_rx_details(tab=2)
 
         def add_patient(self):
             first = self.ask("Patient", "First name")
@@ -1249,54 +1284,7 @@ def main() -> None:
                 f"Recorded {result['id']}. Does not itself verify legal consent.")
 
         def edit_unfilled_rx(self):
-            """Audited pharmacist edit; never overwrites scanned original or previous fill."""
-            rx_id = self.selected_id()
-            with service.sessions() as s:
-                service._authorized(s, self.actor, "clinical")
-                rx = service._site(s, Prescription, rx_id, self.actor)
-                expected = rx.version
-            choices = [
-                "sig", "quantity", "refills_allowed", "prescriber_id", "drug_id",
-                "prescribed_product_id", "product_selection_directive",
-                "written_date", "expiration_date", "do_not_fill_before",
-            ]
-            field = self.choose_item("Reviewed Rx edit", "Select original data-entry field",
-                choices, lambda x: x)
-            if field == "product_selection_directive":
-                proposed = self.choose_item("Product directive", "Choose",
-                    ["UNSPECIFIED", "SELECTION_PERMITTED", "DISPENSE_AS_WRITTEN"], lambda x: x)
-            elif field == "prescriber_id":
-                with service.sessions() as s:
-                    options = s.scalars(select(Prescriber).where(
-                        Prescriber.site_id == self.actor.site_id)).all()
-                    proposed = self.choose_item("Prescriber", "Select corrected provider",
-                        options, lambda p: f"{p.last_name}, {p.first_name}").id
-            elif field == "drug_id":
-                with service.sessions() as s:
-                    options = s.scalars(select(Drug).where(Drug.active.is_(True))).all()
-                    proposed = self.choose_item("Drug", "Select corrected medication",
-                        options, lambda d: f"{d.name} {d.strength}").id
-            elif field == "prescribed_product_id":
-                with service.sessions() as s:
-                    options = s.scalars(select(Product).where(
-                        Product.drug_id == rx.drug_id, Product.active.is_(True))).all()
-                    proposed = self.choose_item("Prescribed NDC", "Select corrected NDC",
-                        options, lambda p: f"{p.ndc} | {p.description}").id
-            else:
-                value = self.ask("Pharmacist-reviewed Rx edit",
-                    f"New {field} (blank clears optional date)", "")
-                if field == "refills_allowed":
-                    proposed = int(value)
-                elif field in {"written_date", "expiration_date", "do_not_fill_before"}:
-                    proposed = value or None
-                else:
-                    proposed = value
-            note = self.ask("Pharmacist review", "Document the independently confirmed change")
-            response = edit_service.update(self.actor, rx_id, {field: proposed},
-                expected_version=expected, attestation_note=note)
-            QMessageBox.information(self, "Prescription updated",
-                f"Version {response['version']} saved. Any completed DUR review "
-                "was reset to Data Entry when required.")
+            self.view_rx_details(edit=True)
 
         def quarantine_stock(self):
             stock_id = self.selected_id()

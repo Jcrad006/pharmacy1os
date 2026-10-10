@@ -12,10 +12,10 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .models import Base, Drug, Fill, Prescriber, Prescription, Product, utcnow, uuid
-from .service import Actor, PharmacyService, WorkflowError, positive
+from .models import Base, Drug, Fill, Prescriber, Prescription, Product, Staff, utcnow, uuid
+from .service import Actor, PERMISSIONS, PharmacyService, WorkflowError, positive
 
 EDITABLE = {
     "sig", "quantity", "refills_allowed", "prescriber_id", "drug_id",
@@ -69,6 +69,58 @@ class PrescriptionEditService:
     def __init__(self, service: PharmacyService):
         self.service = service
 
+    @staticmethod
+    def _require_editable(s: Session, rx: Prescription) -> None:
+        if rx.status not in {"DATA_ENTRY", "DUR_REVIEW", "ON_HOLD"}:
+            raise WorkflowError("Only an unfilled Data Entry/DUR prescription can be edited")
+        if rx.status == "ON_HOLD" and rx.held_from not in {"DATA_ENTRY", "DUR_REVIEW"}:
+            raise WorkflowError("Held prescription cannot be edited from active fill state")
+        if s.scalar(select(Fill.id).where(Fill.prescription_id == rx.id)):
+            raise WorkflowError("Cannot modify prescription after any physical fill history")
+        from .scheduling_models import ScheduledFill
+        if s.scalar(select(ScheduledFill.id).where(
+                ScheduledFill.prescription_id == rx.id, ScheduledFill.status == "PENDING")):
+            raise WorkflowError("Cancel pending future fills before editing")
+        from .prescription_transfer import require_no_pending_transfer
+        require_no_pending_transfer(s, rx)
+
+    def context(self, actor: Actor, prescription_id: str) -> dict[str, Any]:
+        """Read-only editor choices; update rechecks every guard at commit time."""
+        with self.service.sessions() as s:
+            self.service._authorized(s, actor, "read")
+            rx = self.service._site(s, Prescription, prescription_id, actor)
+            reason = None
+            if "clinical" not in PERMISSIONS.get(actor.role, set()):
+                reason = "A pharmacist or administrator must review prescription edits"
+            else:
+                try:
+                    self._require_editable(s, rx)
+                except WorkflowError as exc:
+                    reason = str(exc)
+            providers = s.scalars(select(Prescriber).where(
+                Prescriber.site_id == actor.site_id).order_by(
+                    Prescriber.last_name, Prescriber.first_name, Prescriber.id)).all()
+            drugs = s.scalars(select(Drug).where(
+                ((Drug.active.is_(True)) & (Drug.controlled.is_(False)) &
+                 (Drug.controlled_substance_schedule == "NONE")) | (Drug.id == rx.drug_id)
+            ).order_by(Drug.name, Drug.strength, Drug.id)).all()
+            products = s.scalars(select(Product).where(
+                ((Product.active.is_(True)) & (Product.drug_id.in_([d.id for d in drugs]))) |
+                (Product.id == rx.prescribed_product_id)
+            ).order_by(Product.ndc, Product.id)).all()
+            return {
+                "editable": reason is None, "blocked_reason": reason,
+                "version": rx.version,
+                "values": {key: _value(getattr(rx, key)) for key in sorted(EDITABLE)},
+                "prescribers": [{"id": p.id,
+                    "label": f"{p.last_name}, {p.first_name} ({p.practice_level})"}
+                    for p in providers],
+                "drugs": [{"id": d.id,
+                    "label": f"{d.name} {d.strength} {d.dosage_form}"} for d in drugs],
+                "products": [{"id": p.id, "drug_id": p.drug_id,
+                    "label": f"{p.ndc} | {p.manufacturer}"} for p in products],
+            }
+
     def update(self, actor: Actor, prescription_id: str, changes: dict[str, Any],
                expected_version: int, attestation_note: str) -> dict[str, Any]:
         if (isinstance(expected_version, bool) or not isinstance(expected_version, int)
@@ -90,18 +142,7 @@ class PrescriptionEditService:
                 raise WorkflowError("Prescription not found at pharmacy site")
             if rx.version != expected_version:
                 raise WorkflowError("Prescription version changed; reload before editing")
-            if rx.status not in {"DATA_ENTRY", "DUR_REVIEW", "ON_HOLD"}:
-                raise WorkflowError("Only an unfilled Data Entry/DUR prescription can be edited")
-            if rx.status == "ON_HOLD" and rx.held_from not in {"DATA_ENTRY", "DUR_REVIEW"}:
-                raise WorkflowError("Held prescription cannot be edited from active fill state")
-            if s.scalar(select(Fill.id).where(Fill.prescription_id == rx.id)):
-                raise WorkflowError("Cannot modify prescription after any physical fill history")
-            from .scheduling_models import ScheduledFill
-            if s.scalar(select(ScheduledFill.id).where(
-                    ScheduledFill.prescription_id == rx.id, ScheduledFill.status == "PENDING")):
-                raise WorkflowError("Cancel pending future fills before editing")
-            from .prescription_transfer import require_no_pending_transfer
-            require_no_pending_transfer(s, rx)
+            self._require_editable(s, rx)
             result = {key: getattr(rx, key) for key in EDITABLE}
             for name, raw in changes.items():
                 if name == "sig":
@@ -189,9 +230,13 @@ class PrescriptionEditService:
                 PrescriptionEdit.site_id == actor.site_id,
                 PrescriptionEdit.prescription_id == prescription_id
             ).order_by(PrescriptionEdit.version_after)).all()
+            reviewers = {e.actor_id: self.service._site(s, Staff, e.actor_id, actor)
+                         for e in records}
             return [{
                 "id": e.id, "version_before": e.version_before,
                 "version_after": e.version_after, "actor_id": e.actor_id,
+                "actor_name": reviewers[e.actor_id].name,
+                "actor_role": reviewers[e.actor_id].role,
                 "changes": json.loads(e.changes_json),
                 "prior_status": e.prior_status,
                 "resulting_status": e.resulting_status,

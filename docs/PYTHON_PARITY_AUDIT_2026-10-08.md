@@ -8,6 +8,8 @@
 
 ## Audit deliverables and measurements
 
+**Continuation note (2026-10-10):** The matrix and counts below describe the frozen audit baseline. Subsequent work is documented in the numbered progress notes; the latest is [Increment 39 — native prescription detail and reviewed editing](PYTHON_PARITY_PROGRESS_INCREMENT_39.md), following [Increment 38](PYTHON_PARITY_PROGRESS_INCREMENT_38.md). It repairs the prior detail-route regression and adds native form/history tests; it does not establish full parity or re-rate the whole matrix.
+
 - **138 individual functional assessments**: **38 C** core synthetic functionality exists, **55 P** partial/materially different, **45 M** missing. This is a **qualitative feature inventory, not a weighted percent complete or test coverage score**.
 - [All 116 original Fastify endpoint declarations inventoried](PYTHON_PARITY_ROUTE_INVENTORY_2026-10-08.md). Endpoint *conceptual* statuses do not imply URL, schema, HTTP error/status, permission, audit, transaction or idempotency compatibility.
 - [All 58 original Prisma data models mapped to nearest Python analog or marked absent](PYTHON_PARITY_DATA_MODEL_CROSSWALK_2026-10-08.md). **15** have no conceptual Python record. Even matched models are not field-complete.

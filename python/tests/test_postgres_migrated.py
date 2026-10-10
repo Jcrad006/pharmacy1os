@@ -382,3 +382,57 @@ def test_postgres_simultaneous_physical_bin_pick_never_double_reserves():
         assert positions[0]["available"] == "10.000"
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_concurrent_reviewed_rx_edits_preserve_one_version():
+    """Two native workstations cannot overwrite one another's reviewed edit."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from pharmacy1os.models import Prescription
+    from pharmacy1os.prescription_directory import PrescriptionDirectory
+    from pharmacy1os.prescription_edit import PrescriptionEditService
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Concurrent edit integration requires PostgreSQL with psycopg")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine), "Use the migrated PostgreSQL schema"
+        actors = svc.bootstrap_demo()["actors"]
+        tech, pharmacist = actors["TECHNICIAN"], actors["PHARMACIST"]
+        patient = svc.add_patient(tech, "Concurrent", "RxEditor")
+        doctor = svc.add_prescriber(tech, "Synthetic", "RxEditor", "MD")
+        drug = svc.add_drug(pharmacist, "Concurrent edit demo", "1 mg", "tablet")
+        rx = svc.add_prescription(tech, patient, doctor, drug, "PG-EDIT-RACE", "Original SIG", "30")
+        svc.advance_to_dur(tech, rx)
+        ready = Barrier(2)
+        editor = PrescriptionEditService(svc)
+
+        def edit_from_workstation(index):
+            ready.wait(timeout=15)
+            try:
+                editor.update(pharmacist, rx, {"sig": f"Reviewed SIG {index}"},
+                    expected_version=0, attestation_note=f"Synthetic pharmacist review on workstation {index}")
+                return "SAVED"
+            except WorkflowError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(edit_from_workstation, (1, 2)))
+        assert outcomes.count("SAVED") == 1, outcomes
+        assert sum("version changed" in result for result in outcomes) == 1, outcomes
+        history = editor.history(pharmacist, rx)
+        assert len(history) == 1 and history[0]["version_after"] == 1
+        with svc.sessions() as s:
+            record = s.get(Prescription, rx)
+            assert record.version == 1 and record.status == "DATA_ENTRY"
+            assert record.sig == history[0]["changes"]["sig"]["after"]
+        directory = PrescriptionDirectory(svc)
+        assert directory.audit(pharmacist, rx)["events"][0]["action"] == "RX_EDIT_REVIEWED"
+        assert directory.detail(pharmacist, rx)["prescription"]["version"] == 1
+        assert editor.context(pharmacist, rx)["editable"] is True
+    finally:
+        svc.engine.dispose()

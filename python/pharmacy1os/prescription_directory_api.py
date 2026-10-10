@@ -21,13 +21,13 @@ def make_prescription_directory_router(directory: PrescriptionDirectory,
         result = directory.queue(actor, status="READY", limit=200)
         return {"prescriptions": result["prescriptions"]}
 
-    @router.get("/{prescription_id}/audit")
-    def audit(prescription_id: str, limit: int = 200,
+    @router.get("/{rx_id}/audit")
+    def audit(rx_id: str, limit: int = 200,
               actor: Actor = Depends(actor_dependency)):
-        return directory.audit(actor, prescription_id, limit=limit)
+        return directory.audit(actor, rx_id, limit=limit)
 
-    @router.get("/{prescription_id}")
-    def detail(prescription_id: str, actor: Actor = Depends(actor_dependency)):
-        return directory.detail(actor, prescription_id)
+    @router.get("/{rx_id}")
+    def detail(rx_id: str, actor: Actor = Depends(actor_dependency)):
+        return directory.detail(actor, rx_id)
 
     return router

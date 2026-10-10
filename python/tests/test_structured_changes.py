@@ -45,6 +45,12 @@ def test_verified_change_updates_only_structured_rx_and_immutable_record(setup):
         assert any(x.kind=="STRUCTURED_RX_CHANGE_APPLIED" for x in s.scalars(select(Audit)).all())
     assert docs.read_source(a["TECHNICIAN"],doc["id"])[0]==b"original synthetic scan"
     assert changes.history(a["AUDITOR"],rx)[0]["version_after"]==1
+    from pharmacy1os.prescription_directory import PrescriptionDirectory
+    timeline = PrescriptionDirectory(svc).audit(a["AUDITOR"], rx)
+    assert timeline["events"][0]["action"] == "STRUCTURED_RX_CHANGE_APPLIED"
+    assert "detail" not in timeline["events"][0]
+    detail = PrescriptionDirectory(svc).detail(a["AUDITOR"], rx)
+    assert detail["prescription"]["updatedAt"] == timeline["events"][0]["occurredAt"]
     with pytest.raises(WorkflowError,match="already been applied"):
         changes.apply(a["PHARMACIST"],rid,"three daily","Duplicate attempt denied",expected_version=1)
 

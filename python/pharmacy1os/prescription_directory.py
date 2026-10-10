@@ -15,9 +15,11 @@ from sqlalchemy.orm import Session
 from .models import (Audit, Claim, Drug, Fill, FillSource, Label, Patient,
                      Prescriber, Prescription, Product, Staff, Stock, WillCall)
 from .service import Actor, PharmacyService, TRANSITIONS, WorkflowError
+from .prescription_edit import PrescriptionEdit
+from .structured_changes import StructuredChangeApplication
 
 
-VALID_STATUSES = frozenset(TRANSITIONS)
+VALID_STATUSES = frozenset(TRANSITIONS) | {"ON_HOLD"}
 
 
 def _timestamp(value: datetime | None) -> datetime:
@@ -51,10 +53,20 @@ class PrescriptionDirectory:
         return patient, provider, drug
 
     @staticmethod
+    def _event_subjects(s: Session, rx: Prescription, fill_ids: list[str]) -> list[str]:
+        # Edits have their own audit subject IDs; ignoring them hides reviewed
+        # changes and leaves an edited prescription at its old queue position.
+        ids = [rx.id, *fill_ids]
+        for model in (PrescriptionEdit, StructuredChangeApplication):
+            ids.extend(s.scalars(select(model.id).where(
+                model.site_id == rx.site_id, model.prescription_id == rx.id)).all())
+        return ids
+
+    @staticmethod
     def _modified(s: Session, rx: Prescription, fills: list[Fill]) -> datetime | None:
         # Python Rx has no updated_at yet. Use latest matching recorded event,
         # not a fabricated exact modification timestamp.
-        ids = [rx.id, *(fill.id for fill in fills)]
+        ids = PrescriptionDirectory._event_subjects(s, rx, [fill.id for fill in fills])
         events = s.scalars(select(Audit).where(
             Audit.site_id == rx.site_id, Audit.subject_id.in_(ids))).all()
         return max((event.created_at for event in events),
@@ -183,8 +195,25 @@ class PrescriptionDirectory:
         with self.service.sessions() as s:
             self.service._authorized(s, actor, "read")
             rx = self.service._site(s, Prescription, prescription_id, actor)
-            return {"prescription": self._project(s, actor, rx, include_fills=True),
-                    "warning": "SYNTHETIC_ONLY_NOT_FOR_REAL_PATIENTS"}
+            # Keep the existing Python contract and the newer nested projection
+            # on one handler. Explicit fields prevent future private model
+            # columns (especially the raw eRx message) leaking into either DTO.
+            return {
+                "id": rx.id, "site_id": rx.site_id, "rx_number": rx.rx_number,
+                "patient_id": rx.patient_id, "prescriber_id": rx.prescriber_id,
+                "drug_id": rx.drug_id, "sig": rx.sig, "quantity": str(rx.quantity),
+                "refills_allowed": rx.refills_allowed, "refills_used": rx.refills_used,
+                "status": rx.status, "version": rx.version,
+                "expiration_date": rx.expiration_date,
+                "do_not_fill_before": rx.do_not_fill_before,
+                "written_date": rx.written_date, "source_type": rx.source_type,
+                "electronic_message_id": rx.electronic_message_id,
+                "electronic_source_recorded": rx.electronic_raw_message is not None,
+                "prescribed_product_id": rx.prescribed_product_id,
+                "product_selection_directive": rx.product_selection_directive,
+                "prescription": self._project(s, actor, rx, include_fills=True),
+                "warning": "SYNTHETIC_DEVELOPMENT_ONLY_NO_ELECTRONIC_MESSAGE_VALIDATION",
+            }
 
     def audit(self, actor: Actor, prescription_id: str, limit: int = 200) -> dict[str, Any]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
@@ -193,7 +222,7 @@ class PrescriptionDirectory:
             self.service._authorized(s, actor, "read")
             rx = self.service._site(s, Prescription, prescription_id, actor)
             fill_ids = s.scalars(select(Fill.id).where(Fill.prescription_id == rx.id)).all()
-            subject_ids = [rx.id, *fill_ids]
+            subject_ids = self._event_subjects(s, rx, list(fill_ids))
             events = s.scalars(select(Audit).where(
                 Audit.site_id == actor.site_id,
                 Audit.subject_id.in_(subject_ids))

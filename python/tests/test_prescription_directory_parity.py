@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 from pharmacy1os.api import create_app
 from pharmacy1os.models import Prescription
 from pharmacy1os.service import PharmacyService
+from pharmacy1os.prescription_directory import PrescriptionDirectory
+from pharmacy1os.prescription_edit import PrescriptionEditService
+from pharmacy1os.lifecycle import LifecycleService
 
 
 @pytest.fixture
@@ -118,3 +121,47 @@ def test_will_call_queue_and_synthetic_disabled_gate(fixture):
     disabled = TestClient(create_app(svc, synthetic_enabled=False))
     assert disabled.get(f"/api/prescriptions/{rx}",
         headers=h(actors["AUDITOR"])).status_code == 503
+
+
+def test_single_detail_handler_preserves_both_contracts_and_privacy(fixture):
+    svc, actors, _, rx, _, api = fixture
+    route = f"/api/prescriptions/{rx}"
+    response = api.get(route, headers=h(actors["AUDITOR"]))
+    data = response.json()
+    assert data["sig"] == data["prescription"]["sig"] == "One tablet each morning"
+    assert data["source_type"] == data["prescription"]["sourceType"] == "ELECTRONIC"
+    assert data["quantity"] == data["prescription"]["quantityWritten"] == "30.000"
+    assert data["electronic_source_recorded"] is True
+    assert "electronic_raw_message" not in response.text
+    assert "sensitive test source" not in response.text
+    schema_paths = api.get("/openapi.json").json()["paths"]
+    assert "get" in schema_paths["/api/prescriptions/{rx_id}"]
+    assert "patch" in schema_paths["/api/prescriptions/{rx_id}"]
+    assert "/api/prescriptions/{prescription_id}" not in schema_paths
+
+
+def test_reviewed_edits_update_timeline_and_queue_order_without_metadata(fixture):
+    svc, actors, _, rx, rx2, api = fixture
+    directory = PrescriptionDirectory(svc)
+    editor = PrescriptionEditService(svc)
+    assert directory.queue(actors["AUDITOR"], sort="newest")["prescriptions"][0]["id"] == rx2
+    event = editor.update(actors["PHARMACIST"], rx, {"sig": "Reviewed bedtime directions"},
+        expected_version=0, attestation_note="Sensitive clinical note omitted from summary audit")
+    assert directory.queue(actors["AUDITOR"], sort="newest")["prescriptions"][0]["id"] == rx
+    timeline = api.get(f"/api/prescriptions/{rx}/audit", headers=h(actors["AUDITOR"]))
+    assert timeline.json()["events"][0]["entityId"] == event["id"]
+    assert timeline.json()["events"][0]["action"] == "RX_EDIT_REVIEWED"
+    assert "Sensitive clinical note" not in timeline.text
+    assert "Reviewed bedtime directions" not in timeline.text
+    other = directory.audit(actors["AUDITOR"], rx2)
+    assert event["id"] not in [e["entityId"] for e in other["events"]]
+
+
+def test_on_hold_is_a_supported_queue_filter(fixture):
+    svc, actors, _, rx, _, api = fixture
+    LifecycleService(svc).hold(actors["TECHNICIAN"], rx, "Await clarification")
+    response = api.get("/api/prescriptions/queue", params={"status": "ON_HOLD"},
+        headers=h(actors["AUDITOR"]))
+    assert response.status_code == 200
+    assert [p["id"] for p in response.json()["prescriptions"]] == [rx]
+    assert response.json()["prescriptions"][0]["allowedTransitions"] == ["DATA_ENTRY"]

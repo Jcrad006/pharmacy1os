@@ -1,4 +1,7 @@
 # Python-native Pharmacy1OS migration
+
+**Latest continuation:** [Increment 39 — native prescription detail and reviewed editing](PYTHON_PARITY_PROGRESS_INCREMENT_39.md). Adds the native multi-field Rx editor, fill/audit/history tables, queue controls and Qt tests; repairs the Increment 38 detail endpoint regression. The notes below retain earlier implementation history and limits.
+
 > **Feature-parity audit (2026-10-08):** The original TypeScript rewrite is **not complete**. See the [138-feature parity audit](PYTHON_PARITY_AUDIT_2026-10-08.md), [116-endpoint inventory](PYTHON_PARITY_ROUTE_INVENTORY_2026-10-08.md), and [58-model crosswalk](PYTHON_PARITY_DATA_MODEL_CROSSWALK_2026-10-08.md). Core synthetic implementations must not be mistaken for field, API, desktop, or regulatory parity.
 
 
