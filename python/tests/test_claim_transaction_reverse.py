@@ -66,7 +66,7 @@ def test_reverse_by_transaction_and_idempotent_replay_preserves_claim_and_label_
     assert history[1]["id"] == result["reversal_transaction_id"]
     assert history[1]["original_transaction_id"] == bill["id"]
     assert len(BillingService(svc).history(a["AUDITOR"], fill)) == 2
-    labels = LabelPrintService(svc).list(a["AUDITOR"], fill)
+    labels = LabelPrintService(svc).list(a["PHARMACIST"], fill)
     assert len(labels) == 1 and labels[0]["status"] == "VOIDED"
     with svc.sessions() as s:
         assert s.get(Fill, fill).status == "RETURNED"

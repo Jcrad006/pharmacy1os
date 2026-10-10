@@ -222,8 +222,7 @@ class ClaimRebillService:
             if len(claims) != 1:
                 raise WorkflowError("Multiple payer COB requires the full-fill reversal workflow")
             claim = claims[0]
-            if (claim.id != original.claim_id or claim.sequence != 1
-):
+            if claim.id != original.claim_id or claim.sequence != 1:
                 raise WorkflowError("Original payer claim record is inconsistent")
             # A single paid transaction per claim is required; historical
             # duplicates/corruption must not be silently 'resolved'.
