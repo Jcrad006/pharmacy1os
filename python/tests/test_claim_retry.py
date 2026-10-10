@@ -121,21 +121,25 @@ def test_retry_guards_role_cross_site_stale_resolution_and_cob_order(demo):
 def test_failed_claim_preparation_rolls_back_retry_and_paid_events(demo):
     svc, a, outside, patient, fill, coverage, original, ledger, expiry = demo
     resolution = _clear(demo)
-    source = svc.scanned_sources(a["TECHNICIAN"], fill)[0]["id"]
-    svc.remove_scanned_source(a["TECHNICIAN"], fill, source,
-        "Test partial source shortage requiring a fresh physical rescan")
-    with pytest.raises(WorkflowError, match="Physical source"):
+    # Deactivation is a supported payer-config operation, unlike changing
+    # a scanned source after immutable rejection history exists.
+    directory = InsuranceDirectory(svc)
+    payer = next(row["id"] for row in directory.list_payers(a["PHARMACIST"])
+                 if row["name"] == "Test secondary")
+    directory.set_payer_active(a["PHARMACIST"], payer, False,
+        "Simulate secondary payer unavailable during corrected retry")
+    with pytest.raises(WorkflowError, match="Inactive or missing payer"):
         ledger.retry_cleared_rejection(a["PHARMACIST"], original,
             expected_resolution_id=resolution, coverage_ids=list(coverage),
-            reason="Mock payer retry should fail with missing verified physical sources")
+            reason="Mock payer retry should fail with inactive secondary payer")
     events = ledger.list_for_fill(a["AUDITOR"], fill)
     assert [x["operation"] for x in events] == ["TEST_REJECT", "TEST_RESOLVE"]
     with svc.sessions() as s:
         assert s.get(Fill, fill).status == "PRODUCT_FILL"
         assert s.scalars(select(Claim).where(Claim.fill_id == fill)).all() == []
         assert s.scalars(select(Label).where(Label.fill_id == fill)).all() == []
-    svc.scan_source(a["TECHNICIAN"], fill, "RETRY-TEST-BAR", "SYN-RETRY-LOT",
-                    expiry, "60")
+    directory.set_payer_active(a["PHARMACIST"], payer, True,
+        "Re-enable the secondary test payer after documenting correction")
     result = ledger.retry_cleared_rejection(a["PHARMACIST"], original,
         expected_resolution_id=resolution, coverage_ids=list(coverage),
         reason="Corrected stock source before returning to simulated payer workflow")
