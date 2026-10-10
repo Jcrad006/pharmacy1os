@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
+from .third_party_workspace import ThirdPartyWorkspace
 from .service import Actor
 
 
@@ -34,6 +35,10 @@ def make_billing_router(billing: BillingService, actor_dependency: Callable[...,
     @router.get("/billing/fills/{fill_id}/rebill-lineage")
     def rebill_lineage(fill_id: str, actor: Actor = Depends(actor_dependency)):
         return ClaimRebillService(billing.service).lineage(actor, fill_id)
+
+    @router.get("/third-party/workspace")
+    def workspace(query: str = "", actor: Actor = Depends(actor_dependency)):
+        return ThirdPartyWorkspace(billing.service).snapshot(actor, query=query)
 
     @router.get("/billing/profiles")
     def profiles(actor: Actor = Depends(actor_dependency)):

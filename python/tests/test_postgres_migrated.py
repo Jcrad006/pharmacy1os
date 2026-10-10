@@ -497,3 +497,81 @@ def test_postgres_concurrent_scan_quantity_cas():
             assert len(events) == 1
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_two_pharmacists_cannot_double_reverse_and_restart_rebill():
+    """Competing rework attempts must produce exactly one replacement and release."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from decimal import Decimal
+    from threading import Barrier
+    from pharmacy1os.billing_models import ClaimOperation
+    from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+    from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+    from pharmacy1os.models import Claim, Fill, InventoryMovement, Label, Prescription, Stock
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Concurrency regression requires migrated PostgreSQL")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        patient = svc.add_patient(tech, "Race", "Rebill")
+        provider = svc.add_prescriber(tech, "Race", "Prescriber", "MD")
+        drug = svc.add_drug(pharm, "PG rebill race", "2mg", "tablet")
+        product = svc.add_product(pharm, drug, "11110-8999-01", "Demo", "Synthetic pill")
+        svc.register_barcode(tech, product, "PG-RACE-RESTART-BAR")
+        exp = (date.today() + timedelta(days=200)).isoformat()
+        stock_id = svc.receive(tech, "PG-RACE-RESTART-BAR", "PG-RACE-LOT", exp, "80")
+        rx = svc.add_prescription(tech, patient, provider, drug,
+            "PG-RACE-RESTART-RX", "daily", "40")
+        svc.advance_to_dur(tech, rx)
+        old_fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, old_fill, "PG-RACE-RESTART-BAR", "PG-RACE-LOT", exp, "40")
+        svc.prepare_for_review(tech, old_fill, ["Synthetic Plan A", "Synthetic Plan B"])
+        with svc.sessions() as s:
+            expected = [c.id for c in s.scalars(select(Claim).where(
+                Claim.fill_id == old_fill).order_by(Claim.sequence)).all()]
+        start = Barrier(2)
+
+        def try_restart(index):
+            start.wait(timeout=15)
+            try:
+                return ClaimRebillService(svc).restart(pharm, old_fill,
+                    f"Pharmacist {index} documented a synthetic manufacturer mismatch",
+                    expected_claim_ids=expected)
+            except WorkflowError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            attempts = list(executor.map(try_restart, (1, 2)))
+        saved = [x for x in attempts if isinstance(x, dict)]
+        assert len(saved) == 1, attempts
+        assert sum(isinstance(x, str) and ("pre-verification" in x or "already" in x)
+                   for x in attempts) == 1, attempts
+        new_id = saved[0]["replacement_fill_id"]
+        with svc.sessions() as s:
+            link = s.scalars(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.original_fill_id == old_fill)).all()
+            assert len(link) == 1 and link[0].replacement_fill_id == new_id
+            assert s.get(Fill, old_fill).status == "RETURNED"
+            assert s.get(Fill, new_id).status == "PRODUCT_FILL"
+            assert s.get(Prescription, rx).status == "PRODUCT_FILL"
+            assert s.get(Stock, stock_id).reserved == Decimal("0")
+            assert len(s.scalars(select(InventoryMovement).where(
+                InventoryMovement.stock_id == stock_id,
+                InventoryMovement.kind == "REBILL_SOURCE_RELEASE")).all()) == 1
+            assert len(s.scalars(select(ClaimOperation).where(
+                ClaimOperation.operation == "SYNTHETIC_REVERSED")).all()) == 2
+            assert len(s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.fill_id == old_fill,
+                SandboxClaimTransaction.operation == "REVERSE")).all()) == 2
+            assert len(s.scalars(select(Label).where(Label.fill_id == old_fill)).all()) == 1
+            assert len(s.scalars(select(Claim).where(Claim.fill_id == new_id)).all()) == 0
+    finally:
+        svc.engine.dispose()

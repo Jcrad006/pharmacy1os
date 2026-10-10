@@ -34,6 +34,7 @@ from .provider_parity import PrescriberParityService, PrescriberContractIn
 from .scheduling import SchedulingService
 from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
+from .third_party_workspace import ThirdPartyWorkspace
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
 from .willcall import WillCallService
@@ -107,6 +108,7 @@ def main() -> None:
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
     rebill_service = ClaimRebillService(service)
+    third_party_workspace = ThirdPartyWorkspace(service)
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
     will_call_service = WillCallService(service)
@@ -396,6 +398,7 @@ def main() -> None:
                 self.action("Inject Development Test Rejection", self.inject_test_rejection)
                 self.action("Pharmacist Clear Test Rejection", self.clear_test_rejection)
                 self.action("Claim History", self.claim_history)
+                self.action("Third Party Workbench Overview", self.view_third_party_workspace)
                 self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
                 self.action("Claim Rebill Lineage", self.rebill_lineage)
             elif page == 12:
@@ -712,6 +715,26 @@ def main() -> None:
             result = rebill_service.lineage(self.actor, fill_id)
             QMessageBox.information(self, "Synthetic immutable claim lineage",
                 json.dumps(result, indent=2))
+
+        def view_third_party_workspace(self):
+            query = self.ask("Third Party Workbench",
+                "Optional patient search by name or phone (blank lists first 100)", "")
+            summary = third_party_workspace.snapshot(self.actor, query=query)
+            overview = {
+                "patients": len(summary["patients"]),
+                "payers": len(summary["payers"]),
+                "active_test_holds": len(summary["claimIssues"]),
+                "synthetic_claim_events": len(summary["recentClaimEvents"]),
+                "queued_test_labels": len(summary["printQueue"]),
+                "pending_rebill_attempts": len(summary["pendingRebills"]),
+                "warning": summary["warning"],
+                "open_test_rejections": summary["claimIssues"][:20],
+                "pending_rebills": summary["pendingRebills"][:20],
+                "test_label_print_queue": summary["printQueue"][:20],
+                "patients_and_masked_coverages": summary["patients"][:20],
+            }
+            QMessageBox.information(self, "Synthetic Third Party Workbench",
+                json.dumps(overview, indent=2)[:20000])
 
         def claim_history(self):
             with service.sessions() as s:
