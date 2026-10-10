@@ -436,3 +436,64 @@ def test_postgres_concurrent_reviewed_rx_edits_preserve_one_version():
         assert editor.context(pharmacist, rx)["editable"] is True
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_concurrent_scan_quantity_cas():
+    """Two workstations must not both overwrite the same initially observed scan."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from decimal import Decimal
+    from threading import Barrier
+    from pharmacy1os.models import Audit, FillSource, Stock
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Requires real PostgreSQL driver and a migrated schema")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        patient = svc.add_patient(tech, "Race", "ScanQty")
+        prescriber = svc.add_prescriber(tech, "Race", "ScanDoctor", "MD")
+        drug = svc.add_drug(pharm, "PG quantity demo", "1mg", "tablet")
+        product = svc.add_product(pharm, drug, "11110-8888-01", "Synthetic", "Pill")
+        svc.register_barcode(tech, product, "PG-QTY-CAS-BAR")
+        expiry = (date.today() + timedelta(days=250)).isoformat()
+        stock_id = svc.receive(tech, "PG-QTY-CAS-BAR", "QTY-CAS-LOT", expiry, "50")
+        rx = svc.add_prescription(tech, patient, prescriber, drug,
+                                  "PG-QTY-CAS-RX", "once daily", "30")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, fill, "PG-QTY-CAS-BAR", "QTY-CAS-LOT", expiry, "10")
+        source_id = svc.scanned_sources(tech, fill)[0]["id"]
+        ready = Barrier(2)
+
+        def attempt(qty):
+            ready.wait(timeout=15)
+            try:
+                svc.correct_scanned_source_quantity(tech, fill, source_id, qty,
+                    "Verified synthetic recount by simulated pharmacist",
+                    expected_quantity="10.000")
+                return "SAVED"
+            except WorkflowError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(attempt, ("12", "14")))
+        assert results.count("SAVED") == 1, results
+        assert sum("changed; refresh" in result for result in results) == 1, results
+        with svc.sessions() as s:
+            source = s.get(FillSource, source_id)
+            stock = s.get(Stock, stock_id)
+            assert source.quantity in {Decimal("12"), Decimal("14")}
+            assert stock.reserved == source.quantity
+            events = s.scalars(select(Audit).where(
+                Audit.subject_id == fill,
+                Audit.kind == "FILL_PRODUCT_SOURCE_QUANTITY_CORRECTED")).all()
+            assert len(events) == 1
+    finally:
+        svc.engine.dispose()
