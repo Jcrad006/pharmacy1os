@@ -1,0 +1,1073 @@
+"""Synthetic dispensing domain, independent of HTTP or desktop widgets.
+
+All business operations are transactional; role/site boundaries are rechecked in
+this layer. This is NOT a clinically or regulatorily validated dispensing engine.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+from sqlalchemy import create_engine, event, func, select, text
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+
+from .models import (
+    Audit, Barcode, Base, Claim, Drug, DUR, Fill, FillSource, Label,
+    Patient, Prescriber, Prescription, Product, Sale, Site, Staff, Stock, WillCall,
+)
+
+
+class WorkflowError(ValueError):
+    pass
+
+
+class AccessDenied(PermissionError):
+    pass
+
+
+PERMISSIONS = {
+    "ADMIN": {"entry", "process", "verify", "sell", "inventory", "correct", "clinical", "read"},
+    "PHARMACIST": {"entry", "process", "verify", "sell", "inventory", "correct", "clinical", "read"},
+    "TECHNICIAN": {"entry", "process", "sell", "inventory", "read"},
+    "INTERN": {"entry", "process", "read"},
+    "CASHIER": {"sell", "read"},
+    "AUDITOR": {"read"},
+}
+
+TRANSITIONS: dict[str, set[str]] = {
+    "RECEIVED": {"DATA_ENTRY", "ON_HOLD", "CANCELLED", "TRANSFERRED"},
+    "DATA_ENTRY": {"DUR_REVIEW", "ON_HOLD", "CANCELLED", "TRANSFERRED"},
+    "DUR_REVIEW": {"ON_HOLD", "CANCELLED", "TRANSFERRED"},
+    "PRODUCT_FILL": {"PHARMACIST_REVIEW", "ON_HOLD", "CANCELLED"},
+    "PHARMACIST_REVIEW": {"READY", "PRODUCT_FILL", "ON_HOLD", "CANCELLED"},
+    "READY": {"SOLD", "ON_HOLD", "CANCELLED"},
+    "SOLD": {"DUR_REVIEW", "ON_HOLD", "CANCELLED", "TRANSFERRED"},
+    "CANCELLED": set(), "TRANSFERRED": set(),
+}
+
+
+def positive(value: str | int | Decimal) -> Decimal:
+    try:
+        v = Decimal(str(value))
+    except (InvalidOperation, TypeError) as exc:
+        raise WorkflowError("Quantity must be a valid decimal") from exc
+    if not v.is_finite() or v <= 0 or v.as_tuple().exponent < -3:
+        raise WorkflowError("Quantity must be positive with at most three decimals")
+    return v
+
+
+@dataclass(frozen=True)
+class Actor:
+    id: str
+    site_id: str
+    role: str
+
+
+class PharmacyService:
+    def __init__(self, database_url: str = "sqlite+pysqlite:///:memory:"):
+        options = ({"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
+                   if database_url.endswith(":memory:") else {})
+        self.engine = create_engine(database_url, future=True, **options)
+        if database_url.startswith("sqlite"):
+            @event.listens_for(self.engine, "connect")
+            def enable_sqlite_constraints(connection, _record):
+                cursor = connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
+        self.sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+    def create_schema(self) -> None:
+        """Create isolated synthetic tables; upgrade one known SQLite demo column.
+
+        This is NOT a migration of the legacy Prisma/PostgreSQL schema. The
+        production design must use reviewed Alembic migrations instead.
+        """
+        from . import scheduling_models, billing_models, willcall, pos_models, date_rules, communications, structured_changes, auth, inventory_planning, fill_completion, emergency_supply, prescription_transfer, label_printing, prescription_edit, insurance_models, claim_transactions_models, inventory_location_models, inventory_demand_models, inventory_discrepancy_models, inventory_exception_models, inventory_fefo_models, clinical_records, nti_compliance  # noqa: F401 -- register extension tables
+        Base.metadata.create_all(self.engine)
+        if self.engine.dialect.name == "sqlite":
+            with self.engine.begin() as conn:
+                columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_inventory_holds')").all()}
+                if "recall_id" not in columns:
+                    conn.exec_driver_sql("ALTER TABLE py_inventory_holds "
+                        "ADD COLUMN recall_id VARCHAR(36) REFERENCES py_recall_cases(id)")
+                    conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS "
+                        "ix_py_inventory_holds_recall_id ON py_inventory_holds (recall_id)")
+                # Narrow compatibility for an existing opt-in synthetic SQLite
+                # desktop DB. Production migrations always use Alembic instead.
+                fill_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_fills')").all()}
+                packaging_columns = {
+                    "days_supply": "INTEGER",
+                    "billing_product_id": "VARCHAR(36) REFERENCES py_products(id)",
+                    "nti_at_start": "BOOLEAN NOT NULL DEFAULT 0",
+                    "dispensed_in_original_container": "BOOLEAN NOT NULL DEFAULT 0",
+                    "patient_discard_date": "VARCHAR(10)",
+                    "packaging_reviewed_by_id": "VARCHAR(36) REFERENCES py_staff(id)",
+                    "packaging_reviewed_at": "DATETIME",
+                    "packaging_note": "TEXT",
+                }
+                for name, definition in packaging_columns.items():
+                    if name not in fill_columns:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE py_fills ADD COLUMN {name} {definition}")
+                # Existing opt-in demo workstations may already have prescriber
+                # records; missing DOB is genuinely unknown and stays NULL.
+                prescriber_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_prescribers')").all()}
+                if "date_of_birth" not in prescriber_columns:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE py_prescribers ADD COLUMN date_of_birth VARCHAR(10)")
+                # Prior synthetic Qt databases predate the original-style DUR
+                # metadata. Add only missing nullable columns, never fabricate
+                # authors or earlier clinical actions.
+                dur_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_dur_issues')").all()}
+                dur_extensions = {
+                    "title": "VARCHAR(160)",
+                    "description": "TEXT",
+                    "source": "VARCHAR(40)",
+                    "created_at": "DATETIME",
+                    "resolved_at": "DATETIME",
+                    "resolved_by_id": "VARCHAR(36) REFERENCES py_staff(id)",
+                    "resolved_automatically": "BOOLEAN NOT NULL DEFAULT 0",
+                }
+                for name, definition in dur_extensions.items():
+                    if name not in dur_columns:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE py_dur_issues ADD COLUMN {name} {definition}")
+
+    def bootstrap_demo(self) -> dict[str, Any]:
+        """Create a synthetic pharmacy and demo actors; never production identities."""
+        with self.sessions.begin() as s:
+            site = Site(name="Synthetic Development Pharmacy")
+            s.add(site)
+            s.flush()
+            actors: dict[str, Actor] = {}
+            for role in ("PHARMACIST", "TECHNICIAN", "INTERN", "CASHIER", "AUDITOR"):
+                user = Staff(site_id=site.id, name=f"Demo {role.title()}", role=role)
+                s.add(user)
+                s.flush()
+                actors[role] = Actor(user.id, site.id, role)
+            return {"site_id": site.id, "actors": actors}
+
+    @staticmethod
+    def _authorized(s: Session, actor: Actor, permission: str) -> Staff:
+        staff = s.get(Staff, actor.id)
+        if (staff is None or not staff.active or staff.site_id != actor.site_id
+                or staff.role != actor.role or permission not in PERMISSIONS.get(staff.role, set())):
+            raise AccessDenied("Permission denied or synthetic identity invalid")
+        return staff
+
+    @staticmethod
+    def _site(s: Session, model: type, id: str, actor: Actor):
+        obj = s.get(model, id)
+        if obj is None or obj.site_id != actor.site_id:
+            raise WorkflowError("Record not found at actor's pharmacy site")
+        return obj
+
+    @staticmethod
+    def _audit(s: Session, actor: Actor, kind: str, subject: str, detail: dict[str, Any]):
+        s.add(Audit(site_id=actor.site_id, actor_id=actor.id, kind=kind,
+                    subject_id=subject, detail=json.dumps(detail, sort_keys=True, default=str)))
+
+    def add_patient(self, actor: Actor, first: str, last: str, dob: str | None = None,
+                    phone: str | None = None, email: str | None = None) -> str:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "entry")
+            normalized_email = email.strip() if isinstance(email, str) else None
+            if normalized_email is not None and (
+                    not normalized_email or len(normalized_email) > 254
+                    or "@" not in normalized_email or any(ch.isspace() for ch in normalized_email)):
+                raise WorkflowError("Invalid patient email")
+            p = Patient(site_id=actor.site_id, first_name=first.strip(), last_name=last.strip(),
+                        date_of_birth=dob, phone=phone, email=normalized_email)
+            if not p.first_name or not p.last_name:
+                raise WorkflowError("Patient first and last names are required")
+            s.add(p); s.flush()
+            self._audit(s, actor, "PATIENT_CREATED", p.id, {})
+            return p.id
+
+    def add_prescriber(self, actor: Actor, first: str, last: str, level: str, npi: str | None = None) -> str:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "entry")
+            if not all((first.strip(), last.strip(), level.strip())):
+                raise WorkflowError("Prescriber name and practice level required")
+            p = Prescriber(site_id=actor.site_id, first_name=first.strip(), last_name=last.strip(),
+                           practice_level=level.strip(), npi=npi)
+            s.add(p); s.flush()
+            self._audit(s, actor, "PRESCRIBER_CREATED", p.id, {})
+            return p.id
+
+    def add_drug(self, actor: Actor, name: str, strength: str, dosage_form: str,
+                 controlled: bool = False, *, brand_name: str | None = None,
+                 route: str | None = None, controlled_substance_schedule: str | None = None,
+                 nc_narrow_therapeutic_index: bool = False, is_biological: bool = False,
+                 has_fda_interchangeable_biologic_alternative: bool = False,
+                 requires_cold_chain: bool = False, active: bool = True) -> str:
+        def optional(value, field, limit):
+            if value is None:
+                return None
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise WorkflowError(f"Invalid {field}")
+            return value.strip() or None
+        n = optional(name, "drug name", 200)
+        st = optional(strength, "strength", 70)
+        form = optional(dosage_form, "dosage form", 70)
+        if not n or not st or not form:
+            raise WorkflowError("Drug name, strength and form required")
+        schedule = controlled_substance_schedule or ("UNCLASSIFIED" if controlled else "NONE")
+        if schedule not in {"NONE", "II", "III", "IV", "V", "UNCLASSIFIED"}:
+            raise WorkflowError("Unsupported controlled substance schedule")
+        if controlled and schedule == "NONE":
+            raise WorkflowError("Controlled drug cannot have schedule NONE")
+        if not all(isinstance(v, bool) for v in (
+                controlled, nc_narrow_therapeutic_index, is_biological,
+                has_fda_interchangeable_biologic_alternative, requires_cold_chain, active)):
+            raise WorkflowError("Product compliance flags must be boolean")
+        if has_fda_interchangeable_biologic_alternative and not is_biological:
+            raise WorkflowError("Only biologics may declare an interchangeable alternative")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "correct")
+            drug = Drug(name=n, strength=st, dosage_form=form,
+                controlled=controlled or schedule != "NONE",
+                brand_name=optional(brand_name, "brand name", 180),
+                route=optional(route, "route", 80),
+                controlled_substance_schedule=schedule,
+                nc_narrow_therapeutic_index=nc_narrow_therapeutic_index,
+                is_biological=is_biological,
+                has_fda_interchangeable_biologic_alternative=has_fda_interchangeable_biologic_alternative,
+                requires_cold_chain=requires_cold_chain, active=active)
+            s.add(drug); s.flush()
+            self._audit(s, actor, "DRUG_CREATED", drug.id, {
+                "schedule": schedule, "active": active, "biological": is_biological,
+                "narrow_therapeutic_index": nc_narrow_therapeutic_index})
+            return drug.id
+
+    def add_product(self, actor: Actor, drug_id: str, ndc: str, manufacturer: str,
+                    description: str, price: str = "0", *,
+                    package_description: str | None = None, package_type: str | None = None,
+                    units_per_package: str | None = None, package_price: str | None = None,
+                    therapeutic_equivalence_code: str | None = None,
+                    is_interchangeable_biological: bool = False,
+                    active: bool = True) -> str:
+        if not isinstance(ndc, str) or not ndc.strip() or len(ndc.strip()) > 30:
+            raise WorkflowError("Valid product NDC required")
+        if not isinstance(manufacturer, str) or not manufacturer.strip() or len(manufacturer.strip()) > 120:
+            raise WorkflowError("Valid manufacturer required")
+        if not isinstance(description, str) or not description.strip() or len(description.strip()) > 200:
+            raise WorkflowError("Valid product descriptor required")
+        try:
+            unit_cost = Decimal(str(price))
+            package_cost = Decimal(str(package_price)) if package_price is not None else None
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise WorkflowError("Invalid package/unit price") from exc
+        for amount in (unit_cost, package_cost):
+            if amount is not None and (not amount.is_finite() or amount < 0
+                                       or amount.as_tuple().exponent < -4):
+                raise WorkflowError("Price must be nonnegative with at most four decimals")
+        units = positive(units_per_package) if units_per_package is not None else None
+        if not isinstance(active, bool) or not isinstance(is_interchangeable_biological, bool):
+            raise WorkflowError("Product status flags must be boolean")
+        def optional(value, name, limit):
+            if value is None:
+                return None
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise WorkflowError(f"Invalid {name}")
+            return value.strip() or None
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "correct")
+            drug = s.get(Drug, drug_id)
+            if drug is None:
+                raise WorkflowError("Drug not found")
+            if is_interchangeable_biological and not drug.is_biological:
+                raise WorkflowError("Non-biologic product cannot be interchangeable biological")
+            product = Product(drug_id=drug_id, ndc=ndc.strip(),
+                manufacturer=manufacturer.strip(), description=description.strip(),
+                unit_price=unit_cost, package_description=optional(package_description, "package description", 240),
+                package_type=optional(package_type, "package type", 80),
+                units_per_package=units, package_price=package_cost,
+                therapeutic_equivalence_code=optional(therapeutic_equivalence_code, "therapeutic equivalence", 20),
+                is_interchangeable_biological=is_interchangeable_biological, active=active)
+            s.add(product); s.flush()
+            self._audit(s, actor, "PRODUCT_CREATED", product.id, {
+                "ndc": ndc.strip(), "units_per_package": str(units) if units else None,
+                "package_price": str(package_cost) if package_cost is not None else None})
+            return product.id
+
+    def register_barcode(self, actor: Actor, product_id: str, barcode: str) -> str:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "inventory")
+            if not s.get(Product, product_id) or not barcode.strip():
+                raise WorkflowError("Product and barcode are required")
+            b = Barcode(product_id=product_id, value=barcode.strip())
+            s.add(b); s.flush()
+            self._audit(s, actor, "BARCODE_REGISTERED", b.id, {"product_id": product_id})
+            return b.id
+
+    def correct_barcode(self, actor: Actor, barcode: str, corrected_product_id: str, reason: str) -> None:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "correct")
+            b = s.scalar(select(Barcode).where(Barcode.value == barcode))
+            if not b or not s.get(Product, corrected_product_id) or not reason.strip():
+                raise WorkflowError("Barcode, corrected product and reason are required")
+            previous = b.product_id
+            b.product_id = corrected_product_id
+            self._audit(s, actor, "BARCODE_CORRECTED", b.id,
+                        {"old_product_id": previous, "new_product_id": corrected_product_id, "reason": reason})
+
+    def receive(self, actor: Actor, barcode: str, lot: str, expires: str, quantity: str) -> str:
+        qty = positive(quantity)
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "inventory")
+            b = s.scalar(select(Barcode).where(Barcode.value == barcode))
+            if not b:
+                raise WorkflowError("Unknown barcode: register product first")
+            if not lot.strip() or date.fromisoformat(expires) <= date.today():
+                raise WorkflowError("Lot required; expired stock cannot be received as usable")
+            stock = s.scalar(select(Stock).where(Stock.site_id == actor.site_id,
+                Stock.product_id == b.product_id, Stock.lot == lot, Stock.expires == expires))
+            if stock is None:
+                stock = Stock(site_id=actor.site_id, product_id=b.product_id,
+                              lot=lot, expires=expires, on_hand=Decimal("0"),
+                              reserved=Decimal("0"), quarantined=Decimal("0"))
+                s.add(stock)
+            s.flush()
+            from .inventory_ops import record_movement
+            record_movement(s, actor, stock, "RECEIVE", on_hand=qty)
+            from .inventory_advanced import quarantine_recalled_receipt
+            quarantine_recalled_receipt(s, actor, stock, qty)
+            self._audit(s, actor, "INVENTORY_RECEIVE", stock.id, {"quantity": str(qty)})
+            return stock.id
+
+    def add_prescription(self, actor: Actor, patient_id: str, prescriber_id: str, drug_id: str,
+                         rx_number: str, sig: str, quantity: str, refills: int = 0,
+                         expiration_date: str | None = None, do_not_fill_before: str | None = None,
+                         *, source_type: str = "MANUAL", written_date: str | None = None,
+                         electronic_message_id: str | None = None,
+                         electronic_raw_message: str | None = None,
+                         prescribed_product_id: str | None = None,
+                         product_selection_directive: str = "UNSPECIFIED") -> str:
+        qty = positive(quantity)
+        if source_type not in {"MANUAL", "PAPER", "FAX", "ELECTRONIC", "VERBAL", "TRANSFER"}:
+            raise WorkflowError("Unsupported prescription source type")
+        if product_selection_directive not in {
+                "UNSPECIFIED", "SELECTION_PERMITTED", "DISPENSE_AS_WRITTEN"}:
+            raise WorkflowError("Invalid product selection directive")
+        if product_selection_directive == "DISPENSE_AS_WRITTEN" and not prescribed_product_id:
+            raise WorkflowError("Dispense-as-written requires a prescribed NDC")
+        if isinstance(refills, bool) or not isinstance(refills, int) or not 0 <= refills <= 999:
+            raise WorkflowError("Refills must be an integer from 0 to 999")
+        if not isinstance(rx_number, str) or not 1 <= len(rx_number.strip()) <= 30:
+            raise WorkflowError("Rx number is required (maximum 30 characters)")
+        if not isinstance(sig, str) or not 1 <= len(sig.strip()) <= 4000:
+            raise WorkflowError("SIG must contain 1 to 4000 characters")
+        for label, value in (("Written date", written_date), ("Expiration", expiration_date),
+                             ("Do not fill before", do_not_fill_before)):
+            if value is not None:
+                if not isinstance(value, str) or len(value) != 10:
+                    raise WorkflowError(f"{label} must be YYYY-MM-DD")
+                try:
+                    parsed = date.fromisoformat(value)
+                except ValueError as exc:
+                    raise WorkflowError(f"Invalid {label.lower()}") from exc
+                if parsed.isoformat() != value:
+                    raise WorkflowError(f"{label} must be YYYY-MM-DD")
+        if written_date and expiration_date and expiration_date < written_date:
+            raise WorkflowError("Expiration date precedes the written date")
+        if written_date and written_date > date.today().isoformat():
+            raise WorkflowError("Future written date is not valid")
+        if source_type != "ELECTRONIC" and (electronic_message_id or electronic_raw_message):
+            raise WorkflowError("Electronic message metadata requires ELECTRONIC source")
+        if electronic_message_id is not None and (
+                not isinstance(electronic_message_id, str)
+                or not 1 <= len(electronic_message_id.strip()) <= 160):
+            raise WorkflowError("Invalid electronic message identifier")
+        if electronic_raw_message is not None and (
+                not isinstance(electronic_raw_message, str)
+                or not 1 <= len(electronic_raw_message) <= 200000):
+            raise WorkflowError("Invalid synthetic electronic source payload")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "entry")
+            self._site(s, Patient, patient_id, actor)
+            self._site(s, Prescriber, prescriber_id, actor)
+            drug = s.get(Drug, drug_id)
+            if drug is None or not drug.active:
+                raise WorkflowError("Selected drug does not exist or is inactive")
+            if drug.controlled or drug.controlled_substance_schedule != "NONE":
+                raise WorkflowError("Controlled/unclassified medication needs a validated workflow")
+            product = s.get(Product, prescribed_product_id) if prescribed_product_id else None
+            if prescribed_product_id and (
+                    product is None or not product.active or product.drug_id != drug_id):
+                raise WorkflowError("Prescribed NDC must be active under the selected drug")
+            rx = Prescription(site_id=actor.site_id, patient_id=patient_id,
+                prescriber_id=prescriber_id, drug_id=drug_id, rx_number=rx_number.strip(),
+                sig=sig.strip(), quantity=qty, refills_allowed=refills, status="DATA_ENTRY",
+                expiration_date=expiration_date, do_not_fill_before=do_not_fill_before,
+                source_type=source_type, written_date=written_date,
+                electronic_message_id=electronic_message_id.strip() if electronic_message_id else None,
+                electronic_raw_message=electronic_raw_message,
+                prescribed_product_id=product.id if product else None,
+                product_selection_directive=product_selection_directive)
+            s.add(rx); s.flush()
+            # Never include raw electronic payload in the audit event.
+            self._audit(s, actor, "RX_CREATED", rx.id, {
+                "rx_number": rx.rx_number, "source_type": source_type,
+                "prescribed_product_id": rx.prescribed_product_id,
+                "product_selection_directive": product_selection_directive})
+            return rx.id
+
+    def advance_to_dur(self, actor: Actor, rx_id: str) -> None:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            rx = self._site(s, Prescription, rx_id, actor)
+            if rx.status != "DATA_ENTRY":
+                raise WorkflowError("Prescription must be at Data Entry")
+            rx.status = "DUR_REVIEW"
+            self._audit(s, actor, "RX_DUR_REVIEW", rx.id, {})
+
+    def add_dur_issue(self, actor: Actor, rx_id: str, severity: str,
+                      code: str, title: str | None = None,
+                      description: str | None = None) -> str:
+        clean_code = code.strip().upper() if isinstance(code, str) else ""
+        clean_title = title.strip() if isinstance(title, str) else clean_code
+        detail = description.strip() if isinstance(description, str) else None
+        if (severity not in {"HIGH", "WARNING", "INFO", "MEDIUM", "LOW"}
+                or not 1 <= len(clean_code) <= 70
+                or not 1 <= len(clean_title) <= 160
+                or (detail is not None and len(detail) > 4000)):
+            raise WorkflowError("Valid DUR severity, code, title and description required")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "clinical")
+            self._site(s, Prescription, rx_id, actor)
+            issue = DUR(prescription_id=rx_id, severity=severity,
+                        code=clean_code, title=clean_title,
+                        description=detail, source="SYNTHETIC_MANUAL",
+                        resolved=False, resolved_automatically=False)
+            s.add(issue); s.flush()
+            self._audit(s, actor, "DUR_ISSUE_ADDED", issue.id,
+                        {"rx_id": rx_id, "severity": severity,
+                         "code": clean_code, "source": "SYNTHETIC_MANUAL"})
+            return issue.id
+
+    def resolve_dur(self, actor: Actor, issue_id: str, note: str) -> None:
+        clean_note = note.strip() if isinstance(note, str) else ""
+        if not 1 <= len(clean_note) <= 4000:
+            raise WorkflowError("DUR resolution note must contain 1–4000 characters")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "clinical")
+            issue = s.scalar(select(DUR).where(DUR.id == issue_id).with_for_update())
+            if issue is None:
+                raise WorkflowError("DUR issue not found")
+            self._site(s, Prescription, issue.prescription_id, actor)
+            if issue.resolved:
+                raise WorkflowError("DUR issue is already resolved")
+            issue.resolved = True
+            issue.resolution = clean_note
+            issue.resolved_at = datetime.now(timezone.utc)
+            issue.resolved_by_id = actor.id
+            issue.resolved_automatically = False
+            self._audit(s, actor, "DUR_RESOLVED", issue.id, {
+                "prescription_id": issue.prescription_id, "code": issue.code,
+                "resolved_by_id": actor.id})
+
+    def _start_fill_tx(self, s: Session, actor: Actor, rx: Prescription,
+                       dispense_quantity: str | None = None, *, days_supply: int | None = None,
+                       effective_date: date | None = None,
+                       scheduled_id: str | None = None) -> str:
+        """Start a fill inside the caller's existing transaction (including scheduled starts)."""
+        if rx.status != "DUR_REVIEW":
+            raise WorkflowError("Prescription must pass Data Entry/DUR stage")
+        from .product_selection import require_medication_eligible
+        require_medication_eligible(s, rx)
+        today = (effective_date or date.today()).isoformat()
+        if rx.expiration_date and rx.expiration_date < today:
+            raise WorkflowError("Prescription expired")
+        if rx.do_not_fill_before and rx.do_not_fill_before > today:
+            raise WorkflowError("Do-not-fill-before date not reached")
+        from .date_rules import require_date_eligible
+        require_date_eligible(s, rx, on=effective_date) if effective_date else require_date_eligible(s, rx)
+        if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
+                    DUR.severity == "HIGH", DUR.resolved.is_(False))):
+            raise WorkflowError("Unresolved high-severity DUR issue")
+        from .scheduling_models import ScheduledFill
+        pending = s.scalar(select(ScheduledFill.id).where(
+            ScheduledFill.prescription_id == rx.id, ScheduledFill.status == "PENDING"))
+        if pending and pending != scheduled_id:
+            raise WorkflowError("A pending future fill must be started through its scheduled action")
+        from .fill_completion import guard_new_logical_fill, FillCompletion, FillObligation
+        from .prescription_transfer import require_no_pending_transfer
+        require_no_pending_transfer(s, rx)
+        guard_new_logical_fill(s, rx)
+        active = s.scalars(select(Fill).where(Fill.prescription_id == rx.id)).all()
+        if any(f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"} for f in active):
+            raise WorkflowError("A fill is already active")
+        from .emergency_supply import EmergencySupply
+        completion_ids = set(s.scalars(select(FillCompletion.fill_id).where(
+            FillCompletion.site_id == actor.site_id)).all())
+        completion_ids.update(s.scalars(select(EmergencySupply.fill_id).where(
+            EmergencySupply.site_id == actor.site_id)).all())
+        returned = next((f for f in sorted(active, key=lambda f: (f.fill_number, f.attempt), reverse=True)
+                         if f.status == "RETURNED" and f.id not in completion_ids), None)
+        fillnum = returned.fill_number if returned else (max((f.fill_number for f in active), default=-1) + 1)
+        if fillnum > rx.refills_allowed:
+            raise WorkflowError("No refills remaining")
+        attempt = returned.attempt + 1 if returned else 1
+        qty = positive(dispense_quantity or rx.quantity)
+        from .fill_billing_details import validate_days_supply
+        days_supply = validate_days_supply(days_supply, allow_none=True)
+        if qty > rx.quantity:
+            raise WorkflowError("Cannot dispense more than authorized quantity")
+        from .models import Drug
+        selected_drug = s.get(Drug, rx.drug_id)
+        f = Fill(prescription_id=rx.id, fill_number=fillnum, attempt=attempt,
+                 quantity=qty, billed_quantity=rx.quantity, days_supply=days_supply,
+                 status="PRODUCT_FILL",
+                 nti_at_start=bool(selected_drug.nc_narrow_therapeutic_index))
+        s.add(f)
+        rx.status = "PRODUCT_FILL"
+        s.flush()
+        from .inventory_demands import record_fill_demand_tx
+        record_fill_demand_tx(s, actor, f, rx, source="FILL")
+        if qty < rx.quantity:
+            s.add(FillObligation(site_id=actor.site_id, prescription_id=rx.id,
+                anchor_fill_id=f.id, intended=rx.quantity, dispensed=Decimal("0"),
+                remaining=rx.quantity, status="OPEN"))
+        self._audit(s, actor, "FILL_STARTED", f.id,
+                    {"fill_number": f.fill_number, "dispense_qty": str(qty),
+                     "bill_qty": str(rx.quantity), "days_supply": days_supply})
+        return f.id
+
+    def start_fill(self, actor: Actor, rx_id: str, dispense_quantity: str | None = None,
+                   days_supply: int | None = None) -> str:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            rx = s.scalar(select(Prescription).where(
+                Prescription.id == rx_id, Prescription.site_id == actor.site_id).with_for_update())
+            if rx is None:
+                raise WorkflowError("Prescription not found at actor's pharmacy site")
+            return self._start_fill_tx(s, actor, rx, dispense_quantity, days_supply=days_supply)
+
+    def scan_source(self, actor: Actor, fill_id: str, barcode: str, lot: str,
+                    expires: str, quantity: str, location_id: str | None = None,
+                    fefo_override_note: str | None = None) -> None:
+        qty = positive(quantity)
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if not f:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, f.prescription_id, actor)
+            if f.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Fill is not at Product Fill")
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
+            b = s.scalar(select(Barcode).where(Barcode.value == barcode))
+            if not b:
+                raise WorkflowError("Unregistered barcode")
+            product = s.get(Product, b.product_id)
+            from .product_selection import require_product_eligible
+            require_product_eligible(s, rx, product)
+            stock = s.scalar(select(Stock).where(Stock.site_id == actor.site_id,
+                Stock.product_id == product.id, Stock.lot == lot, Stock.expires == expires).with_for_update())
+            if not stock or stock.expires <= date.today().isoformat():
+                raise WorkflowError("Lot/expiration mismatch or expired stock")
+            from .inventory_advanced import assert_not_recalled
+            assert_not_recalled(s, stock)
+            sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+            from .nti_compliance import require_nti_source
+            require_nti_source(s, rx, f, product, sources)
+            if len(sources) >= 4 or any(source.stock_id == stock.id for source in sources):
+                raise WorkflowError("Maximum four distinct sources; duplicates rejected")
+            if sum((source.quantity for source in sources), Decimal("0")) + qty > f.quantity:
+                raise WorkflowError("Scanned quantity exceeds actual fill quantity")
+            if stock.on_hand - stock.reserved - stock.quarantined < qty:
+                raise WorkflowError("Insufficient available stock")
+            from .inventory_fefo import require_fefo_scan
+            require_fefo_scan(s, actor, f.id, stock, fefo_override_note)
+            from .inventory_ops import record_movement
+            record_movement(s, actor, stock, "FILL_RESERVE", reserved=qty,
+                            location_id=location_id)
+            source = FillSource(fill_id=f.id, stock_id=stock.id, quantity=qty)
+            s.add(source); s.flush()
+            from .inventory_allocations import record_scan_allocation
+            record_scan_allocation(s, actor, f, stock, source, location_id)
+            self._audit(s, actor, "PRODUCT_SOURCE_VERIFIED", f.id,
+                        {"stock_id": stock.id, "quantity": str(qty), "ndc": product.ndc})
+
+    def set_fill_packaging(self, actor: Actor, fill_id: str, *,
+                           dispensed_in_original_container: bool,
+                           note: str) -> dict[str, Any]:
+        """Record packaging choice before billing/labels or pharmacist verification."""
+        if type(dispensed_in_original_container) is not bool:
+            raise WorkflowError("Original-container status must be true or false")
+        reason = note.strip() if isinstance(note, str) else ""
+        if not 12 <= len(reason) <= 2000:
+            raise WorkflowError("Packaging decision requires a 12–2000 character explanation")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Packaging can only be revised during Product Fill")
+            before = fill.dispensed_in_original_container
+            fill.dispensed_in_original_container = dispensed_in_original_container
+            fill.packaging_reviewed_by_id = actor.id
+            fill.packaging_reviewed_at = datetime.now(timezone.utc)
+            fill.packaging_note = reason
+            self._audit(s, actor, "FILL_PACKAGING_STATUS_UPDATED", fill.id, {
+                "before": before, "after": dispensed_in_original_container,
+                "note": reason, "patient_discard_date": None,
+                "computed_at_pharmacist_verification": True,
+            })
+            return {"fill_id": fill.id,
+                    "dispensed_in_original_container": dispensed_in_original_container,
+                    "patient_discard_date": None,
+                    "reviewed_by_id": actor.id, "note": reason}
+
+    def scanned_sources(self, actor: Actor, fill_id: str) -> list[dict[str, Any]]:
+        """Show physical source reservations for a pharmacy-site-owned fill."""
+        with self.sessions() as s:
+            self._authorized(s, actor, "read")
+            fill = s.get(Fill, fill_id)
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            self._site(s, Prescription, fill.prescription_id, actor)
+            from .inventory_location_models import InventoryAllocation, InventoryStockPosition
+            entries = []
+            for source in s.scalars(select(FillSource).where(
+                    FillSource.fill_id == fill.id).order_by(FillSource.id)):
+                stock = self._site(s, Stock, source.stock_id, actor)
+                product = s.get(Product, stock.product_id)
+                if product is None:
+                    raise WorkflowError("Scanned product no longer exists")
+                allocation = s.scalar(select(InventoryAllocation).where(
+                    InventoryAllocation.site_id == actor.site_id,
+                    InventoryAllocation.fill_source_id == source.id))
+                location_id = None
+                if allocation is not None:
+                    position = s.get(InventoryStockPosition, allocation.position_id)
+                    if position is None or position.stock_id != stock.id:
+                        raise WorkflowError("Scanned physical allocation is inconsistent")
+                    location_id = position.location_id
+                entries.append({
+                    "id": source.id, "fill_id": fill.id,
+                    "stock_id": stock.id, "product_id": product.id,
+                    "ndc": product.ndc, "description": product.description,
+                    "lot": stock.lot, "expires": stock.expires,
+                    "quantity": str(source.quantity), "location_id": location_id,
+                    "allocation_status": allocation.status if allocation else None,
+                })
+            return entries
+
+
+    def correct_scanned_source_quantity(self, actor: Actor, fill_id: str,
+                                        source_id: str, quantity: str,
+                                        reason: str, *, fefo_override_note: str | None = None
+                                        ) -> dict[str, Any]:
+        """Correct a physical scanned source before any sandbox claim or label.
+
+        Change the exact source and corresponding stock/location reservations
+        in the same transaction. Zero quantity is a separate remove operation.
+        """
+        new_qty = positive(quantity)
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 2000:
+            raise WorkflowError("Source quantity correction requires a 12–2000 character reason")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            fill = s.scalar(select(Fill).where(
+                Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Source quantities can only change during Product Fill")
+            if (s.scalar(select(Claim.id).where(Claim.fill_id == fill.id).limit(1))
+                    or s.scalar(select(Label.id).where(Label.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claimed or labeled fill requires reversal before source changes")
+            from .claim_transactions_models import SandboxClaimTransaction
+            from .label_printing import LabelPrintJob
+            if (s.scalar(select(SandboxClaimTransaction.id).where(
+                    SandboxClaimTransaction.fill_id == fill.id).limit(1))
+                    or s.scalar(select(LabelPrintJob.id).where(
+                    LabelPrintJob.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claim or print history requires separate correction workflow")
+            source = s.scalar(select(FillSource).where(
+                FillSource.id == source_id, FillSource.fill_id == fill.id).with_for_update())
+            if source is None:
+                raise WorkflowError("Scanned source not found for this fill")
+            old_qty = source.quantity
+            if old_qty == new_qty:
+                raise WorkflowError("New scanned source quantity is unchanged")
+            total = s.scalar(select(func.sum(FillSource.quantity)).where(
+                FillSource.fill_id == fill.id)) or Decimal("0")
+            if total - old_qty + new_qty > fill.quantity:
+                raise WorkflowError("Corrected sources exceed actual physical fill quantity")
+            stock = s.scalar(select(Stock).where(
+                Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
+            if stock is None or stock.reserved < old_qty:
+                raise WorkflowError("Existing physical stock reservation is inconsistent")
+            from .inventory_allocations import source_allocation, allocation_location_id
+            allocation = source_allocation(s, actor, fill, stock, source)
+            location_id = allocation_location_id(s, allocation)
+            delta = new_qty - old_qty
+            if delta > 0:
+                if stock.expires <= date.today().isoformat():
+                    raise WorkflowError("Cannot increase a source from expired stock")
+                from .inventory_advanced import assert_not_recalled
+                assert_not_recalled(s, stock)
+                if stock.on_hand - stock.reserved - stock.quarantined < delta:
+                    raise WorkflowError("Insufficient available stock for scanned quantity correction")
+                from .inventory_fefo import require_fefo_scan
+                require_fefo_scan(s, actor, fill.id, stock, fefo_override_note)
+            elif fefo_override_note is not None:
+                raise WorkflowError("FEFO override is only applicable when increasing a scanned source")
+            from .inventory_ops import record_movement
+            movement_id = record_movement(s, actor, stock, "FILL_SOURCE_QUANTITY_CORRECTION",
+                reserved=delta, location_id=location_id, reason=note)
+            source.quantity = new_qty
+            if allocation is not None:
+                from .inventory_location_models import InventoryAllocationEvent
+                allocation.quantity = new_qty
+                s.add(InventoryAllocationEvent(site_id=actor.site_id,
+                    allocation_id=allocation.id, from_status="ACTIVE", to_status="ACTIVE",
+                    actor_id=actor.id, reason=f"Corrected allocated source quantity from {old_qty} to {new_qty}: {note}"))
+            detail = {"fill_id": fill.id, "source_id": source.id, "stock_id": stock.id,
+                      "before": str(old_qty), "after": str(new_qty),
+                      "delta": str(delta), "movement_id": movement_id,
+                      "physical_fill_quantity": str(fill.quantity),
+                      "location_id": location_id, "reason": note}
+            self._audit(s, actor, "FILL_PRODUCT_SOURCE_QUANTITY_CORRECTED", fill.id, detail)
+            return detail
+
+    def remove_scanned_source(self, actor: Actor, fill_id: str,
+                              source_id: str, reason: str) -> dict[str, Any]:
+        """Release a mistaken pre-review physical source, retaining its audit trail."""
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 2000:
+            raise WorkflowError("Scanned source correction requires a 12–2000 character explanation")
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, fill.prescription_id, actor)
+            if fill.status != "PRODUCT_FILL" or rx.status != "PRODUCT_FILL":
+                raise WorkflowError("Sources can only be removed during Product Fill")
+            # Never quietly invalidate claims, paid events or issued label artifacts.
+            if (s.scalar(select(Claim.id).where(Claim.fill_id == fill.id).limit(1))
+                    or s.scalar(select(Label.id).where(Label.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claimed or labeled fill needs a separate reversal workflow")
+            from .claim_transactions_models import SandboxClaimTransaction
+            from .label_printing import LabelPrintJob
+            if (s.scalar(select(SandboxClaimTransaction.id).where(
+                    SandboxClaimTransaction.fill_id == fill.id).limit(1))
+                    or s.scalar(select(LabelPrintJob.id).where(
+                    LabelPrintJob.fill_id == fill.id).limit(1))):
+                raise WorkflowError("Claim or print history needs a separate reversal workflow")
+            source = s.scalar(select(FillSource).where(
+                FillSource.id == source_id, FillSource.fill_id == fill.id).with_for_update())
+            if source is None:
+                raise WorkflowError("Scanned source not found for this fill")
+            stock = s.scalar(select(Stock).where(
+                Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
+            if stock is None or stock.reserved < source.quantity:
+                raise WorkflowError("Physical stock reservation is inconsistent")
+            if fill.billing_product_id == stock.product_id:
+                other_source = s.scalar(select(FillSource.id).join(
+                    Stock, FillSource.stock_id == Stock.id).where(
+                    FillSource.fill_id == fill.id, FillSource.id != source.id,
+                    Stock.product_id == fill.billing_product_id).limit(1))
+                if other_source is None:
+                    raise WorkflowError("Clear the selected billing product before removing its last physical source")
+            from .inventory_allocations import (
+                source_allocation, allocation_location_id, transition_allocation,
+            )
+            allocation = source_allocation(s, actor, fill, stock, source)
+            from .inventory_ops import record_movement
+            movement_id = record_movement(s, actor, stock, "FILL_SOURCE_CORRECTION_RELEASE",
+                reserved=-source.quantity, reason=note,
+                location_id=allocation_location_id(s, allocation))
+            transition_allocation(s, actor, allocation, "RELEASED",
+                "Mistaken scanned source removed: " + note, release_source_link=True)
+            details = {"source_id": source.id, "stock_id": stock.id,
+                       "fill_id": fill.id, "quantity": str(source.quantity),
+                       "movement_id": movement_id, "reason": note}
+            s.delete(source)
+            s.flush()
+            details["remaining_sources"] = s.scalar(select(func.count(FillSource.id)).where(
+                FillSource.fill_id == fill.id))
+            self._audit(s, actor, "FILL_PRODUCT_SOURCE_REMOVED", fill.id, details)
+            return details
+
+    def prepare_for_review(self, actor: Actor, fill_id: str, payer_names: list[str] | None = None,
+                           *, coverage_ids: list[str] | None = None) -> list[str]:
+        """Sandbox claims and separate bottle-label records; no real payer transport."""
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if not f:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, f.prescription_id, actor)
+            if f.status != "PRODUCT_FILL":
+                raise WorkflowError("Wrong fill state")
+            from .product_selection import require_fill_sources_eligible
+            require_fill_sources_eligible(s, rx, f)
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
+            sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+            if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
+                raise WorkflowError("Physical source quantities must match dispensed quantity")
+            if f.billing_product_id is not None and not any(
+                    s.get(Stock, src.stock_id).product_id == f.billing_product_id for src in sources):
+                raise WorkflowError("Selected billing product no longer matches a scanned source")
+            payers = payer_names or []
+            selected_coverages = None
+            if coverage_ids is not None:
+                if payers:
+                    raise WorkflowError("Do not mix legacy payer names and patient coverage IDs")
+                from .insurance import require_coverages
+                selected_coverages = require_coverages(s, actor, rx, coverage_ids)
+                payers = [payer.name for _, payer in selected_coverages]
+            from .emergency_supply import require_emergency_claim_separation
+            require_emergency_claim_separation(s, f.id, actor.site_id, payers)
+            if (len(payers) > 4 or
+                    any(not isinstance(name, str) or not name.strip() for name in payers)):
+                raise WorkflowError("Maximum four named COB payers")
+            from .claim_transactions import require_no_open_test_rejections
+            require_no_open_test_rejections(s, actor, f)
+            from .fill_completion import FillCompletion
+            is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
+            if is_completion and payers:
+                raise WorkflowError("Linked completion cannot create another synthetic payer claim")
+            # Label ordering: largest physical source first.
+            sorted_sources = sorted(sources, key=lambda x: (-x.quantity, x.stock_id))
+            labels = []
+            for index, src in enumerate(sorted_sources, start=1):
+                stock = s.get(Stock, src.stock_id)
+                prod = s.get(Product, stock.product_id)
+                label = Label(fill_id=f.id, bottle_number=index,
+                              bottle_count=len(sorted_sources), ndc=prod.ndc,
+                              quantity=src.quantity, total=f.quantity,
+                              description=prod.description)
+                s.add(label)
+                labels.append(f"{prod.ndc} {src.quantity}/{f.quantity} — Bottle {index} of {len(sorted_sources)}")
+            for seq, payer in enumerate(payers, start=1):
+                claim = Claim(fill_id=f.id, payer=payer, sequence=seq,
+                              status="PAID_SYNTHETIC", billed_quantity=f.billed_quantity)
+                s.add(claim)
+                s.flush()
+                from .billing import record_paid
+                record_paid(s, actor, claim, sources)
+                if selected_coverages is not None:
+                    from .insurance import snapshot_paid_coverage
+                    snapshot_paid_coverage(s, actor, f, claim, selected_coverages[seq - 1])
+                from .claim_transactions import record_test_paid
+                record_test_paid(s, actor, claim)
+            from .label_printing import enqueue_label_jobs
+            enqueue_label_jobs(s, actor, f)
+            f.status = "PHARMACIST_REVIEW"; rx.status = "PHARMACIST_REVIEW"
+            self._audit(s, actor, "FILL_PREPARED", f.id,
+                        {"bottles": len(labels), "payers": payers, "mode": "SYNTHETIC_SANDBOX",
+                         "coverage_linked": selected_coverages is not None})
+            return labels
+
+    def verify(self, actor: Actor, fill_id: str) -> None:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "verify")
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if not f:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, f.prescription_id, actor)
+            if f.status != "PHARMACIST_REVIEW":
+                raise WorkflowError("Fill not awaiting pharmacist review")
+            from .product_selection import require_fill_sources_eligible
+            require_fill_sources_eligible(s, rx, f)
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
+            from .fill_completion import require_fill_date_eligible
+            require_fill_date_eligible(s, rx, f)
+            if s.scalar(select(DUR.id).where(DUR.prescription_id == rx.id,
+                        DUR.severity == "HIGH", DUR.resolved.is_(False))):
+                raise WorkflowError("Unresolved high-severity DUR issue")
+            sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+            if not sources or sum((x.quantity for x in sources), Decimal("0")) != f.quantity:
+                raise WorkflowError("Physical sources incomplete")
+            for src in sorted(sources, key=lambda item: item.stock_id):
+                stock = s.scalar(select(Stock).where(
+                    Stock.id == src.stock_id, Stock.site_id == actor.site_id).with_for_update())
+                if stock is None or stock.expires <= date.today().isoformat() or stock.reserved < src.quantity:
+                    raise WorkflowError("Source expired or reservation invalid")
+                from .inventory_advanced import assert_not_recalled
+                assert_not_recalled(s, stock)
+                from .inventory_allocations import (
+                    source_allocation, allocation_location_id, transition_allocation,
+                )
+                allocation = source_allocation(s, actor, f, stock, src)
+                from .inventory_ops import record_movement
+                record_movement(s, actor, stock, "FILL_DISPENSE",
+                                on_hand=-src.quantity, reserved=-src.quantity,
+                                location_id=allocation_location_id(s, allocation))
+                transition_allocation(s, actor, allocation, "CONSUMED",
+                    "Pharmacist verified and consumed the scanned physical allocation")
+            # Match original TS packaging metadata behavior: for a repackaged
+            # synthetic prescription, choose the earlier of one calendar year
+            # after verification and the first source's manufacturer expiration.
+            # Original-container fills intentionally have no calculated discard date.
+            if f.dispensed_in_original_container:
+                f.patient_discard_date = None
+            else:
+                verified_day = date.today()
+                try:
+                    annual_limit = verified_day.replace(year=verified_day.year + 1)
+                except ValueError:
+                    annual_limit = verified_day.replace(year=verified_day.year + 1, day=28)
+                source_limit = min(date.fromisoformat(s.get(Stock, src.stock_id).expires)
+                                   for src in sources)
+                f.patient_discard_date = min(annual_limit, source_limit).isoformat()
+            from .inventory_demands import fulfill_fill_demand_tx
+            fulfill_fill_demand_tx(s, actor, f, rx)
+            f.status = "READY"; rx.status = "READY"
+            self._audit(s, actor, "PHARMACIST_VERIFIED", f.id, {
+                "quantity": str(f.quantity),
+                "dispensed_in_original_container": f.dispensed_in_original_container,
+                "patient_discard_date": f.patient_discard_date,
+            })
+
+    def stage_will_call(self, actor: Actor, fill_id: str, bin_name: str, bag_barcode: str) -> None:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "process")
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if not f:
+                raise WorkflowError("Fill not found")
+            self._site(s, Prescription, f.prescription_id, actor)
+            if f.status != "READY" or not bin_name.strip() or not bag_barcode.strip():
+                raise WorkflowError("Only a Ready fill can be staged with a bin and bag barcode")
+            from .willcall import _barcode, _bin, record_stage
+            normalized_barcode, normalized_bin = _barcode(bag_barcode), _bin(bin_name)
+            if s.scalar(select(WillCall.id).where(WillCall.fill_id == f.id)):
+                raise WorkflowError("Fill already has a Will Call package")
+            record_stage(s, actor, f, normalized_barcode, normalized_bin)
+            s.add(WillCall(fill_id=f.id, bag_barcode=normalized_barcode,
+                           bin_name=normalized_bin, status="STAGED"))
+            self._audit(s, actor, "WILL_CALL_STAGED", f.id,
+                        {"bin": bin_name, "bag": bag_barcode})
+
+    def sell(self, actor: Actor, fill_id: str, identity_verified: bool, signed: bool,
+             amount: str, tender: str, scanned_bag: str | None = None) -> None:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "sell")
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if not f:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, f.prescription_id, actor)
+            if f.status != "READY" or not identity_verified or not signed:
+                raise WorkflowError("Ready fill, identity verification and signature required")
+            from .product_selection import require_fill_sources_eligible
+            require_fill_sources_eligible(s, rx, f)
+            from .emergency_supply import require_emergency_dispense_eligible
+            require_emergency_dispense_eligible(s, rx, f)
+            from .fill_completion import require_fill_date_eligible
+            require_fill_date_eligible(s, rx, f)
+            from .inventory_advanced import assert_not_recalled
+            for src in s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all():
+                stock = s.get(Stock, src.stock_id)
+                if stock is None or stock.site_id != actor.site_id or stock.expires <= date.today().isoformat():
+                    raise WorkflowError("Ready fill stock was lost or expired")
+                assert_not_recalled(s, stock)
+            bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
+            if bag and (bag.status != "STAGED" or scanned_bag != bag.bag_barcode):
+                raise WorkflowError("Staged fill requires the correct bag barcode")
+            try:
+                money = Decimal(amount)
+            except (InvalidOperation, TypeError) as exc:
+                raise WorkflowError("Invalid patient amount") from exc
+            if (not tender.strip() or not money.is_finite() or money < 0
+                    or money.as_tuple().exponent < -2):
+                raise WorkflowError("Tender and nonnegative amount in cents required")
+            s.add(Sale(fill_id=f.id, verified_identity=True, signature_attested=True,
+                       tender=tender, amount=Decimal(amount)))
+            from .date_rules import record_sale_time
+            record_sale_time(s, actor, f)
+            if bag:
+                from .willcall import record_closed
+                record_closed(s, actor, f, "SOLD", "Pickup completed with verified identity and signature")
+                bag.status = "SOLD"
+            from .fill_completion import record_physical_sale
+            record_physical_sale(s, actor, f)
+            f.status = "SOLD"; rx.status = "SOLD"
+            if f.fill_number > 0:
+                rx.refills_used = max(rx.refills_used, f.fill_number)
+            self._audit(s, actor, "POS_SOLD", f.id, {"tender": tender, "amount": amount})
+
+    def return_to_stock(self, actor: Actor, fill_id: str, reason: str) -> None:
+        with self.sessions.begin() as s:
+            self._authorized(s, actor, "correct")
+            f = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if not f:
+                raise WorkflowError("Fill not found")
+            rx = self._site(s, Prescription, f.prescription_id, actor)
+            if f.status != "READY" or not reason.strip():
+                raise WorkflowError("Only unsold Ready fills can be returned, with a reason")
+            for claim in s.scalars(select(Claim).where(Claim.fill_id == f.id)).all():
+                if claim.status != "PAID_SYNTHETIC":
+                    raise WorkflowError("Claim reversal precondition failed")
+                from .billing import record_reversal
+                record_reversal(s, actor, claim, reason)
+                claim.status = "REVERSED_SYNTHETIC"
+            sources = s.scalars(select(FillSource).where(FillSource.fill_id == f.id)).all()
+            for src in sorted(sources, key=lambda item: item.stock_id):
+                stock = s.scalar(select(Stock).where(
+                    Stock.id == src.stock_id, Stock.site_id == actor.site_id).with_for_update())
+                if stock is None:
+                    raise WorkflowError("Return-to-stock source missing at pharmacy site")
+                from .inventory_ops import record_movement
+                record_movement(s, actor, stock, "RETURN_TO_STOCK", on_hand=src.quantity,
+                                reason=reason.strip())
+                from .inventory_advanced import quarantine_recalled_receipt
+                quarantine_recalled_receipt(s, actor, stock, src.quantity)
+            bag = s.scalar(select(WillCall).where(WillCall.fill_id == f.id))
+            if bag:
+                from .willcall import record_closed
+                record_closed(s, actor, f, "RETURNED", reason)
+                bag.status = "RETURNED"
+            from .fill_completion import FillCompletion, void_unissued_obligation
+            from .emergency_supply import void_unsold_emergency
+            void_unissued_obligation(s, actor, f, reason)
+            was_emergency = void_unsold_emergency(s, actor, f, reason)
+            linked_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id))
+            from .label_printing import void_label_jobs
+            void_label_jobs(s, actor, f.id, reason)
+            f.status = "RETURNED"; rx.status = "SOLD" if (linked_completion or was_emergency) else "DUR_REVIEW"
+            self._audit(s, actor, "FILL_RETURNED_TO_STOCK", f.id, {"reason": reason})
+
+    def queue(self, actor: Actor, term: str = "") -> list[dict[str, Any]]:
+        with self.sessions() as s:
+            self._authorized(s, actor, "read")
+            rows = s.scalars(select(Prescription).where(Prescription.site_id == actor.site_id)
+                             .order_by(Prescription.rx_number)).all()
+            results = []
+            for rx in rows:
+                p = s.get(Patient, rx.patient_id)
+                d = s.get(Drug, rx.drug_id)
+                name = f"{p.last_name}, {p.first_name}"
+                if term.casefold() not in f"{rx.rx_number} {name} {d.name}".casefold():
+                    continue
+                results.append({"id": rx.id, "rx_number": rx.rx_number, "patient": name,
+                                "drug": f"{d.name} {d.strength}", "status": rx.status})
+            return results
+
+    def audit_log(self, actor: Actor) -> list[dict[str, Any]]:
+        with self.sessions() as s:
+            self._authorized(s, actor, "read")
+            return [{"kind": x.kind, "subject": x.subject_id, "detail": x.detail}
+                    for x in s.scalars(select(Audit).where(Audit.site_id == actor.site_id)
+                                       .order_by(Audit.created_at, Audit.id)).all()]

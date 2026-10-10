@@ -1,0 +1,68 @@
+name: Python PostgreSQL migration verification
+
+on:
+  push:
+    branches: [python-native-rewrite]
+  pull_request:
+    paths:
+      - 'python/**'
+      - '.github/workflows/python-postgres-migrations.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python migration dependencies
+        working-directory: python
+        run: python -m pip install -e '.[test]'
+      - name: Synthetic schema versioning and migration tests
+        working-directory: python
+        run: python -m pytest -q tests/test_database_migrations.py
+
+  postgres-schema:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pharmacy1os
+          POSTGRES_PASSWORD: pharmacy1os_ci_only
+          POSTGRES_DB: pharmacy1os_py_migration
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pharmacy1os -d pharmacy1os_py_migration"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      PHARMACY1OS_SYNTHETIC_DEMO: '1'
+      PHARMACY1OS_DATABASE_URL: postgresql+psycopg://pharmacy1os:pharmacy1os_ci_only@127.0.0.1:5432/pharmacy1os_py_migration
+      PHARMACY1OS_PG_CI_URL: postgresql+psycopg://pharmacy1os:pharmacy1os_ci_only@127.0.0.1:5432/pharmacy1os_py_migration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PostgreSQL Python dependencies
+        working-directory: python
+        run: python -m pip install -e '.[test,postgres]'
+      - name: Apply versioned Python-only schema
+        working-directory: python
+        run: python -m pharmacy1os.db_cli upgrade
+      - name: Verify migrated schema and Alembic drift
+        working-directory: python
+        run: |
+          python -m pharmacy1os.db_cli verify
+          alembic check
+      - name: Run PostgreSQL audit/inventory integration smoke
+        working-directory: python
+        run: python -m pytest -q tests/test_postgres_migrated.py

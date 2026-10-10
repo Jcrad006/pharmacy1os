@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pharmacy1os"
+version = "0.1.0"
+description = "Pharmacy1OS Python-native migration (synthetic development only)"
+requires-python = ">=3.12"
+dependencies = ["SQLAlchemy>=2.0,<3", "FastAPI>=0.115,<1", "uvicorn>=0.30,<1", "pydantic>=2,<3", "cryptography>=43,<47", "alembic>=1.16,<2"]
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.8,<7"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+test = ["pytest>=8,<10", "httpx>=0.27,<1"]
+
+[project.scripts]
+pharmacy1os-desktop = "pharmacy1os.desktop:main"
+pharmacy1os-api = "pharmacy1os.api:main"
+pharmacy1os-db = "pharmacy1os.db_cli:main"
+pharmacy1os-backup = "pharmacy1os.backup:main"
+pharmacy1os-postgres-backup = "pharmacy1os.postgres_backup:main"
+pharmacy1os-recovery = "pharmacy1os.recovery:main"
+pharmacy1os-auth = "pharmacy1os.auth_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
