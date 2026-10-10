@@ -1,13 +1,13 @@
 """Synthetic per-fill billing inputs.
 
 Revision ID: 89d723ba4201
-Revises: 60a79f2cc141
+Revises: d7f2e57b8c94
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "89d723ba4201"
-down_revision = "60a79f2cc141"
+down_revision = "d7f2e57b8c94"
 branch_labels = None
 depends_on = None
 
