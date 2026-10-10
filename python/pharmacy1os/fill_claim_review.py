@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import select
 
 from .billing_models import ClaimOperation
+from .cob_attempts import CobAttemptRegistry
 from .claim_transactions import _view
 from .claim_transactions_models import SandboxClaimTransaction
 from .insurance import _mask
@@ -59,6 +60,10 @@ class FillClaimReview:
                 else:
                     other_events.append(summary)
 
+            # Reconcile every local BILL/REVERSE with its immutable versioned
+            # payer attempt before presenting a current billing position.
+            attempt_summary = CobAttemptRegistry(self.service)._history_tx(s, actor, fill.id)
+            version_by_claim = {p["claim_id"]: p for p in attempt_summary["claim_positions"]}
             claim_rows = s.scalars(select(Claim).where(
                 Claim.fill_id == fill.id).order_by(Claim.sequence)).all()
             result_claims = []
@@ -72,13 +77,27 @@ class FillClaimReview:
                 coverage = s.scalar(select(ClaimCoverageSnapshot).where(
                     ClaimCoverageSnapshot.site_id == actor.site_id,
                     ClaimCoverageSnapshot.claim_id == claim.id))
+                version = version_by_claim.get(claim.id)
+                if version is None or not version["attempts"]:
+                    raise WorkflowError("Claim has no validated synthetic attempt lineage")
+                current = version["attempts"][-1]
+                first = version["attempts"][0]
                 result_claims.append({
                     "id": claim.id, "payer": claim.payer, "position": claim.sequence,
                     "status": claim.status, "billed_quantity": str(claim.billed_quantity),
                     "physical_quantity": str(fill.quantity),
                     "days_supply": (billing_snapshot.get("days_supply")
                                     if billing_snapshot is not None else None),
-                    "selected_ndc": paid.selected_ndc if paid else None,
+                    # The old ClaimOperation describes attempt 1 only; do
+                    # not display it as the current NDC after selective COB.
+                    "selected_ndc": current["billed_ndc"],
+                    "original_selected_ndc": first["billed_ndc"],
+                    "current_paid_transaction_id": (
+                        current["paid_transaction_id"]
+                        if current["state"] == "PAID_SYNTHETIC_LOCAL_ONLY" else None),
+                    "active_attempt_number": current["attempt_number"],
+                    "attempt_history": version["attempts"],
+                    "original_claim_operation_snapshot_only": True,
                     "billing_profile": (billing_snapshot.get("billing_profile")
                                         if billing_snapshot is not None else None),
                     "source_count": (len(billing_snapshot.get("physical_sources", []))
@@ -153,6 +172,12 @@ class FillClaimReview:
                 "physical_quantity": str(fill.quantity),
                 "payer_intended_quantity": str(fill.billed_quantity),
                 "claims": result_claims, "labels": labels_out,
+                "versioned_cob": {
+                    "total_attempts": attempt_summary["total_attempts"],
+                    "active_local_paid_positions": attempt_summary[
+                        "active_local_paid_positions"],
+                    "external_payer_contact": False,
+                },
                 "standalone_test_events": other_events,
                 "warnings": [
                     "LOCAL_SYNTHETIC_RECORDS_ONLY_NO_PAYER_OR_PRINTER_CONNECTIVITY",

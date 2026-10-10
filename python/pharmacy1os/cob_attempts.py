@@ -210,15 +210,6 @@ class CobAttemptRegistry:
                         or not isinstance(request.get("correction_key"), str)
                         or len(request["correction_key"]) != 64):
                     raise WorkflowError("Synthetic corrected attempt ancestry is inconsistent")
-            if attempt.attempt_number > 1:
-                previous = grouped[claim.id][-1] if grouped[claim.id] else None
-                if (previous is None or previous["attempt_number"] + 1 != attempt.attempt_number
-                        or previous["reversal_transaction_id"] is None
-                        or request.get("attempt_number") != attempt.attempt_number
-                        or request.get("corrected_from_paid_transaction_id") != previous["paid_transaction_id"]
-                        or not isinstance(request.get("correction_key"), str)
-                        or len(request["correction_key"]) != 64):
-                    raise WorkflowError("Synthetic corrected attempt ancestry is inconsistent")
             grouped[claim.id].append({
                 "attempt_id": attempt.id, "attempt_number": attempt.attempt_number,
                 "coverage_position": attempt.coverage_position,

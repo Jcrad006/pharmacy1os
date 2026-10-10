@@ -257,3 +257,125 @@ def test_corrected_attempts_do_not_use_unsafe_legacy_full_fill_restart(case):
         ClaimRebillService(svc).restart(a["PHARMACIST"],fill,
             "Legacy full restart cannot understand repeated synthetic claim positions",
             expected_claim_ids=claim_ids)
+
+
+def test_version_aware_preflight_tracks_current_paid_suffix_after_two_corrections(case):
+    """The read-only preview must never return a reversed historic payer ID."""
+    from pharmacy1os.cob_correction_plan import CobCorrectionPlanner
+    svc, a, out, rx, fill, stocks, exp = case
+    registry = CobAttemptRegistry(svc)
+    planner = CobCorrectionPlanner(svc)
+    before = prepare(case, 4)
+    first = planner.plan(a["AUDITOR"], fill, target_position=2)
+    assert first["reverse_transaction_ids"] == desc(before, 2)
+    assert first["expected_active_paid_transaction_ids"] == desc(before, 2)
+    assert first["reverse_positions"] == [4, 3, 2]
+    assert first["then_reprocess_positions"] == [2, 3, 4]
+    assert first["action_enabled"] is True
+    assert first["available_billing_ndcs"] == [
+        "60000-4444-01", "60000-4444-02"]
+    action = SyntheticCobCorrectionService(svc)
+    action.correct(a["PHARMACIST"], fill,
+        "First NDC correction must refresh dynamic payer attempt identity",
+        target_position=2, expected_active_paid_transaction_ids=first[
+            "expected_active_paid_transaction_ids"],
+        corrected_billing_ndc="60000-4444-02")
+    after = registry.history(a["AUDITOR"], fill)
+    new_plan = planner.plan(a["AUDITOR"], fill, target_position=3)
+    assert new_plan["reverse_positions"] == [4, 3]
+    assert new_plan["expected_active_paid_transaction_ids"] == desc(after, 3)
+    assert new_plan["expected_active_paid_transaction_ids"] != desc(before, 3)
+    assert new_plan["full_chain"][0]["active_attempt_number"] == 1
+    assert new_plan["full_chain"][1]["active_attempt_number"] == 2
+    assert new_plan["full_chain"][1]["original_billing_ndc"] == "60000-4444-01"
+    assert new_plan["full_chain"][1]["current_billing_ndc"] == "60000-4444-02"
+    assert new_plan["upstream_positions_unchanged"] == [1, 2]
+    action.correct(a["PHARMACIST"], fill,
+        "Second simulated correction replays tertiary and fourth payers",
+        target_position=3, expected_active_paid_transaction_ids=new_plan[
+            "expected_active_paid_transaction_ids"],
+        corrected_billing_ndc="60000-4444-02")
+    final = registry.history(a["AUDITOR"], fill)
+    plan = planner.plan(a["PHARMACIST"], fill, target_position=2)
+    assert plan["reverse_transaction_ids"] == desc(final, 2)
+    assert [x["active_attempt_number"] for x in plan["full_chain"]] == [1, 2, 3, 3]
+    assert [x["position"] for x in plan["full_chain"]] == [1, 2, 3, 4]
+    assert planner.plan(a["AUDITOR"], fill, target_position=4)[
+        "reverse_positions"] == [4]
+    assert registry.history(a["AUDITOR"], fill) == final  # strict read-only
+
+
+def test_reconciled_fill_claim_review_displays_current_not_original_billed_ndc(case):
+    from pharmacy1os.fill_claim_review import FillClaimReview
+    svc, a, out, rx, fill, stocks, exp = case
+    before = prepare(case, 3)
+    subject = FillClaimReview(svc)
+    initial = subject.detail(a["AUDITOR"], fill)
+    assert [x["selected_ndc"] for x in initial["claims"]] == ["60000-4444-01"] * 3
+    correct = SyntheticCobCorrectionService(svc)
+    report = correct.correct(a["PHARMACIST"], fill,
+        "Documented local synthetic secondary payer NDC correction for audit",
+        target_position=2, expected_active_paid_transaction_ids=desc(before, 2),
+        corrected_billing_ndc="60000-4444-02")
+    after = subject.detail(a["AUDITOR"], fill)
+    claims = after["claims"]
+    assert [x["selected_ndc"] for x in claims] == [
+        "60000-4444-01", "60000-4444-02", "60000-4444-01"]
+    assert [x["original_selected_ndc"] for x in claims] == ["60000-4444-01"] * 3
+    assert [x["active_attempt_number"] for x in claims] == [1, 2, 2]
+    assert [len(x["attempt_history"]) for x in claims] == [1, 2, 2]
+    assert [x["current_paid_transaction_id"] for x in claims[1:]] == report[
+        "new_paid_transaction_ids"]
+    assert all(x["original_claim_operation_snapshot_only"] for x in claims)
+    assert after["versioned_cob"] == {
+        "total_attempts": 5, "active_local_paid_positions": 3,
+        "external_payer_contact": False}
+    assert [len(x["claim_transactions"]) for x in claims] == [1, 3, 3]
+    assert [label["ndc"] for label in after["labels"]] == [
+        label["ndc"] for label in initial["labels"]]
+    assert len(BillingService(svc).history(a["AUDITOR"], fill)) == 3
+    assert after["warnings"]
+    assert subject.detail(a["AUDITOR"], fill) == after
+
+
+def test_versioned_correction_preflight_remains_site_scoped_and_excludes_printed_labels(case):
+    from pharmacy1os.cob_correction_plan import CobCorrectionPlanner
+    svc, a, out, rx, fill, stocks, exp = case
+    history = prepare(case, 2)
+    planner = CobCorrectionPlanner(svc)
+    with pytest.raises(WorkflowError, match="pharmacy site"):
+        planner.plan(out["AUDITOR"], fill, target_position=1)
+    job = LabelPrintService(svc).list(a["PHARMACIST"], fill)[0]
+    LabelPrintService(svc).record_output_attempt(
+        a["PHARMACIST"], job["id"], "VERSIONED-PREFLIGHT-PRINT-TEST",
+        "A mock label output attempt occurred before proposed correction",
+        dialog_accepted=True)
+    with pytest.raises(WorkflowError, match="Previously printed"):
+        planner.plan(a["AUDITOR"], fill, target_position=1)
+    # Test print attempts never change the underlying immutable payer ledger.
+    assert CobAttemptRegistry(svc).history(a["AUDITOR"], fill) == history
+
+
+def test_versioned_correction_api_preflight_and_fill_detail_are_read_only(case):
+    from pharmacy1os.cob_correction_plan import CobCorrectionPlanner
+    svc, a, out, rx, fill, stocks, exp = case
+    before = prepare(case, 2)
+    corrected = SyntheticCobCorrectionService(svc).correct(
+        a["PHARMACIST"], fill,
+        "Prepare versioned current payer information without modifying it",
+        target_position=2, expected_active_paid_transaction_ids=desc(before, 2),
+        corrected_billing_ndc="60000-4444-02")
+    app = TestClient(create_app(svc, synthetic_enabled=True))
+    header = {"x-demo-staff-id": a["AUDITOR"].id}
+    result = app.get(f"/api/third-party/fills/{fill}/cob-correction-plan?target_position=2",
+                     headers=header)
+    assert result.status_code == 200, result.text
+    assert result.json()["action_enabled"] is True
+    assert result.json()["reverse_transaction_ids"] == corrected["new_paid_transaction_ids"]
+    claims = app.get(f"/api/fills/{fill}/claims", headers=header)
+    assert claims.status_code == 200, claims.text
+    assert claims.json()["claims"][1]["selected_ndc"] == "60000-4444-02"
+    assert claims.json()["claims"][1]["original_selected_ndc"] == "60000-4444-01"
+    denied = app.get(f"/api/fills/{fill}/claims",
+        headers={"x-demo-staff-id": out["AUDITOR"].id})
+    assert denied.status_code == 409

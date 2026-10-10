@@ -65,7 +65,8 @@ def test_preflight_orders_one_target_and_downstream_positions_without_mutation(c
     assert plan["reverse_transaction_ids"] == [
         bills[3]["id"], bills[2]["id"], bills[1]["id"]]
     assert plan["payer_intended_quantity"] == "80.000"
-    assert plan["action_enabled"] is False
+    assert plan["action_enabled"] is True
+    assert plan["available_billing_ndcs"] == ["98800-1111-13"]
     assert plan["requires_new_claim_event_generation"] is True
     assert "READ_ONLY_SYNTHETIC_PREFLIGHT" in plan["warning"]
     assert planner.plan(a["PHARMACIST"], fill, target_position=4)[
@@ -112,7 +113,7 @@ def test_preflight_requires_unreversed_complete_claim_set(case):
     with svc.sessions.begin() as s:
         claim = s.get(Claim, bills[1]["claim_id"])
         claim.status = "REVERSED_SYNTHETIC"
-    with pytest.raises(WorkflowError, match="partially reversed"):
+    with pytest.raises(WorkflowError, match="Claim status differs|partially reversed"):
         planner.plan(a["AUDITOR"], fill, target_position=2)
 
 
