@@ -112,19 +112,17 @@ def test_rebill_restarts_new_attempt_without_reusing_paid_claims_or_labels(case)
 
 def test_partial_quantity_is_physical_while_entire_authorization_is_rebilled(case):
     svc, a, outside, rx, fill, expiry = case
-    # New original partial at Product Fill; the previous reserved source total is 90.
-    # This fixture replaces one source to get 60 physically scanned units.
-    sources = svc.scanned_sources(a["TECHNICIAN"], fill)
-    svc.correct_scanned_source_quantity(a["TECHNICIAN"], fill, sources[0]["id"], "40",
-        "Recount physical manufacturer quantity from sixty-five to forty units")
-    svc.correct_scanned_source_quantity(a["TECHNICIAN"], fill, sources[1]["id"], "20",
-        "Recount physical manufacturer quantity from twenty-five to twenty")
-    with svc.sessions.begin() as s:
-        old = s.get(Fill, fill)
-        old.quantity = Decimal("60")
-        s.add(FillObligation(site_id=a["TECHNICIAN"].site_id,
-            prescription_id=rx, anchor_fill_id=fill, intended=Decimal("90"),
-            remaining=Decimal("90"), dispensed=Decimal("0"), status="OPEN"))
+    # Follow the actual shortage/partial interruption workflow: it releases
+    # prior 90-unit reservations and requires a fresh 60-unit physical rescan.
+    from pharmacy1os.fill_completion import FillCompletionService
+    FillCompletionService(svc).interrupt_as_partial(
+        a["TECHNICIAN"], fill, "60",
+        "Only sixty of ninety authorized synthetic units were available")
+    assert svc.scanned_sources(a["TECHNICIAN"], fill) == []
+    svc.scan_source(a["TECHNICIAN"], fill, "RESTART-BAR-1",
+                    "LOT-RESTART-1", expiry, "40")
+    svc.scan_source(a["TECHNICIAN"], fill, "RESTART-BAR-2",
+                    "LOT-RESTART-2", expiry, "20")
     ids = prepare(case, ["Synthetic A"])
     result = ClaimRebillService(svc).restart(a["PHARMACIST"], fill,
         "Original synthetic partial insurance billed manufacturer incorrectly",
