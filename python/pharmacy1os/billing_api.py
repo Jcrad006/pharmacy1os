@@ -4,7 +4,13 @@ from typing import Callable
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from .billing import BillingService
+from .claim_rebilling import ClaimRebillService
 from .service import Actor
+
+
+class RebillRestartIn(BaseModel):
+    reason: str = Field(min_length=12, max_length=1000)
+    expected_claim_ids: list[str] = Field(min_length=1, max_length=4)
 
 
 class ProfileVersionIn(BaseModel):
@@ -18,6 +24,16 @@ class ProfileVersionIn(BaseModel):
 
 def make_billing_router(billing: BillingService, actor_dependency: Callable[..., Actor]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["synthetic-billing"])
+
+    @router.post("/billing/fills/{fill_id}/restart-for-rebill")
+    def restart_for_rebill(fill_id: str, payload: RebillRestartIn,
+                           actor: Actor = Depends(actor_dependency)):
+        return ClaimRebillService(billing.service).restart(
+            actor, fill_id, payload.reason, expected_claim_ids=payload.expected_claim_ids)
+
+    @router.get("/billing/fills/{fill_id}/rebill-lineage")
+    def rebill_lineage(fill_id: str, actor: Actor = Depends(actor_dependency)):
+        return ClaimRebillService(billing.service).lineage(actor, fill_id)
 
     @router.get("/billing/profiles")
     def profiles(actor: Actor = Depends(actor_dependency)):

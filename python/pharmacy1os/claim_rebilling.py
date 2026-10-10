@@ -1,0 +1,197 @@
+"""Pre-verification synthetic claim reversal and explicit replacement fill lineage.
+
+Every old claim and label survives untouched. A fresh fill attempt is created
+ONLY after all payer events have been locally reversed and physical reservations
+released. This is not a live rebill or external insurer reversal.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, select
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .models import Base, Claim, Fill, FillSource, Label, Prescription, Stock, utcnow, uuid
+from .service import Actor, PharmacyService, WorkflowError
+
+
+class SyntheticRebillLink(Base):
+    __tablename__ = "py_synthetic_rebill_links"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), nullable=False, index=True)
+    original_fill_id: Mapped[str] = mapped_column(ForeignKey("py_fills.id"), nullable=False)
+    replacement_fill_id: Mapped[str] = mapped_column(ForeignKey("py_fills.id"), nullable=False)
+    reversed_claim_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 nullable=False, default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("original_fill_id", name="uq_py_rebill_original_fill"),
+        UniqueConstraint("replacement_fill_id", name="uq_py_rebill_replacement_fill"),
+    )
+
+
+class ClaimRebillService:
+    def __init__(self, service: PharmacyService):
+        self.service = service
+
+    def restart(self, actor: Actor, fill_id: str, reason: str, *,
+                expected_claim_ids: list[str]) -> dict[str, Any]:
+        """Atomically retire one pre-verified billed attempt and start a new one.
+
+        Optimistic claim-id check protects operators from stale payer lists;
+        PostgreSQL row locks serialize the old fill, Rx, claims and stock.
+        The new attempt has no scanned sources, billing selection, payer claims,
+        labels or pharmacist verification: each must be performed again.
+        """
+        note = reason.strip() if isinstance(reason, str) else ""
+        if not 12 <= len(note) <= 1000:
+            raise WorkflowError("Pharmacist rebill restart requires a 12-1000 character reason")
+        if (not isinstance(expected_claim_ids, list)
+                or not 1 <= len(expected_claim_ids) <= 4
+                or any(not isinstance(x, str) or not x for x in expected_claim_ids)
+                or len(set(expected_claim_ids)) != len(expected_claim_ids)):
+            raise WorkflowError("Provide the unique expected IDs of one to four paid claims")
+        with self.service.sessions.begin() as s:
+            self.service._authorized(s, actor, "correct")
+            fill = s.scalar(select(Fill).where(Fill.id == fill_id).with_for_update())
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            rx = s.scalar(select(Prescription).where(
+                Prescription.id == fill.prescription_id,
+                Prescription.site_id == actor.site_id).with_for_update())
+            if rx is None:
+                raise WorkflowError("Fill is outside this pharmacy site")
+            if fill.status != "PHARMACIST_REVIEW" or rx.status != "PHARMACIST_REVIEW":
+                raise WorkflowError("Only a pre-verification prepared fill can restart for rebilling")
+            if s.scalar(select(SyntheticRebillLink.id).where(
+                    SyntheticRebillLink.original_fill_id == fill.id)):
+                raise WorkflowError("Fill has already been replaced for synthetic rebilling")
+            from .fill_completion import FillCompletion, FillObligation
+            from .emergency_supply import EmergencySupply
+            if (s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == fill.id))
+                    or s.scalar(select(EmergencySupply.id).where(EmergencySupply.fill_id == fill.id))):
+                raise WorkflowError("Completion or emergency fills require separate professional reconciliation")
+            claims = s.scalars(select(Claim).where(
+                Claim.fill_id == fill.id).order_by(Claim.sequence).with_for_update()).all()
+            if [c.id for c in claims] != expected_claim_ids:
+                raise WorkflowError("Synthetic payer list changed; refresh expected claim IDs")
+            if any(c.status != "PAID_SYNTHETIC" for c in claims):
+                raise WorkflowError("Every synthetic claim must be paid and not previously reversed")
+            from .claim_transactions_models import SandboxClaimTransaction
+            from .billing_models import ClaimOperation
+            for claim in claims:
+                paid_op = s.scalar(select(ClaimOperation.id).where(
+                    ClaimOperation.claim_id == claim.id,
+                    ClaimOperation.operation == "SYNTHETIC_PAID"))
+                paid_tx = s.scalar(select(SandboxClaimTransaction.id).where(
+                    SandboxClaimTransaction.claim_id == claim.id,
+                    SandboxClaimTransaction.operation == "BILL"))
+                if paid_op is None or paid_tx is None:
+                    raise WorkflowError("Missing original synthetic payer evidence; manual review required")
+            from .label_printing import LabelPrintJob, LabelPrintEvent
+            labels = s.scalars(select(Label).where(Label.fill_id == fill.id)).all()
+            jobs = s.scalars(select(LabelPrintJob).where(
+                LabelPrintJob.site_id == actor.site_id, LabelPrintJob.fill_id == fill.id)).all()
+            if len(labels) != len(jobs) or not labels or any(
+                    job.status != "QUEUED" for job in jobs):
+                raise WorkflowError("All original synthetic labels must be unused and queued")
+            if s.scalar(select(LabelPrintEvent.id).join(
+                    LabelPrintJob, LabelPrintEvent.print_job_id == LabelPrintJob.id).where(
+                    LabelPrintJob.fill_id == fill.id, LabelPrintJob.site_id == actor.site_id).limit(1)):
+                raise WorkflowError("Previously printed test labels require manual reconciliation")
+            sources = s.scalars(select(FillSource).where(
+                FillSource.fill_id == fill.id).order_by(FillSource.stock_id)).all()
+            if not sources or sum((src.quantity for src in sources), 0) != fill.quantity:
+                raise WorkflowError("Physical fill sources are inconsistent; cannot restart")
+            if any(f.id != fill.id and f.status in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"}
+                   for f in s.scalars(select(Fill).where(Fill.prescription_id == rx.id))):
+                raise WorkflowError("Other active fill prevents correction restart")
+
+            from .billing import record_reversal
+            for claim in claims:
+                record_reversal(s, actor, claim, note)
+                claim.status = "REVERSED_SYNTHETIC"
+            from .inventory_allocations import (
+                source_allocation, allocation_location_id, transition_allocation,
+            )
+            from .inventory_ops import record_movement
+            for source in sources:
+                stock = s.scalar(select(Stock).where(
+                    Stock.id == source.stock_id, Stock.site_id == actor.site_id).with_for_update())
+                if stock is None or stock.reserved < source.quantity:
+                    raise WorkflowError("Physical stock reservation inconsistent during rebill")
+                allocation = source_allocation(s, actor, fill, stock, source)
+                record_movement(s, actor, stock, "REBILL_SOURCE_RELEASE",
+                                reserved=-source.quantity, reason=note,
+                                location_id=allocation_location_id(s, allocation))
+                transition_allocation(s, actor, allocation, "RELEASED",
+                    "Synthetic rebill restart released original scanned reservation")
+            from .label_printing import void_label_jobs
+            void_label_jobs(s, actor, fill.id, note)
+            from .fill_completion import void_unissued_obligation
+            void_unissued_obligation(s, actor, fill, note)
+            from .inventory_demands import cancel_fill_demand_tx
+            cancel_fill_demand_tx(s, actor, fill, rx, note)
+            old_quantity, old_days_supply = fill.quantity, fill.days_supply
+            fill.status = "RETURNED"
+            rx.status = "DUR_REVIEW"
+            replacement_id = self.service._start_fill_tx(
+                s, actor, rx, str(old_quantity), days_supply=old_days_supply)
+            replacement = s.get(Fill, replacement_id)
+            if (replacement is None or replacement.fill_number != fill.fill_number
+                    or replacement.attempt != fill.attempt + 1):
+                raise WorkflowError("Fresh rebill did not preserve original fill attempt lineage")
+            s.add(SyntheticRebillLink(
+                site_id=actor.site_id, original_fill_id=fill.id,
+                replacement_fill_id=replacement_id,
+                reversed_claim_ids_json=json.dumps(expected_claim_ids),
+                actor_id=actor.id, reason=note))
+            self.service._audit(s, actor, "SYNTHETIC_REBILL_RESTARTED", fill.id, {
+                "replacement_fill_id": replacement_id,
+                "reversed_claim_ids": expected_claim_ids,
+                "original_fill_number": fill.fill_number,
+                "replacement_attempt": replacement.attempt,
+                "original_source_count": len(sources),
+                "quantity_released": str(old_quantity),
+                "requires_fresh_scans": True,
+                "external_payer_contact": False, "reason": note,
+            })
+            return {
+                "original_fill_id": fill.id, "replacement_fill_id": replacement_id,
+                "reversed_claim_ids": expected_claim_ids,
+                "fill_number": replacement.fill_number, "replacement_attempt": replacement.attempt,
+                "physical_quantity": str(replacement.quantity),
+                "payer_intended_quantity": str(replacement.billed_quantity),
+                "days_supply": replacement.days_supply,
+                "requires_fresh_scans": True, "requires_new_claim_preparation": True,
+                "requires_pharmacist_verification": True, "synthetic_only": True,
+            }
+
+    def lineage(self, actor: Actor, fill_id: str) -> dict[str, Any]:
+        with self.service.sessions() as s:
+            self.service._authorized(s, actor, "read")
+            fill = s.get(Fill, fill_id)
+            if fill is None:
+                raise WorkflowError("Fill not found")
+            self.service._site(s, Prescription, fill.prescription_id, actor)
+            links = s.scalars(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.site_id == actor.site_id,
+                (SyntheticRebillLink.original_fill_id == fill_id)
+                | (SyntheticRebillLink.replacement_fill_id == fill_id))
+                .order_by(SyntheticRebillLink.created_at)).all()
+            return {
+                "fill_id": fill_id,
+                "links": [{
+                    "id": item.id, "original_fill_id": item.original_fill_id,
+                    "replacement_fill_id": item.replacement_fill_id,
+                    "reversed_claim_ids": json.loads(item.reversed_claim_ids_json),
+                    "reason": item.reason, "actor_id": item.actor_id,
+                    "created_at": item.created_at.isoformat()
+                } for item in links],
+                "warning": "LOCAL_SYNTHETIC_HISTORY_NO_EXTERNAL_PAYER_REVERSAL",
+            }

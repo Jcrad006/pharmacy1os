@@ -33,6 +33,7 @@ from .provider_directory import ProviderDirectory
 from .provider_parity import PrescriberParityService, PrescriberContractIn
 from .scheduling import SchedulingService
 from .billing import BillingService
+from .claim_rebilling import ClaimRebillService
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
 from .willcall import WillCallService
@@ -105,6 +106,7 @@ def main() -> None:
     provider_parity = PrescriberParityService(service)
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
+    rebill_service = ClaimRebillService(service)
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
     will_call_service = WillCallService(service)
@@ -394,6 +396,8 @@ def main() -> None:
                 self.action("Inject Development Test Rejection", self.inject_test_rejection)
                 self.action("Pharmacist Clear Test Rejection", self.clear_test_rejection)
                 self.action("Claim History", self.claim_history)
+                self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
+                self.action("Claim Rebill Lineage", self.rebill_lineage)
             elif page == 12:
                 self.action("New Communication Task", self.communication_create)
                 self.action("Approve / Review", self.communication_review)
@@ -672,6 +676,42 @@ def main() -> None:
             reason = self.ask("Payer", "Document why this billing profile is being changed")
             billing_service.update_profile(self.actor, payer, max_physical_sources=max_sources,
                                            billing_ndc_strategy=strategy, reason=reason)
+
+        def restart_synthetic_rebill(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+                fills = s.scalars(select(Fill).join(
+                    Prescription, Fill.prescription_id == Prescription.id).where(
+                    Prescription.site_id == self.actor.site_id,
+                    Fill.status == "PHARMACIST_REVIEW")).all()
+                candidates = []
+                for fill in fills:
+                    claims = s.scalars(select(Claim).where(
+                        Claim.fill_id == fill.id).order_by(Claim.sequence)).all()
+                    if claims and all(c.status == "PAID_SYNTHETIC" for c in claims):
+                        candidates.append((fill.id, s.get(Prescription, fill.prescription_id).rx_number,
+                                           [c.id for c in claims], len(claims)))
+            chosen = self.choose_item("Claim correction",
+                "Select pre-verification synthetic fill to reverse and rescan", candidates,
+                lambda row: f"Rx {row[1]} | {row[3]} synthetic payer claims")
+            reason = self.ask("Pharmacist rebill attestation",
+                "Document error and reason to reverse all mock claims (12-1000 characters)")
+            approved = QMessageBox.question(self, "Irreversible synthetic history",
+                "Reverse all synthetic payer claims, void any unused test labels, "
+                "release reservations and require a fresh scan for a new fill attempt? "
+                "This cannot contact a real payer.")
+            if approved != QMessageBox.StandardButton.Yes:
+                return
+            result = rebill_service.restart(self.actor, chosen[0], reason,
+                                            expected_claim_ids=chosen[2])
+            QMessageBox.information(self, "New synthetic fill requires rescan",
+                json.dumps(result, indent=2))
+
+        def rebill_lineage(self):
+            fill_id = self.ask("Rebill lineage", "Original or replacement Fill ID")
+            result = rebill_service.lineage(self.actor, fill_id)
+            QMessageBox.information(self, "Synthetic immutable claim lineage",
+                json.dumps(result, indent=2))
 
         def claim_history(self):
             with service.sessions() as s:
