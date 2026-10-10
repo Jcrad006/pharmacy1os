@@ -6,7 +6,7 @@ projection never infers a genuine insurer rejection, adjudication or payment.
 """
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 
 from .claim_rebilling import SyntheticRebillLink
 from .claim_transactions_models import SandboxClaimTransaction
@@ -69,20 +69,30 @@ class ThirdPartyWorkspace:
                     Patient.site_id == actor.site_id)
              .order_by(SandboxClaimTransaction.recorded_at.desc(),
                        SandboxClaimTransaction.id.desc()).limit(300)).all()
-            reversed_ids = {tx.original_transaction_id for tx, _, _, _ in transactions
+            # Visible history is limited to 300 rows. Current state cannot be
+            # inferred from only those rows: reversals and resolutions can fall
+            # outside the activity window. Query linked events independently.
+            ids = [tx.id for tx, _, _, _ in transactions]
+            linked = s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.site_id == actor.site_id,
+                SandboxClaimTransaction.original_transaction_id.in_(ids),
+                SandboxClaimTransaction.operation.in_((
+                    "REVERSE", "TEST_RESOLVE", "TEST_RETRY")))).all() if ids else []
+            reversed_ids = {tx.original_transaction_id for tx in linked
                             if tx.operation == "REVERSE"
-                            and tx.outcome == "REVERSED_SYNTHETIC"
-                            and tx.original_transaction_id is not None}
-            cleared_ids = {tx.original_transaction_id for tx, _, _, _ in transactions
-                           if tx.operation == "TEST_RESOLVE" and tx.original_transaction_id}
+                            and tx.outcome == "REVERSED_SYNTHETIC"}
+            cleared_ids = {tx.original_transaction_id for tx in linked
+                           if tx.operation == "TEST_RESOLVE"}
+            retried_ids = {tx.original_transaction_id for tx in linked
+                           if tx.operation == "TEST_RETRY"}
             recent = []
-            issues = []
             for tx, fill, rx, patient in transactions:
                 if tx.operation == "BILL":
                     status = ("REVERSED_SYNTHETIC" if tx.id in reversed_ids
                               else "PAID_SYNTHETIC_LOCAL_ONLY")
                 elif tx.operation == "TEST_REJECT":
-                    status = ("CLEARED_TEST_HOLD" if tx.id in cleared_ids
+                    status = ("RETRY_PREPARED_SYNTHETIC" if tx.id in retried_ids
+                              else "CLEARED_TEST_HOLD" if tx.id in cleared_ids
                               else "OPEN_TEST_REJECTION")
                 else:
                     status = tx.outcome
@@ -96,11 +106,39 @@ class ThirdPartyWorkspace:
                     "recorded_at": tx.recorded_at.isoformat(),
                 }
                 recent.append(summary)
-                if tx.operation == "TEST_REJECT" and status == "OPEN_TEST_REJECTION":
-                    issues.append({
-                        **summary, "issue": "MANUALLY_INJECTED_TEST_HOLD",
-                        "external_payer_rejection": False,
-                    })
+            # Open test holds must remain discoverable even after >300 newer
+            # event records. Read a separate, site-scoped, capped open queue.
+            # SQL NOT EXISTS performs the resolution check against *all* events.
+            resolve = SandboxClaimTransaction.__table__.alias("resolve")
+            open_rows = s.execute(select(
+                SandboxClaimTransaction, Fill, Prescription, Patient
+            ).join(Fill, SandboxClaimTransaction.fill_id == Fill.id)
+             .join(Prescription, Fill.prescription_id == Prescription.id)
+             .join(Patient, Prescription.patient_id == Patient.id)
+             .where(
+                 SandboxClaimTransaction.site_id == actor.site_id,
+                 Prescription.site_id == actor.site_id,
+                 Patient.site_id == actor.site_id,
+                 SandboxClaimTransaction.operation == "TEST_REJECT",
+                 ~exists(select(resolve.c.id).where(
+                     resolve.c.site_id == actor.site_id,
+                     resolve.c.original_transaction_id == SandboxClaimTransaction.id,
+                     resolve.c.operation == "TEST_RESOLVE",
+                 )),
+             )
+             .order_by(SandboxClaimTransaction.recorded_at.desc(),
+                       SandboxClaimTransaction.id.desc()).limit(101)).all()
+            issues = [{
+                "id": tx.id, "fill_id": fill.id, "rx_number": rx.rx_number,
+                "patient_id": patient.id, "patient_name": f"{patient.last_name}, {patient.first_name}",
+                "claim_id": tx.claim_id, "operation": tx.operation,
+                "status": "OPEN_TEST_REJECTION",
+                "payer_id": tx.payer_id, "coverage_id": tx.coverage_id,
+                "original_transaction_id": tx.original_transaction_id,
+                "recorded_at": tx.recorded_at.isoformat(),
+                "issue": "MANUALLY_INJECTED_TEST_HOLD",
+                "external_payer_rejection": False,
+            } for tx, fill, rx, patient in open_rows[:100]]
 
             print_rows = s.execute(select(LabelPrintJob, Fill, Prescription, Patient)
                 .join(Fill, LabelPrintJob.fill_id == Fill.id)
@@ -149,6 +187,8 @@ class ThirdPartyWorkspace:
                 "printQueue": print_queue, "pendingRebills": pending,
                 "maxCoveragePositions": 4,
                 "limits": {"patients": 100, "payers": 200,
-                           "claim_events": 300, "print_jobs": 100},
+                           "claim_events": 300, "print_jobs": 100,
+                           "open_issues": 100},
+                "openIssueListTruncated": len(open_rows) > 100,
                 "warning": "SYNTHETIC_ONLY_NO_EXTERNAL_CLAIMS_ELIGIBILITY_OR_PRINTER_CONFIRMATION",
             }

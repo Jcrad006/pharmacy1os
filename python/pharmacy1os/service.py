@@ -903,6 +903,19 @@ class PharmacyService:
             rx = self._site(s, Prescription, f.prescription_id, actor)
             if f.status != "PHARMACIST_REVIEW":
                 raise WorkflowError("Fill not awaiting pharmacist review")
+            # A partially or externally corrupted synthetic claim sequence
+            # must never reach verified inventory release or patient pickup.
+            # This check is transaction-scoped and read-only.
+            claims = s.scalars(select(Claim).where(Claim.fill_id == f.id)).all()
+            if any(c.status != "PAID_SYNTHETIC" for c in claims):
+                raise WorkflowError("Claim reversal or correction requires complete re-adjudication before verification")
+            if claims:
+                from .claim_transactions_models import SandboxClaimTransaction
+                if s.scalar(select(SandboxClaimTransaction.id).where(
+                        SandboxClaimTransaction.site_id == actor.site_id,
+                        SandboxClaimTransaction.fill_id == f.id,
+                        SandboxClaimTransaction.operation == "REVERSE")):
+                    raise WorkflowError("Reversed payer event requires manual billing reconciliation before verification")
             from .product_selection import require_fill_sources_eligible
             require_fill_sources_eligible(s, rx, f)
             from .emergency_supply import require_emergency_dispense_eligible

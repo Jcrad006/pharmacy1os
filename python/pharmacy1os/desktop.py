@@ -35,6 +35,7 @@ from .scheduling import SchedulingService
 from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
+from .cob_correction_plan import CobCorrectionPlanner
 from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
@@ -110,6 +111,7 @@ def main() -> None:
     billing_service = BillingService(service)
     rebill_service = ClaimRebillService(service)
     third_party_workspace = ThirdPartyWorkspace(service)
+    cob_correction_planner = CobCorrectionPlanner(service)
     fill_claim_review = FillClaimReview(service)
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
@@ -403,6 +405,7 @@ def main() -> None:
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
+                self.action("View COB Correction Dependencies (Read-only)", self.view_cob_correction_plan)
                 self.action("Pharmacist Reverse Full COB Chain (Synthetic)", self.reverse_full_cob)
                 self.action("Pharmacist Reverse One-Payer Claim (Synthetic)", self.reverse_single_claim)
                 self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
@@ -714,6 +717,15 @@ def main() -> None:
             reason = self.ask("Payer", "Document why this billing profile is being changed")
             billing_service.update_profile(self.actor, payer, max_physical_sources=max_sources,
                                            billing_ndc_strategy=strategy, reason=reason)
+
+        def view_cob_correction_plan(self):
+            fill_id = self.ask("Synthetic COB correction preflight",
+                "Fill ID — inspect payer dependency sequence only")
+            position = int(self.ask("COB position", "Target coverage position (1-4)", "1"))
+            plan = cob_correction_planner.plan(
+                self.actor, fill_id, target_position=position)
+            QMessageBox.information(self, "Read-only synthetic COB correction plan",
+                json.dumps(plan, indent=2)[:20000])
 
         def reverse_full_cob(self):
             with service.sessions() as s:
