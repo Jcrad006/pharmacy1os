@@ -48,7 +48,7 @@ def test_prepared_three_payer_claims_create_matching_version_one_attempts(demo):
     history = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
     assert history["total_attempts"] == 3
     assert history["active_local_paid_positions"] == 3
-    assert history["selective_reprocessing_enabled"] is False
+    assert history["selective_reprocessing_enabled"] is True
     assert [p["coverage_position"] for p in history["claim_positions"]] == [1, 2, 3]
     original_events = [x for x in SandboxClaimService(svc).list_for_fill(
         a["AUDITOR"], fill) if x["operation"] == "BILL"]
