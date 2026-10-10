@@ -83,7 +83,7 @@ def test_plan_rejects_invalid_site_position_print_and_corrupt_source(case):
     svc, a, outside, patient, rx, fill, stock = case
     bills = _ready(case, 2)
     planner = CobCorrectionPlanner(svc)
-    with pytest.raises(WorkflowError, match="outside"):
+    with pytest.raises(WorkflowError, match="pharmacy site"):
         planner.plan(outside["AUDITOR"], fill, target_position=1)
     for position in (0, 3, 5, True, "2"):
         with pytest.raises(WorkflowError):
