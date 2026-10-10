@@ -173,25 +173,71 @@ class ClaimRebillService:
             }
 
     def lineage(self, actor: Actor, fill_id: str) -> dict[str, Any]:
+        """Traverse every historical rescan/rebill attempt in the same Rx chain.
+
+        Starting at the oldest original fill avoids returning a misleading
+        one-link history when the selected fill has been corrected repeatedly.
+        Only links for this pharmacy/prescription are eligible for traversal.
+        """
         with self.service.sessions() as s:
             self.service._authorized(s, actor, "read")
             fill = s.get(Fill, fill_id)
             if fill is None:
                 raise WorkflowError("Fill not found")
-            self.service._site(s, Prescription, fill.prescription_id, actor)
+            rx = self.service._site(s, Prescription, fill.prescription_id, actor)
             links = s.scalars(select(SyntheticRebillLink).where(
-                SyntheticRebillLink.site_id == actor.site_id,
-                (SyntheticRebillLink.original_fill_id == fill_id)
-                | (SyntheticRebillLink.replacement_fill_id == fill_id))
-                .order_by(SyntheticRebillLink.created_at)).all()
+                SyntheticRebillLink.site_id == actor.site_id)).all()
+            by_original = {link.original_fill_id: link for link in links}
+            by_replacement = {link.replacement_fill_id: link for link in links}
+
+            def validate_member(ident: str) -> Fill:
+                member = s.get(Fill, ident)
+                if member is None or member.prescription_id != rx.id:
+                    raise WorkflowError("Synthetic rebill lineage contains a broken or cross-Rx link")
+                return member
+
+            root = fill_id
+            seen: set[str] = set()
+            while root in by_replacement:
+                if root in seen or len(seen) >= 64:
+                    raise WorkflowError("Cyclic or excessive synthetic rebill lineage")
+                seen.add(root)
+                prior = by_replacement[root].original_fill_id
+                validate_member(prior)
+                root = prior
+
+            chain = []
+            attempts = []
+            current = root
+            seen = set()
+            while True:
+                if current in seen or len(seen) >= 64:
+                    raise WorkflowError("Cyclic or excessive synthetic rebill lineage")
+                seen.add(current)
+                member = validate_member(current)
+                attempts.append({
+                    "fill_id": member.id, "fill_number": member.fill_number,
+                    "attempt": member.attempt, "status": member.status,
+                    "physical_quantity": str(member.quantity),
+                    "payer_intended_quantity": str(member.billed_quantity),
+                })
+                edge = by_original.get(current)
+                if edge is None:
+                    break
+                nxt = validate_member(edge.replacement_fill_id)
+                if (nxt.fill_number != member.fill_number or
+                        nxt.attempt != member.attempt + 1):
+                    raise WorkflowError("Rebill lineage attempt numbers are inconsistent")
+                chain.append({
+                    "id": edge.id, "original_fill_id": edge.original_fill_id,
+                    "replacement_fill_id": edge.replacement_fill_id,
+                    "reversed_claim_ids": json.loads(edge.reversed_claim_ids_json),
+                    "reason": edge.reason, "actor_id": edge.actor_id,
+                    "created_at": edge.created_at.isoformat(),
+                })
+                current = nxt.id
             return {
-                "fill_id": fill_id,
-                "links": [{
-                    "id": item.id, "original_fill_id": item.original_fill_id,
-                    "replacement_fill_id": item.replacement_fill_id,
-                    "reversed_claim_ids": json.loads(item.reversed_claim_ids_json),
-                    "reason": item.reason, "actor_id": item.actor_id,
-                    "created_at": item.created_at.isoformat()
-                } for item in links],
+                "fill_id": fill_id, "root_fill_id": root, "latest_fill_id": current,
+                "links": chain, "attempts": attempts,
                 "warning": "LOCAL_SYNTHETIC_HISTORY_NO_EXTERNAL_PAYER_REVERSAL",
             }

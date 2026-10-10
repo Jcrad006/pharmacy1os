@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
+from .fill_claim_review import FillClaimReview
 from .service import Actor
 
 
@@ -31,6 +32,10 @@ def make_billing_router(billing: BillingService, actor_dependency: Callable[...,
                            actor: Actor = Depends(actor_dependency)):
         return ClaimRebillService(billing.service).restart(
             actor, fill_id, payload.reason, expected_claim_ids=payload.expected_claim_ids)
+
+    @router.get("/fills/{fill_id}/claims")
+    def fill_claims(fill_id: str, actor: Actor = Depends(actor_dependency)):
+        return FillClaimReview(billing.service).detail(actor, fill_id)
 
     @router.get("/billing/fills/{fill_id}/rebill-lineage")
     def rebill_lineage(fill_id: str, actor: Actor = Depends(actor_dependency)):

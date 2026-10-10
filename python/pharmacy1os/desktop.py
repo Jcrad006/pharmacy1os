@@ -35,6 +35,7 @@ from .scheduling import SchedulingService
 from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
+from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
 from .willcall import WillCallService
@@ -109,6 +110,7 @@ def main() -> None:
     billing_service = BillingService(service)
     rebill_service = ClaimRebillService(service)
     third_party_workspace = ThirdPartyWorkspace(service)
+    fill_claim_review = FillClaimReview(service)
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
     will_call_service = WillCallService(service)
@@ -398,6 +400,7 @@ def main() -> None:
                 self.action("Inject Development Test Rejection", self.inject_test_rejection)
                 self.action("Pharmacist Clear Test Rejection", self.clear_test_rejection)
                 self.action("Claim History", self.claim_history)
+                self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
                 self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
                 self.action("Claim Rebill Lineage", self.rebill_lineage)
@@ -735,6 +738,17 @@ def main() -> None:
             }
             QMessageBox.information(self, "Synthetic Third Party Workbench",
                 json.dumps(overview, indent=2)[:20000])
+
+        def view_fill_claim_review(self):
+            # Pick a claim in the Third Party grid, or enter a physical fill ID.
+            with service.sessions() as s:
+                selected = s.get(Claim, self.selected_id())
+                fill_id = selected.fill_id if selected is not None else None
+            fill_id = fill_id or self.ask("Synthetic claim and label review",
+                "Fill ID to inspect (no live adjudication)")
+            report = fill_claim_review.detail(self.actor, fill_id)
+            QMessageBox.information(self, "Synthetic fill claim/label provenance",
+                json.dumps(report, indent=2)[:25000])
 
         def claim_history(self):
             with service.sessions() as s:
