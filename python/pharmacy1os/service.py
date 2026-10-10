@@ -910,12 +910,15 @@ class PharmacyService:
             if any(c.status != "PAID_SYNTHETIC" for c in claims):
                 raise WorkflowError("Claim reversal or correction requires complete re-adjudication before verification")
             if claims:
-                from .claim_transactions_models import SandboxClaimTransaction
-                if s.scalar(select(SandboxClaimTransaction.id).where(
-                        SandboxClaimTransaction.site_id == actor.site_id,
-                        SandboxClaimTransaction.fill_id == f.id,
-                        SandboxClaimTransaction.operation == "REVERSE")):
-                    raise WorkflowError("Reversed payer event requires manual billing reconciliation before verification")
+                from .cob_attempts import CobAttemptRegistry
+                try:
+                    timeline = CobAttemptRegistry(self)._history_tx(s, actor, f.id)
+                    if timeline["active_local_paid_positions"] != len(claims):
+                        raise WorkflowError("COB correction left an unpaid position")
+                except WorkflowError as exc:
+                    raise WorkflowError(
+                        "Reversed payer event requires manual billing reconciliation before verification"
+                    ) from exc
             from .product_selection import require_fill_sources_eligible
             require_fill_sources_eligible(s, rx, f)
             from .emergency_supply import require_emergency_dispense_eligible

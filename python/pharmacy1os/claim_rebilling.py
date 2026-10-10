@@ -117,6 +117,12 @@ class ClaimRebillService:
                for f in s.scalars(select(Fill).where(Fill.prescription_id == rx.id))):
             raise WorkflowError("Other active fill prevents correction restart")
 
+        from .cob_attempts import SyntheticCobAttempt
+        if s.scalar(select(SyntheticCobAttempt.id).where(
+                SyntheticCobAttempt.fill_id == fill.id,
+                SyntheticCobAttempt.attempt_number > 1)):
+            raise WorkflowError(
+                "Versioned selective COB corrections require dedicated payer reconciliation before full rebill")
         from .billing import record_reversal
         # COB reversals are downstream-to-upstream (4,3,2,1), matching
         # the original claim adapter's dependency ordering.

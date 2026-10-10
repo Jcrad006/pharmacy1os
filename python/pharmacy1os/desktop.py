@@ -37,6 +37,7 @@ from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_attempts import CobAttemptRegistry
+from .cob_selective_correction import SyntheticCobCorrectionService
 from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
@@ -114,6 +115,7 @@ def main() -> None:
     third_party_workspace = ThirdPartyWorkspace(service)
     cob_correction_planner = CobCorrectionPlanner(service)
     cob_attempt_registry = CobAttemptRegistry(service)
+    cob_selective_corrections = SyntheticCobCorrectionService(service)
     fill_claim_review = FillClaimReview(service)
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
@@ -407,6 +409,7 @@ def main() -> None:
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
+                self.action("Correct Selective COB Positions (Synthetic)", self.correct_selective_cob)
                 self.action("View Versioned COB Claim Attempts", self.view_cob_attempts)
                 self.action("View COB Correction Dependencies (Read-only)", self.view_cob_correction_plan)
                 self.action("Pharmacist Reverse Full COB Chain (Synthetic)", self.reverse_full_cob)
@@ -720,6 +723,33 @@ def main() -> None:
             reason = self.ask("Payer", "Document why this billing profile is being changed")
             billing_service.update_profile(self.actor, payer, max_physical_sources=max_sources,
                                            billing_ndc_strategy=strategy, reason=reason)
+
+        def correct_selective_cob(self):
+            fill_id = self.ask("Selective simulated COB correction", "Prepared Fill ID")
+            target = int(self.ask("Correction target", "Payer position to correct (1-4)", "2"))
+            ledger = cob_attempt_registry.history(self.actor, fill_id)
+            selected = [c for c in ledger["claim_positions"]
+                        if c["coverage_position"] >= target]
+            expected = [x["attempts"][-1]["paid_transaction_id"] for x in reversed(selected)]
+            if not expected:
+                raise WorkflowError("No active payer positions at selected correction target")
+            ndcs = [x["attempts"][-1]["billed_ndc"] for x in selected]
+            ndc = self.ask("Reprocess target payer", "Bill NDC from an already scanned source",
+                           ndcs[0] or "")
+            reason = self.ask("Pharmacist simulated COB correction",
+                "Document billing NDC correction and dependent payer reprocessing (12-1000 chars)")
+            approved = QMessageBox.question(self, "Atomic synthetic payer correction only",
+                f"Reverse payer positions {list(reversed([x['coverage_position'] for x in selected]))}, "
+                f"then reprocess positions {[x['coverage_position'] for x in selected]} "
+                "in one local transaction? This cannot contact an insurer or move stock.")
+            if approved != QMessageBox.StandardButton.Yes:
+                return
+            result = cob_selective_corrections.correct(
+                self.actor, fill_id, reason, target_position=target,
+                expected_active_paid_transaction_ids=expected,
+                corrected_billing_ndc=ndc)
+            QMessageBox.information(self, "Synthetic payer correction complete",
+                json.dumps(result, indent=2)[:20000])
 
         def view_cob_attempts(self):
             fill_id = self.ask("Synthetic payer attempt lineage",

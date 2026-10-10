@@ -788,3 +788,67 @@ def test_postgres_concurrent_four_payer_cob_reverse_replays_one_chain():
                        for position in mirrored["claim_positions"])
     finally:
         svc.engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_two_pharmacists_selective_cob_correction_is_atomic_replay():
+    """Payer suffix correction serializes on locked fill; no duplicate versions."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+    from pharmacy1os.cob_attempts import CobAttemptRegistry
+    from pharmacy1os.cob_selective_correction import SyntheticCobCorrectionService
+    from pharmacy1os.models import Fill, Stock
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        drug = svc.add_drug(pharm, "PG selective COB local", "1mg", "tablet")
+        prod = svc.add_product(pharm, drug, "50042-1111-05", "Demo", "Test pill")
+        svc.register_barcode(tech, prod, "PG-COB-SUFFIX-BC")
+        expiry = (date.today() + timedelta(days=210)).isoformat()
+        stock_id = svc.receive(tech, "PG-COB-SUFFIX-BC", "PG-SUFFIX-LOT", expiry, "100")
+        patient = svc.add_patient(tech, "Concurrent", "CobSuffix")
+        provider = svc.add_prescriber(tech, "Concurrent", "Prescriber", "MD")
+        rx = svc.add_prescription(tech, patient, provider, drug,
+            "PG-CONCURRENT-COB-SUFFIX", "once daily", "50")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, fill, "PG-COB-SUFFIX-BC",
+            "PG-SUFFIX-LOT", expiry, "50")
+        svc.prepare_for_review(tech, fill,
+            ["Mock One", "Mock Two", "Mock Three", "Mock Four"])
+        original = CobAttemptRegistry(svc).history(pharm, fill)
+        ids = [entry["attempts"][-1]["paid_transaction_id"] for entry in
+               reversed(original["claim_positions"][1:])]
+        gate = Barrier(2)
+        note = "Local pharmacist mock correction reprocesses all downstream test claims"
+
+        def act(_):
+            gate.wait(timeout=15)
+            return SyntheticCobCorrectionService(svc).correct(
+                pharm, fill, note, target_position=2,
+                expected_active_paid_transaction_ids=ids,
+                corrected_billing_ndc="50042-1111-05")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(act, (1, 2)))
+        assert sorted(x["replayed"] for x in outcomes) == [False, True], outcomes
+        assert outcomes[0]["reversal_transaction_ids"] == outcomes[1]["reversal_transaction_ids"]
+        assert outcomes[0]["new_paid_transaction_ids"] == outcomes[1]["new_paid_transaction_ids"]
+        final = CobAttemptRegistry(svc).history(pharm, fill)
+        assert final["total_attempts"] == 7
+        assert final["active_local_paid_positions"] == 4
+        with svc.sessions() as s:
+            assert s.get(Fill, fill).status == "PHARMACIST_REVIEW"
+            assert s.get(Stock, stock_id).reserved == 50
+        svc.verify(pharm, fill)
+        with svc.sessions() as s:
+            assert s.get(Fill, fill).status == "READY"
+            assert s.get(Stock, stock_id).on_hand == 50
+    finally:
+        svc.engine.dispose()

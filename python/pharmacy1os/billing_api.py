@@ -9,7 +9,15 @@ from .third_party_workspace import ThirdPartyWorkspace
 from .fill_claim_review import FillClaimReview
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_attempts import CobAttemptRegistry
+from .cob_selective_correction import SyntheticCobCorrectionService
 from .service import Actor
+
+
+class SelectiveCobCorrectionIn(BaseModel):
+    target_position: int = Field(ge=1, le=4)
+    expected_active_paid_transaction_ids: list[str] = Field(min_length=1, max_length=4)
+    corrected_billing_ndc: str = Field(min_length=1, max_length=30)
+    reason: str = Field(min_length=12, max_length=1000)
 
 
 class FullCobReversalIn(BaseModel):
@@ -39,6 +47,15 @@ class ProfileVersionIn(BaseModel):
 
 def make_billing_router(billing: BillingService, actor_dependency: Callable[..., Actor]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["synthetic-billing"])
+
+    @router.post("/third-party/fills/{fill_id}/correct-cob")
+    def correct_cob(fill_id: str, payload: SelectiveCobCorrectionIn,
+                    actor: Actor = Depends(actor_dependency)):
+        return SyntheticCobCorrectionService(billing.service).correct(
+            actor, fill_id, payload.reason,
+            target_position=payload.target_position,
+            expected_active_paid_transaction_ids=payload.expected_active_paid_transaction_ids,
+            corrected_billing_ndc=payload.corrected_billing_ndc)
 
     @router.post("/third-party/claims/reverse-cob")
     def reverse_cob(payload: FullCobReversalIn,
