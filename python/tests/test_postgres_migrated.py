@@ -645,3 +645,69 @@ def test_postgres_concurrent_pharmacist_retries_only_bill_once():
                 SandboxClaimTransaction.operation == "BILL")).all()) == 1
     finally:
         svc.engine.dispose()
+
+
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_two_pharmacists_one_payer_transaction_reversal_replay():
+    """Concurrent same original paid tx yields one reversal and a replay, not two fills."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+    from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+    from pharmacy1os.claim_transactions import SandboxClaimService
+    from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+    from pharmacy1os.models import Claim, Fill, Stock
+    from pharmacy1os.service import WorkflowError
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("Requires actual migrated PostgreSQL driver")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        pat = svc.add_patient(tech, "Concurrency", "SingleReversal")
+        doc = svc.add_prescriber(tech, "Concurrency", "Doc", "MD")
+        drug = svc.add_drug(pharm, "PG reversal single demo", "7mg", "tablet")
+        p = svc.add_product(pharm, drug, "90001-9000-01", "Demo", "Mock tablets")
+        svc.register_barcode(tech, p, "PG-SINGLE-REV-BC")
+        exp = (date.today() + timedelta(days=180)).isoformat()
+        stockid = svc.receive(tech, "PG-SINGLE-REV-BC", "PG-SINGLE-REV-LOT", exp, "75")
+        rx = svc.add_prescription(tech, pat, doc, drug, "PG-SINGLE-REV-RX", "daily", "35")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, fill, "PG-SINGLE-REV-BC", "PG-SINGLE-REV-LOT", exp, "35")
+        svc.prepare_for_review(tech, fill, ["One synthetic payer"])
+        original = SandboxClaimService(svc).list_for_fill(pharm, fill)[0]
+        started = Barrier(2)
+
+        def reverse(i):
+            started.wait(timeout=15)
+            try:
+                return ClaimRebillService(svc).reverse_single_transaction(
+                    pharm, original["id"],
+                    f"Pharmacist {i} reversed local test claim before label use",
+                    expected_claim_id=original["claim_id"])
+            except WorkflowError as exc:
+                return str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(reverse, (1, 2)))
+        assert all(isinstance(r, dict) for r in results), results
+        assert sorted(r["replayed"] for r in results) == [False, True], results
+        assert results[0]["replacement_fill_id"] == results[1]["replacement_fill_id"]
+        assert results[0]["reversal_transaction_id"] == results[1]["reversal_transaction_id"]
+        with svc.sessions() as s:
+            assert len(s.scalars(select(SyntheticRebillLink).where(
+                SyntheticRebillLink.original_fill_id == fill)).all()) == 1
+            assert len(s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.fill_id == fill,
+                SandboxClaimTransaction.operation == "REVERSE")).all()) == 1
+            assert s.get(Stock, stockid).reserved == 0
+            assert s.get(Fill, fill).status == "RETURNED"
+            assert s.get(Fill, results[0]["replacement_fill_id"]).status == "PRODUCT_FILL"
+    finally:
+        svc.engine.dispose()

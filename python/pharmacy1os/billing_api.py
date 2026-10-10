@@ -10,6 +10,11 @@ from .fill_claim_review import FillClaimReview
 from .service import Actor
 
 
+class SinglePayerReversalIn(BaseModel):
+    expected_claim_id: str = Field(min_length=1)
+    reason: str = Field(min_length=12, max_length=1000)
+
+
 class RebillRestartIn(BaseModel):
     reason: str = Field(min_length=12, max_length=1000)
     expected_claim_ids: list[str] = Field(min_length=1, max_length=4)
@@ -26,6 +31,13 @@ class ProfileVersionIn(BaseModel):
 
 def make_billing_router(billing: BillingService, actor_dependency: Callable[..., Actor]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["synthetic-billing"])
+
+    @router.post("/third-party/claims/{transaction_id}/reverse")
+    def reverse_single_payer(transaction_id: str, payload: SinglePayerReversalIn,
+                             actor: Actor = Depends(actor_dependency)):
+        return ClaimRebillService(billing.service).reverse_single_transaction(
+            actor, transaction_id, payload.reason,
+            expected_claim_id=payload.expected_claim_id)
 
     @router.post("/billing/fills/{fill_id}/restart-for-rebill")
     def restart_for_rebill(fill_id: str, payload: RebillRestartIn,

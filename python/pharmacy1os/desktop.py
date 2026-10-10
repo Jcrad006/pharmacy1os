@@ -403,6 +403,7 @@ def main() -> None:
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
+                self.action("Pharmacist Reverse One-Payer Claim (Synthetic)", self.reverse_single_claim)
                 self.action("Pharmacist Restart Claim / Rescan (Synthetic)", self.restart_synthetic_rebill)
                 self.action("Claim Rebill Lineage", self.rebill_lineage)
             elif page == 12:
@@ -712,6 +713,42 @@ def main() -> None:
             reason = self.ask("Payer", "Document why this billing profile is being changed")
             billing_service.update_profile(self.actor, payer, max_physical_sources=max_sources,
                                            billing_ndc_strategy=strategy, reason=reason)
+
+        def reverse_single_claim(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+                rows = s.scalars(select(Claim).join(Fill, Claim.fill_id == Fill.id)
+                    .join(Prescription, Fill.prescription_id == Prescription.id).where(
+                    Prescription.site_id == self.actor.site_id,
+                    Fill.status == "PHARMACIST_REVIEW",
+                    Claim.status == "PAID_SYNTHETIC",
+                    Claim.sequence == 1)).all()
+                candidates = []
+                for claim in rows:
+                    if s.scalar(select(Claim.id).where(
+                        Claim.fill_id == claim.fill_id,
+                        Claim.id != claim.id)) is not None:
+                        continue
+                    events = sandbox_claims.list_for_fill(self.actor, claim.fill_id)
+                    bills = [event for event in events if event["claim_id"] == claim.id
+                             and event["operation"] == "BILL"]
+                    if len(bills) == 1:
+                        rx = s.get(Prescription, s.get(Fill, claim.fill_id).prescription_id)
+                        candidates.append((bills[0]["id"], claim.id, rx.rx_number))
+            chosen = self.choose_item("One-payer claim reversal",
+                "Select original locally paid synthetic transaction", candidates,
+                lambda row: f"Rx {row[2]} | Claim {row[1][:8]}")
+            reason = self.ask("Pharmacist claim reversal",
+                "Document reversal and mandatory fresh physical rescan reason")
+            confirmation = QMessageBox.question(self, "Irreversible synthetic test reversal",
+                "Reverse this one-payer local test claim, void unused labels, release "
+                "reservations and start a fresh fill attempt? No insurer will be contacted.")
+            if confirmation != QMessageBox.StandardButton.Yes:
+                return
+            result = rebill_service.reverse_single_transaction(
+                self.actor, chosen[0], reason, expected_claim_id=chosen[1])
+            QMessageBox.information(self, "Synthetic reversal recorded",
+                json.dumps(result, indent=2))
 
         def restart_synthetic_rebill(self):
             with service.sessions() as s:
