@@ -132,6 +132,23 @@ def test_tracked_correction_preserves_exact_bin_and_allocation(case):
     assert at_bin["reserved"] == "6.000"
 
 
+def test_stale_workstation_quantity_precondition_blocks_second_correction(case):
+    svc, a, foreign, fill, stock, exp = case
+    tech = a["TECHNICIAN"]
+    svc.scan_source(tech, fill, "SYN-QTY-BAR", "SYN-QTY-LOT", exp, "10")
+    source = svc.scanned_sources(tech, fill)[0]
+    svc.correct_scanned_source_quantity(tech, fill, source["id"], "12",
+        "First workstation confirmed twelve tablets in the bottle",
+        expected_quantity="10.000")
+    with pytest.raises(WorkflowError, match="changed; refresh"):
+        svc.correct_scanned_source_quantity(tech, fill, source["id"], "15",
+            "Second workstation still displayed the stale ten tablets",
+            expected_quantity="10.000")
+    with svc.sessions() as s:
+        assert s.get(Stock, stock).reserved == Decimal("12")
+        assert s.get(FillSource, source["id"]).quantity == Decimal("12")
+
+
 def test_api_blocks_cross_site_and_disabled_live_mode(case):
     svc, a, foreign, fill, stock, exp = case
     tech = a["TECHNICIAN"]
@@ -140,7 +157,8 @@ def test_api_blocks_cross_site_and_disabled_live_mode(case):
     path = f"/api/fills/{fill}/product-sources/{source['id']}/quantity"
     client = TestClient(create_app(svc, synthetic_enabled=True))
     disabled = TestClient(create_app(svc, synthetic_enabled=False))
-    payload = {"quantity": "20", "reason": "Source quantity corrected after stock recount"}
+    payload = {"quantity": "20", "expected_quantity": "10.000",
+               "reason": "Source quantity corrected after stock recount"}
     assert disabled.put(path, json=payload).status_code == 503
     assert client.put(path, json=payload).status_code == 403
     assert client.put(path, headers={"x-demo-staff-id": foreign["TECHNICIAN"].id},

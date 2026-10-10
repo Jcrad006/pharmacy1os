@@ -1000,7 +1000,8 @@ def main() -> None:
                 "Document why the previously scanned quantity was wrong")
             try:
                 result = service.correct_scanned_source_quantity(
-                    self.actor, fill_id, source["id"], quantity, reason)
+                    self.actor, fill_id, source["id"], quantity, reason,
+                    expected_quantity=source["quantity"])
             except Exception as exc:
                 if (not str(exc).startswith("FEFO policy requires earlier stock")
                         or self.actor.role not in {"PHARMACIST", "ADMIN"}):
@@ -1009,7 +1010,7 @@ def main() -> None:
                     "Document why an earlier lot or shelf-life policy cannot be followed")
                 result = service.correct_scanned_source_quantity(
                     self.actor, fill_id, source["id"], quantity, reason,
-                    fefo_override_note=note)
+                    expected_quantity=source["quantity"], fefo_override_note=note)
             QMessageBox.information(self, "Scanned source corrected",
                 json.dumps(result, indent=2))
 

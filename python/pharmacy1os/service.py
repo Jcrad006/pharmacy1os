@@ -670,7 +670,8 @@ class PharmacyService:
 
     def correct_scanned_source_quantity(self, actor: Actor, fill_id: str,
                                         source_id: str, quantity: str,
-                                        reason: str, *, fefo_override_note: str | None = None
+                                        reason: str, *, expected_quantity: str | None = None,
+                                        fefo_override_note: str | None = None
                                         ) -> dict[str, Any]:
         """Correct a physical scanned source before any sandbox claim or label.
 
@@ -705,6 +706,8 @@ class PharmacyService:
             if source is None:
                 raise WorkflowError("Scanned source not found for this fill")
             old_qty = source.quantity
+            if expected_quantity is not None and positive(expected_quantity) != old_qty:
+                raise WorkflowError("Scanned source quantity changed; refresh before correcting")
             if old_qty == new_qty:
                 raise WorkflowError("New scanned source quantity is unchanged")
             total = s.scalar(select(func.sum(FillSource.quantity)).where(

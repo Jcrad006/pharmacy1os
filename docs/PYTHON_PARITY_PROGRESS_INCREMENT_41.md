@@ -9,6 +9,7 @@ Targets the source-edit portion of baseline **FL05/FL06** and native fill workbe
 - Increased quantities revalidate stock availability, expiration, recall, and site FEFO policy. Decreases never require an FEFO override.
 - Claims, label and print histories, or any synthetic transaction history prohibit this direct correction route. Zero means **remove the source**, which already has its own audited operation.
 - Exposed `PUT /api/fills/{fill_id}/product-sources/{source_id}/quantity` in the disabled-by-default synthetic Python API; added a native Qt dashboard action for correcting scanned quantity, including pharmacist FEFO override when policy requires it.
+- API/native callers carry an expected observed quantity, rejecting stale workstation corrections before any movement.
 - Added tests for increase/decrease, exact tracked bin and active allocation preservation, inadequate bin stock rollback, no-change/invalid-role/site/quantity guards, transactional audit and API/live-disabled behavior.
 
 ## Validation and remaining gaps

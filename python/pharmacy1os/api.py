@@ -188,6 +188,7 @@ class SourceCorrectionIn(BaseModel):
 
 class SourceQuantityCorrectionIn(SourceCorrectionIn):
     quantity: str
+    expected_quantity: str
     fefo_override_note: str | None = Field(default=None, max_length=1000)
 
 
@@ -527,6 +528,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
                                  payload: SourceQuantityCorrectionIn, actor: DemoActor):
         return svc.correct_scanned_source_quantity(
             actor, fill_id, source_id, payload.quantity, payload.reason,
+            expected_quantity=payload.expected_quantity,
             fefo_override_note=payload.fefo_override_note)
 
     @app.delete("/api/fills/{fill_id}/product-sources/{source_id}")
