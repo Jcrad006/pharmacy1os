@@ -36,7 +36,7 @@ python -m pharmacy1os.parity_inventory > original_python_route_crosswalk.json
 python -m pytest -q tests/test_fastify_endpoint_manifest.py tests/test_original_health_contract.py
 ```
 
-Matching paths do **not** establish identical request bodies, roles, responses or workflow semantics. Increment 70 also corrected `GET /health` to return HTTP 503 for database failure or an unresolved synthetic document recovery marker. See [Increment 70 technical report](../docs/PYTHON_PARITY_PROGRESS_INCREMENT_70.md).
+Matching paths do **not** establish identical request bodies, roles, responses or workflow semantics. [Increment 71](../docs/PYTHON_PARITY_PROGRESS_INCREMENT_71.md) adds a deliberately restricted, documented/versioned subset of the original Rx status-transition PATCH (hold, cancellation, exact resume only); other transitions continue to require dedicated, safer workflows. Increment 70 also corrected `GET /health` to return HTTP 503 for database failure or an unresolved synthetic document recovery marker. See [Increment 70 technical report](../docs/PYTHON_PARITY_PROGRESS_INCREMENT_70.md).
 
 ## Tests
 
