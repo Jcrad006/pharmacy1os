@@ -269,6 +269,16 @@ def main() -> None:
                 self._handling_result = True
                 try:
                     self._handle_network_completion(*completed)
+                except Exception:
+                    # A malformed synthetic response or UI processing bug
+                    # cannot turn an uncertain review into a confirmed one.
+                    self.info.setText(
+                        "Unexpected workstation response; verify server audit "
+                        "and saved request receipt before any other edit")
+                    if completed[0] == "submit_review":
+                        self._needs_reconcile = True
+                        self._pending_submission = None
+                    self._review_draft = None
                 finally:
                     self._handling_result = False
             else:
