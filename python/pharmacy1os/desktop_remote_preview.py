@@ -263,10 +263,7 @@ def main() -> None:
                     next_request[0], next_request[1], context=next_request[2]))
 
         def reload(self, *args):
-            self._launch_request("queue", {
-                "query": self.search.text().strip(),
-                "status": self.status.currentData(),
-                "sort": self.sort.currentData(), "limit": 100})
+            self._launch_request("queue", self._queue_parameters())
 
         def _render_queue(self, result):
             if not isinstance(result, dict) or not isinstance(result.get("prescriptions"), list):
@@ -335,112 +332,153 @@ def main() -> None:
             self._show_text("Synthetic Rx detail", "\n".join(lines))
 
         def review_fields(self):
-            if self._lookup_busy or self._close_after_lookup:
-                QMessageBox.warning(
-                    self, "Recovery in progress",
-                    "Prescription editing is disabled while receipt reconciliation runs.")
+            if self._request_busy() or self._close_after_request or self._close_after_lookup:
                 return
             rx_id = self.selected_id()
-            if not rx_id or identity["role"] not in ("PHARMACIST", "ADMIN"):
-                return
-            context = self._read(lambda: client.edit_context(rx_id))
-            if context is None:
-                return
-            if not context["editable"]:
-                QMessageBox.warning(self, "Review unavailable",
-                    context.get("blocked_reason") or "Prescription cannot be edited")
-                return
+            if (rx_id and recovery is not None and client.identity is not None
+                    and client.identity.get("role") in ("PHARMACIST", "ADMIN")):
+                self._launch_request(
+                    "edit_context", {"rx_id": rx_id},
+                    context={"phase": "open", "rx_id": rx_id})
 
-            before_values = context["values"]
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Synthetic pharmacist prescription review")
-            dialog.resize(630, 480)
-            layout = QVBoxLayout(dialog)
-            fields = QFormLayout()
-            sig = QPlainTextEdit()
-            sig.setPlainText(before_values["sig"])
-            fields.addRow("Directions (SIG)", sig)
-            quantity = QLineEdit(before_values["quantity"])
-            fields.addRow("Quantity", quantity)
-            refills = QSpinBox()
-            refills.setRange(0, 999)
-            refills.setValue(before_values["refills_allowed"])
-            fields.addRow("Refills authorized", refills)
-            layout.addLayout(fields)
-            layout.addWidget(QLabel(
-                "Required: describe independent prescriber confirmation and change reason"))
-            attestation = QPlainTextEdit()
-            layout.addWidget(attestation)
-            buttons = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Save |
-                QDialogButtonBox.StandardButton.Cancel)
-            buttons.accepted.connect(dialog.accept)
-            buttons.rejected.connect(dialog.reject)
-            layout.addWidget(buttons)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
+        def _received_edit_context(self, current, context):
+            if not isinstance(context, dict):
                 return
-            try:
-                changes = collect_review_changes(before_values, {
-                    "sig": sig.toPlainText(), "quantity": quantity.text().strip(),
-                    "refills_allowed": refills.value()})
-            except ValueError as exc:
-                QMessageBox.warning(self, "Invalid reviewed fields", str(exc))
+            rx_id = context["rx_id"]
+            if context["phase"] == "open":
+                if not current.get("editable"):
+                    QMessageBox.warning(self, "Review unavailable",
+                        current.get("blocked_reason") or "Prescription cannot be edited")
+                    return
+                before = current["values"]
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Synthetic pharmacist prescription review")
+                dialog.resize(630, 480)
+                layout = QVBoxLayout(dialog)
+                fields = QFormLayout()
+                sig = QPlainTextEdit()
+                sig.setPlainText(before["sig"])
+                fields.addRow("Directions (SIG)", sig)
+                quantity = QLineEdit(before["quantity"])
+                fields.addRow("Quantity", quantity)
+                refills = QSpinBox()
+                refills.setRange(0, 999)
+                refills.setValue(before["refills_allowed"])
+                fields.addRow("Refills authorized", refills)
+                layout.addLayout(fields)
+                layout.addWidget(QLabel(
+                    "Required: independently verify corrections and record the reason"))
+                attestation = QPlainTextEdit()
+                layout.addWidget(attestation)
+                buttons = QDialogButtonBox(
+                    QDialogButtonBox.StandardButton.Save |
+                    QDialogButtonBox.StandardButton.Cancel)
+                buttons.accepted.connect(dialog.accept)
+                buttons.rejected.connect(dialog.reject)
+                layout.addWidget(buttons)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
+                try:
+                    changes = collect_review_changes(before, {
+                        "sig": sig.toPlainText(), "quantity": quantity.text().strip(),
+                        "refills_allowed": refills.value()})
+                except ValueError as exc:
+                    QMessageBox.warning(self, "Invalid reviewed fields", str(exc))
+                    return
+                if not changes:
+                    QMessageBox.information(self, "No changes", "No fields were modified")
+                    return
+                note = attestation.toPlainText().strip()
+                if not 12 <= len(note) <= 2000:
+                    QMessageBox.warning(
+                        self, "Missing clinical attestation",
+                        "Review documentation requires 12–2000 characters")
+                    return
+                self._review_draft = {
+                    "rx_id": rx_id, "before": before, "status": current["status"],
+                    "version": current["version"], "changes": changes, "note": note,
+                }
+                # This worker is still finishing. Only a subsequent GET is
+                # queued; no clinical mutation may be queued automatically.
+                self._next_request = (
+                    "edit_context", {"rx_id": rx_id},
+                    {"phase": "preflight", "rx_id": rx_id})
                 return
-            if not changes:
-                QMessageBox.information(self, "No changes", "No fields were modified")
+            if context["phase"] != "preflight":
                 return
-            note = attestation.toPlainText().strip()
-            if not 12 <= len(note) <= 2000:
-                QMessageBox.warning(self, "Missing clinical attestation",
-                                    "Review documentation requires 12–2000 characters")
+            draft = self._review_draft
+            if draft is None or draft["rx_id"] != rx_id:
                 return
-
-            # UI preflight never replaces the expected version or status.
-            # The server independently locks the prescription and rechecks.
-            fresh = self._read(lambda: client.edit_context(rx_id))
-            if fresh is None:
-                return
-            if (not fresh["editable"] or fresh["version"] != context["version"]
-                    or fresh["status"] != context["status"]
-                    or any(fresh["values"][key] != before_values[key]
-                           for key in ("sig", "quantity", "refills_allowed"))):
-                QMessageBox.warning(self, "Prescription changed",
-                                    "Another workstation modified or advanced this Rx. "
-                                    "Your draft was NOT saved; begin a fresh review.")
-                self.reload()
+            if (not current["editable"]
+                    or current["version"] != draft["version"]
+                    or current["status"] != draft["status"]
+                    or any(current["values"][name] != draft["before"][name]
+                           for name in ("sig", "quantity", "refills_allowed"))):
+                self._review_draft = None
+                QMessageBox.warning(
+                    self, "Stale workstation",
+                    "Prescription changed during review. The draft was NOT saved. "
+                    "Reload the record before attempting another correction.")
+                self._next_request = ("queue", self._queue_parameters(), None)
                 return
             summary = "\n".join(
-                f"{key}: {before_values[key]} -> {val}"
-                for key, val in sorted(changes.items()))
+                f"{name}: {draft['before'][name]} -> {value}"
+                for name, value in sorted(draft["changes"].items()))
             if QMessageBox.question(
-                    self, "Confirm versioned pharmacist review",
-                    f"Apply reviewed synthetic Rx changes to {rx_id[:8]}?\n\n"
-                    f"{summary}\n\nThis may reset DUR review. The immutable source is "
-                    "unchanged. No payer, stock, label or dispensing action occurs.",
+                    self, "Confirm synthetic pharmacist review",
+                    f"Apply reviewed changes to Rx {rx_id[:8]}?\n\n"
+                    f"{summary}\n\nThis may reset DUR review. No payer, "
+                    "stock, label or dispensing action will occur.",
                     QMessageBox.StandardButton.Yes |
                     QMessageBox.StandardButton.No
             ) != QMessageBox.StandardButton.Yes:
+                self._review_draft = None
                 return
             if recovery is None:
+                self._review_draft = None
                 QMessageBox.warning(self, "Recovery unavailable",
-                                    "Cannot submit without a protected journal")
+                                    "Cannot submit a review without protected journal")
                 return
-            result = self._read(lambda: recovery.submit(
-                rx_id, changes=changes, expected_version=context["version"],
-                expected_status=context["status"], attestation_note=note))
-            if result is None:
-                # The request has already been journaled, unless pre-send
-                # validation/storage failed (which forbids any HTTP mutation).
-                # NEVER automatically retry any uncertain submitted review.
-                self.reconcile_outstanding(limit=2)
-                self.reload()
+            # The only prepared mutation is first fsynced to encrypted local
+            # metadata storage, while still executing on Qt's main thread.
+            key = self._read(lambda: recovery.prepare_submission(
+                rx_id, changes=draft["changes"], attestation_note=draft["note"]))
+            if key is None:
+                self._review_draft = None
                 return
-            self.last_review_key = result["request_id"]
-            self.last_review_rx = rx_id
-            self.reload()
-            QMessageBox.information(self, "Synthetic reviewed change saved",
-                f"Prescription now at version {result['version']}. "
-                "The request ID and receipt are saved for post-crash reconciliation.")
+            self._pending_submission = {"rx_id": rx_id, "request_id": key}
+            self._next_request = ("submit_review", {
+                "rx_id": rx_id,
+                "changes": draft["changes"],
+                "expected_version": draft["version"],
+                "expected_status": draft["status"],
+                "attestation_note": draft["note"],
+                "request_id": key,
+            }, self._pending_submission)
+            # Remove clinical content from the window after constructing the
+            # worker-bound request. The worker discards args on completion.
+            self._review_draft = None
+
+        def _received_submission(self, receipt, context):
+            self._pending_submission = None
+            if not isinstance(context, dict):
+                self.info.setText("Uncertain review outcome; manual recovery required")
+                return
+            saved = self._read(lambda: recovery.confirm_submission(
+                context["rx_id"], context["request_id"], receipt))
+            # confirm_submission returns None on success too. Look up local
+            # status only if a journal-write exception wasn't raised.
+            self.last_review_rx = context["rx_id"]
+            self.last_review_key = context["request_id"]
+            self._next_request = ("queue", self._queue_parameters(), None)
+            self.info.setText(
+                f"Review response received at version {receipt['version']}; "
+                "verify the saved request receipt before proceeding.")
+
+        def _queue_parameters(self):
+            return {"query": self.search.text().strip(),
+                    "status": self.status.currentData(),
+                    "sort": self.sort.currentData(), "limit": 100}
 
         def _start_receipt_lookup(self, batch, *, manual_request_id=None,
                                   notify=True):
