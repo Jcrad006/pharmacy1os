@@ -158,3 +158,19 @@ def test_original_fastify_status_route_is_explicitly_partial(env):
                         headers=headers(actors["TECHNICIAN"]),
                         json={"status": "ON_HOLD"}).status_code == 422
     assert persisted(service, rx) == ("DATA_ENTRY", None, 0)
+
+
+def test_camel_case_preconditions_supported_without_plain_status_shortcut(env):
+    svc, actors, _, rx, client = env
+    response = client.patch(
+        f"/api/prescriptions/{rx}/status",
+        headers=headers(actors["TECHNICIAN"]),
+        json={
+            "status": "ON_HOLD",
+            "reason": "Synthetic verified clinical hold reason",
+            "expectedStatus": "DATA_ENTRY",
+            "expectedVersion": 0,
+        })
+    assert response.status_code == 200, response.text
+    assert response.json()["prescription"]["version"] == 1
+    assert persisted(svc, rx) == ("ON_HOLD", "DATA_ENTRY", 1)
