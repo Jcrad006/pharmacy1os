@@ -36,7 +36,11 @@ def _allowable(rx: Prescription) -> list[str]:
     # Preserve the current Python lifecycle rule set. This is a display
     # advisory; authoritative transition checks are inside service methods.
     if rx.status == "ON_HOLD":
-        return [rx.held_from] if rx.held_from in VALID_STATUSES else []
+        # Original prescriptionWorkflow.ts publishes the original held status
+        # followed by CANCELLED and TRANSFERRED as *advisory* transitions.
+        # Actual actions still require server-side lifecycle/transfer guards.
+        resumed = [rx.held_from] if rx.held_from in VALID_STATUSES else []
+        return resumed + ["CANCELLED", "TRANSFERRED"]
     return sorted(TRANSITIONS.get(rx.status, set()))
 
 
