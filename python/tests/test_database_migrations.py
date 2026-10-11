@@ -300,3 +300,44 @@ def test_inventory_demand_upgrade_does_not_invent_historic_patient_need(monkeypa
         assert not verify_mapped_schema(svc.engine)
     finally:
         svc.engine.dispose()
+
+
+def test_rx_edit_request_receipt_migration_is_additive_to_previous_schema(monkeypatch, tmp_path):
+    """Increment 65 must preserve preexisting synthetic Rx edits and audit."""
+    from pharmacy1os.prescription_edit import PrescriptionEditService, PrescriptionEditRequest
+    from sqlalchemy import select
+    url = setup_env(monkeypatch, tmp_path / "before-idempotency.db")
+    command.upgrade(migration_config(), "d52f1ab36c90")
+    svc = PharmacyService(url)
+    try:
+        actors = svc.bootstrap_demo()["actors"]
+        tech, pharmacist = actors["TECHNICIAN"], actors["PHARMACIST"]
+        patient = svc.add_patient(tech, "Before", "ReceiptMigration")
+        doctor = svc.add_prescriber(tech, "Synthetic", "Doctor", "MD")
+        drug = svc.add_drug(pharmacist, "MIGRATED-REVIEW", "10mg", "tablet")
+        rx = svc.add_prescription(tech, patient, doctor, drug, "RX-OLD-EDIT", "Old SIG", "30")
+        editor = PrescriptionEditService(svc)
+        old = editor.update(pharmacist, rx, {"sig": "Edited before upgrade"},
+                            0, "Synthetic attestation on the previous schema")
+        assert old["version"] == 1 and "request_id" not in old
+    finally:
+        svc.engine.dispose()
+    command.upgrade(migration_config(), "head")
+    upgraded = PharmacyService(url)
+    try:
+        assert revision_at_head(upgraded.engine)
+        assert not verify_mapped_schema(upgraded.engine)
+        editor = PrescriptionEditService(upgraded)
+        events = editor.history(pharmacist, rx)
+        assert len(events) == 1 and events[0]["id"] == old["id"]
+        with upgraded.sessions() as s:
+            assert s.scalars(select(PrescriptionEditRequest)).all() == []
+        from uuid import uuid4
+        key = str(uuid4())
+        result = editor.update(pharmacist, rx, {"sig": "Edited after upgrade"}, 1,
+             "New synthetic edit after additive schema upgrade",
+             expected_status="DATA_ENTRY", request_id=key)
+        assert result["version"] == 2
+        assert editor.request_status(pharmacist, rx, key)["state"] == "RECORDED"
+    finally:
+        upgraded.engine.dispose()
