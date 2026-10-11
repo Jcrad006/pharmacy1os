@@ -312,11 +312,10 @@ def main() -> None:
 
         def detail(self):
             rx_id = self.selected_id()
-            if not rx_id:
-                return
-            info = self._read(lambda: client.detail(rx_id))
-            if info is None:
-                return
+            if rx_id:
+                self._launch_request("detail", {"rx_id": rx_id})
+
+        def _display_detail(self, info):
             patient, prescriber = info.get("patient") or {}, info.get("prescriber") or {}
             lines = [
                 "SYNTHETIC PRESCRIPTION — READ ONLY",
@@ -585,11 +584,10 @@ def main() -> None:
 
         def audit(self):
             rx_id = self.selected_id()
-            if not rx_id:
-                return
-            data = self._read(lambda: client.audit(rx_id, limit=100))
-            if data is None:
-                return
+            if rx_id:
+                self._launch_request("audit", {"rx_id": rx_id, "limit": 100})
+
+        def _display_audit(self, data):
             lines = ["SYNTHETIC AUDIT — READ ONLY (free-text metadata excluded)", ""]
             for event in data["events"]:
                 actor = event.get("actor") or {}
