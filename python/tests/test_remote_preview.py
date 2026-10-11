@@ -328,7 +328,8 @@ def test_multi_field_local_validation_and_technician_permissions(server):
         technician.review_fields(other_rx, changes={"sig": "Forbidden cross-site"},
             expected_version=0, expected_status="DATA_ENTRY",
             attestation_note="Synthetic outside site review must be refused")
-    assert cross_site.value.status == 409
+    # The role boundary rejects nonclinical staff before the site lookup.
+    assert cross_site.value.status == 403
     assert technician.edit_context(rx)["version"] == 0
 
 
