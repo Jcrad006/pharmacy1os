@@ -527,3 +527,51 @@ def test_reconcile_not_recorded_and_offline_never_resends_mutation(server, tmp_p
         report = recovery.reconcile()
         assert report["uncertain"] == 1 and report["remaining"] == 1
         assert recovery.outstanding()[0]["state"] == "PENDING"
+
+
+def test_increment68_split_review_keeps_durable_id_before_background_patch(server, tmp_path):
+    """The native Qt handoff must journal first, send once, confirm on UI thread."""
+    from pharmacy1os.workstation_recovery import ReviewedEditRecovery
+    from pharmacy1os.workstation_recovery_journal import WorkstationRecoveryJournal
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "async.split.pharmacist")
+    before = reviewer.edit_context(rx)
+    with WorkstationRecoveryJournal(tmp_path / "async-split") as journal:
+        controller = ReviewedEditRecovery(reviewer, journal)
+        key = controller.prepare_submission(
+            rx, changes={"quantity": "42.000"},
+            attestation_note="Synthetic independent prescriber verification recorded")
+        saved = controller.outstanding()
+        assert len(saved) == 1 and saved[0]["request_id"] == key
+        assert saved[0]["state"] == "PENDING"
+        # Corresponds to exactly one approved worker PATCH.
+        received = reviewer.review_fields(
+            rx, changes={"quantity": "42.000"},
+            expected_version=before["version"], expected_status=before["status"],
+            attestation_note="Synthetic independent prescriber verification recorded",
+            request_id=key)
+        assert received["request_id"] == key and received["version"] == 1
+        assert controller.outstanding()[0]["state"] == "PENDING", (
+            "The network worker must never directly write to the local journal")
+        controller.confirm_submission(rx, key, received)
+        assert controller.outstanding()[0]["state"] == "RECORDED"
+        assert reviewer.review_request_status(rx, key)["state"] == "RECORDED"
+
+
+def test_increment68_mismatched_async_review_response_cannot_acknowledge(server, tmp_path):
+    from pharmacy1os.workstation_recovery import ReviewedEditRecovery
+    from pharmacy1os.workstation_recovery_journal import (
+        JournalSafetyError, WorkstationRecoveryJournal)
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "async.mismatch.pharmacist")
+    with WorkstationRecoveryJournal(tmp_path / "async-mismatch") as journal:
+        controller = ReviewedEditRecovery(reviewer, journal)
+        key = controller.prepare_submission(
+            rx, changes={"sig": "Synthetic revised"},
+            attestation_note="Synthetic review attestation before network submission")
+        with pytest.raises(JournalSafetyError, match="does not match"):
+            controller.confirm_submission(rx, key, {
+                "request_id": reviewer.new_review_request_id(),
+                "prescription_id": rx, "version": 1})
+        assert controller.outstanding()[0]["state"] == "PENDING"
+        assert reviewer.review_request_status(rx, key)["state"] == "NOT_RECORDED"
