@@ -113,3 +113,28 @@ def test_receipt_checksum_integrity_and_wrong_key_are_fail_closed(fixture):
     for bad in ("", "not-uuid", str(uuid4()).upper(), "00000000-0000-0000-0000-000000000000"):
         with pytest.raises(WorkflowError, match="UUIDv4"):
             editor.request_status(pharm, rx, bad)
+
+
+def test_receipt_remains_queryable_from_a_new_python_service_process(fixture):
+    db, actors, rx, editor = fixture
+    from sqlalchemy import select
+    key = str(uuid4())
+    actor = actors["PHARMACIST"]
+    receipt = editor.update(actor, rx, {"sig": "Cross-process recorded change"},
+        expected_version=0, expected_status="DATA_ENTRY",
+        attestation_note="Synthetic review remains durable beyond original connection",
+        request_id=key)
+    replacement = PharmacyService(str(db.engine.url))
+    try:
+        other_editor = PrescriptionEditService(replacement)
+        assert other_editor.request_status(actor, rx, key)["result"] == receipt
+        duplicate = other_editor.update(actor, rx, {"sig": "Cross-process recorded change"},
+            expected_version=0, expected_status="DATA_ENTRY",
+            attestation_note="Synthetic review remains durable beyond original connection",
+            request_id=key)
+        assert duplicate == receipt
+        with replacement.sessions() as session:
+            assert len(session.scalars(select(PrescriptionEdit).where(
+                PrescriptionEdit.prescription_id == rx)).all()) == 1
+    finally:
+        replacement.engine.dispose()
