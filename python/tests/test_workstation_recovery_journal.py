@@ -153,3 +153,48 @@ def test_opt_in_is_required(tmp_path, monkeypatch):
     with pytest.raises(JournalSafetyError, match="synthetic"):
         WorkstationRecoveryJournal(tmp_path / "denied")
     assert not (tmp_path / "denied").exists()
+
+
+def test_full_recovery_journal_blocks_new_transmission_before_network(folder):
+    """Reaching the entry limit cannot bypass the pre-send durability gate."""
+    from pharmacy1os.workstation_recovery import ReviewedEditRecovery
+
+    origin = ids()
+    class DummyAuthenticatedClient:
+        identity = {"role": "PHARMACIST", "site_id": origin["site_id"],
+                    "staff_id": origin["staff_id"]}
+        base_url = origin["base_url"]
+        review_calls = 0
+
+        def _id(self, value):
+            return value
+
+        def new_review_request_id(self):
+            return str(uuid4())
+
+        def review_fields(self, *args, **kwargs):
+            self.review_calls += 1
+            raise AssertionError("No network mutation may occur when journal is full")
+
+    with WorkstationRecoveryJournal(folder) as journal:
+        for _ in range(MAX_ENTRIES):
+            journal.register(**{**origin, "request_id": str(uuid4())})
+        client = DummyAuthenticatedClient()
+        bridge = ReviewedEditRecovery(client, journal)
+        with pytest.raises(JournalSafetyError, match="full"):
+            bridge.submit(origin["prescription_id"],
+                changes={"sig": "Never sent to server"}, expected_version=0,
+                expected_status="DATA_ENTRY",
+                attestation_note="Synthetic reviewer documentation for a blocked change")
+        assert client.review_calls == 0
+
+
+def test_invalid_or_missing_key_never_silently_resets_pending_metadata(folder):
+    entry = ids()
+    with WorkstationRecoveryJournal(folder) as journal:
+        journal.register(**entry)
+    key_file = folder / "journal.key"
+    key_file.write_bytes(b"not-a-valid-fernet-key")
+    with pytest.raises(JournalSafetyError, match="key"):
+        WorkstationRecoveryJournal(folder)
+    assert (folder / "journal.enc").is_file()
