@@ -18,7 +18,7 @@ def main() -> None:
     if os.getenv("PHARMACY1OS_SYNTHETIC_DEMO") != "1":
         raise SystemExit("Synthetic desktop preview disabled; opt in explicitly")
     try:
-        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtCore import Qt, QTimer, Slot
         from PySide6.QtGui import QKeySequence, QShortcut
         from .qt_recovery_worker import RecoveryLookupThread
         from PySide6.QtWidgets import (
@@ -75,6 +75,9 @@ def main() -> None:
             self._lookup_thread = None
             self._lookup_busy = False
             self._close_after_lookup = False
+            self._active_lookup_batch = None
+            self._active_manual_request_id = None
+            self._active_lookup_notify = False
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -358,12 +361,23 @@ def main() -> None:
                 "edits temporarily disabled")
             worker = RecoveryLookupThread(recovery, batch)
             self._lookup_thread = worker
+            self._active_lookup_batch = batch
+            self._active_manual_request_id = manual_request_id
+            self._active_lookup_notify = notify
+            # Explicit queued QObject slots: the journal is NEVER updated from
+            # the worker thread, even when Qt signal affinity rules differ.
             worker.completed.connect(
-                lambda outcome: self._recovery_result(
-                    batch, outcome, manual_request_id, notify))
-            worker.finished.connect(self._recovery_finished)
+                self._on_recovery_completed, Qt.ConnectionType.QueuedConnection)
+            worker.finished.connect(
+                self._recovery_finished, Qt.ConnectionType.QueuedConnection)
             worker.finished.connect(worker.deleteLater)
             worker.start()
+
+        @Slot(object)
+        def _on_recovery_completed(self, outcome):
+            self._recovery_result(
+                self._active_lookup_batch, outcome,
+                self._active_manual_request_id, self._active_lookup_notify)
 
         def _recovery_result(self, batch, outcome, manual_request_id, notify):
             if self._close_after_lookup:
@@ -415,9 +429,13 @@ def main() -> None:
                     f"pending {report['remaining']}.\n\n"
                     "No prescription edit was automatically retried.")
 
+        @Slot()
         def _recovery_finished(self):
             self._lookup_busy = False
             self._lookup_thread = None
+            self._active_lookup_batch = None
+            self._active_manual_request_id = None
+            self._active_lookup_notify = False
             if self._close_after_lookup:
                 QTimer.singleShot(0, self.close)
             else:
