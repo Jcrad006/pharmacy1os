@@ -69,6 +69,11 @@ def test_versioned_hold_exact_resume_and_cancel_are_atomic_and_audited(env):
     payload = on_hold.json()["prescription"]
     assert payload["status"] == "ON_HOLD"
     assert payload["heldFromStatus"] == "DATA_ENTRY"
+    assert payload["allowedTransitions"] == [
+        "DATA_ENTRY", "CANCELLED", "TRANSFERRED",
+    ]
+    # This is a UI advisory, not permission to use the generic PATCH to
+    # transfer the prescription or bypass its dedicated transfer workflow.
     assert payload["version"] == 1
     assert persisted(service, rx) == ("ON_HOLD", "DATA_ENTRY", 1)
 
