@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from uuid import UUID, uuid4
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -17,6 +18,19 @@ from .remote_review_fields import REVIEW_FIELDS, checked_review_changes
 MAX_RESPONSE_BYTES = 1024 * 1024
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{64}\Z")
 IDENTIFIER_RE = re.compile(r"[a-fA-F0-9-]{36}\Z")
+
+
+def _request_id(value: str) -> str:
+    if not isinstance(value, str) or len(value) != 36:
+        raise ValueError("Reviewed request ID must be a canonical UUIDv4")
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Reviewed request ID must be a canonical UUIDv4") from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise ValueError("Reviewed request ID must be a canonical UUIDv4")
+    return value
+
 
 
 class WorkstationConnectionError(RuntimeError):
@@ -76,7 +90,8 @@ class LocalSessionWorkstationClient:
         reviewed_rx_edit = method == "PATCH" and re.fullmatch(rx_path, path) is not None
         read = method == "GET" and (
             path in ("/api/auth/me", "/api/prescriptions/queue")
-            or re.fullmatch(rx_path + r"(?:/audit|/edit-context)?", path) is not None)
+            or re.fullmatch(rx_path + r"(?:/audit|/edit-context)?", path) is not None
+            or re.fullmatch(rx_path + r"/review-requests/[a-f0-9-]{36}", path) is not None)
         if not (public_login or logout or read or reviewed_rx_edit):
             raise ValueError("Read-only or reviewed-Rx preview refuses this endpoint or HTTP method")
         if public_login == authenticated or (payload is not None and not (public_login or reviewed_rx_edit)):
@@ -84,10 +99,11 @@ class LocalSessionWorkstationClient:
         if reviewed_rx_edit:
             if not authenticated or params:
                 raise ValueError("Reviewed Rx changes require an authenticated request without query parameters")
-            if not isinstance(payload, dict) or set(payload) != {"expected_version", "expected_status", "attestation_note", "changes"}:
+            if not isinstance(payload, dict) or set(payload) != {"expected_version", "expected_status", "attestation_note", "changes", "request_id"}:
                 raise ValueError("Only versioned, documented Rx changes may be submitted")
             version, note, changes = (payload[k] for k in ("expected_version", "attestation_note", "changes"))
             status = payload["expected_status"]
+            _request_id(payload["request_id"])
             if (type(version) is not int or version < 0
                     or status not in ("DATA_ENTRY", "DUR_REVIEW", "ON_HOLD")
                     or not isinstance(note, str)
@@ -205,15 +221,21 @@ class LocalSessionWorkstationClient:
             raise WorkstationConnectionError("Invalid editable fields from synthetic server") from exc
         return data
 
+    @staticmethod
+    def new_review_request_id() -> str:
+        return str(uuid4())
+
     def review_fields(self, rx_id: str, *, changes: dict, expected_version: int,
-                      expected_status: str, attestation_note: str) -> dict:
+                      expected_status: str, attestation_note: str,
+                      request_id: str | None = None) -> dict:
         """One authenticated pharmacist review with 1–3 allowed fields.
 
         Never automatically retry a PATCH: a lost server response may be a
         committed edit, and a fresh unrelated write can change the version.
         """
         clean = checked_review_changes(changes)
-        payload = {"expected_version": expected_version,
+        key = _request_id(request_id) if request_id is not None else self.new_review_request_id()
+        payload = {"request_id": key, "expected_version": expected_version,
                    "expected_status": expected_status,
                    "attestation_note": attestation_note,
                    "changes": clean}
@@ -222,6 +244,7 @@ class LocalSessionWorkstationClient:
         if (type(response.get("version")) is not int
                 or response["version"] != expected_version + 1
                 or response.get("prescription_id") != rx_id
+                or response.get("request_id") != key
                 or not isinstance(response.get("changed"), dict)
                 or set(response["changed"]) != set(clean)):
             raise WorkstationConnectionError(
@@ -235,6 +258,26 @@ class LocalSessionWorkstationClient:
                                   expected_version=expected_version,
                                   expected_status=expected_status,
                                   attestation_note=attestation_note)
+
+    def review_request_status(self, rx_id: str, request_id: str) -> dict:
+        """Authoritative recorded result only when this unique request is present.
+
+        NOT_RECORDED can mean the request is still in-flight; it never licenses
+        automatically retrying the original mutation.
+        """
+        key = _request_id(request_id)
+        path = f"/api/prescriptions/{self._id(rx_id)}/review-requests/{key}"
+        result = self._call("GET", path)
+        if result.get("request_id") != key or result.get("state") not in ("RECORDED", "NOT_RECORDED"):
+            raise WorkstationConnectionError("Unreliable request-reconciliation response")
+        if result["state"] == "RECORDED":
+            recorded = result.get("result")
+            if (not isinstance(recorded, dict) or recorded.get("request_id") != key
+                    or recorded.get("prescription_id") != rx_id):
+                raise WorkstationConnectionError("Mismatched recorded review receipt")
+        elif result.get("safe_to_retry") is not False:
+            raise WorkstationConnectionError("Server did not mark unrecorded review as uncertain")
+        return result
 
     def inspect_uncertain_edit(self, rx_id: str) -> dict:
         """Read-only reconnection inspection; never proof this edit committed."""
