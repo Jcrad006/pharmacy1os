@@ -281,6 +281,11 @@ def main() -> None:
             self._set_network_controls()
             next_request = self._next_request
             self._next_request = None
+            if self._close_after_request:
+                self._next_request = None
+                self._review_draft = None
+                QTimer.singleShot(0, self.close)
+                return
             if next_request:
                 QTimer.singleShot(0, lambda: self._launch_request(
                     next_request[0], next_request[1], context=next_request[2]))
@@ -666,7 +671,7 @@ def main() -> None:
             self._show_text("Prescription audit trail", "\n".join(lines))
 
         def closeEvent(self, event):
-            if self._request_thread is not None:
+            if self._request_thread is not None or self._handling_result:
                 self._close_after_request = True
                 self._review_draft = None
                 self._next_request = None
