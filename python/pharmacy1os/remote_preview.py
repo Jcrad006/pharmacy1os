@@ -1,7 +1,7 @@
 """Loopback-only, authenticated HTTP boundary for a narrowly editable Qt pilot.
 
 Separate-process transport, not a database adapter. Allows one explicitly
-validated, pharmacist-reviewed SIG edit using a stale-version guard; no fill,
+validated, pharmacist-reviewed SIG, quantity and refill edits using a stale-version guard; no fill,
 claim, inventory, POS or remote-host actions. SYNTHETIC development only.
 """
 from __future__ import annotations
@@ -11,6 +11,8 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from .remote_review_fields import REVIEW_FIELDS, checked_review_changes
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{64}\Z")
@@ -34,7 +36,7 @@ class LocalSessionWorkstationClient:
 
     Never accepts x-demo-staff-id. No SQLAlchemy, workstation database file,
     source-document write, filling, payer, inventory or checkout commands.
-    Only pharmacist-attested, versioned prescription SIG changes are allowed.
+    Only pharmacist-attested, versioned prescription SIG, quantity and refill changes are allowed.
     """
     def __init__(self, base_url: str = "http://127.0.0.1:8008", *, timeout: float = 3):
         if not isinstance(base_url, str):
@@ -71,29 +73,28 @@ class LocalSessionWorkstationClient:
         rx_path = r"/api/prescriptions/[a-fA-F0-9-]{36}"
         public_login = method == "POST" and path == "/api/auth/login"
         logout = method == "POST" and path == "/api/auth/logout"
-        reviewed_sig_edit = method == "PATCH" and re.fullmatch(rx_path, path) is not None
+        reviewed_rx_edit = method == "PATCH" and re.fullmatch(rx_path, path) is not None
         read = method == "GET" and (
             path in ("/api/auth/me", "/api/prescriptions/queue")
             or re.fullmatch(rx_path + r"(?:/audit|/edit-context)?", path) is not None)
-        if not (public_login or logout or read or reviewed_sig_edit):
-            raise ValueError("Read-only or reviewed-SIG preview refuses this endpoint or HTTP method")
-        if public_login == authenticated or (payload is not None and not (public_login or reviewed_sig_edit)):
+        if not (public_login or logout or read or reviewed_rx_edit):
+            raise ValueError("Read-only or reviewed-Rx preview refuses this endpoint or HTTP method")
+        if public_login == authenticated or (payload is not None and not (public_login or reviewed_rx_edit)):
             raise ValueError("Invalid preview authentication or request payload")
-        if reviewed_sig_edit:
+        if reviewed_rx_edit:
             if not authenticated or params:
-                raise ValueError("Reviewed SIG changes require an authenticated request without query parameters")
+                raise ValueError("Reviewed Rx changes require an authenticated request without query parameters")
             if not isinstance(payload, dict) or set(payload) != {"expected_version", "expected_status", "attestation_note", "changes"}:
-                raise ValueError("Only versioned, documented SIG changes may be submitted")
+                raise ValueError("Only versioned, documented Rx changes may be submitted")
             version, note, changes = (payload[k] for k in ("expected_version", "attestation_note", "changes"))
             status = payload["expected_status"]
             if (type(version) is not int or version < 0
                     or status not in ("DATA_ENTRY", "DUR_REVIEW", "ON_HOLD")
                     or not isinstance(note, str)
                     or not 12 <= len(note.strip()) <= 2000
-                    or not isinstance(changes, dict) or set(changes) != {"sig"}
-                    or not isinstance(changes["sig"], str)
-                    or not 1 <= len(changes["sig"].strip()) <= 4000):
-                raise ValueError("Invalid documented SIG change")
+                    ):
+                raise ValueError("Invalid versioned Rx review")
+            checked_review_changes(changes)
         path_url = self.base_url + path
         if params:
             path_url += "?" + urlencode(params)
@@ -193,34 +194,56 @@ class LocalSessionWorkstationClient:
         """
         data = self._call("GET", f"/api/prescriptions/{self._id(rx_id)}/edit-context")
         values = data.get("values")
-        if (not isinstance(values, dict) or not isinstance(values.get("sig"), str)
-                or type(data.get("version")) is not int or data["version"] < 0
+        if (not isinstance(values, dict) or
+                type(data.get("version")) is not int or data["version"] < 0
                 or not isinstance(data.get("editable"), bool)
                 or not isinstance(data.get("status"), str) or not data["status"]):
             raise WorkstationConnectionError("Invalid review context from synthetic server")
+        try:
+            checked_review_changes({k: values[k] for k in REVIEW_FIELDS})
+        except (KeyError, ValueError) as exc:
+            raise WorkstationConnectionError("Invalid editable fields from synthetic server") from exc
         return data
 
-    def review_sig(self, rx_id: str, *, sig: str, expected_version: int,
-                   expected_status: str, attestation_note: str) -> dict:
-        """Submit exactly one reviewed SIG change. NEVER auto-retry after timeout.
+    def review_fields(self, rx_id: str, *, changes: dict, expected_version: int,
+                      expected_status: str, attestation_note: str) -> dict:
+        """One authenticated pharmacist review with 1–3 allowed fields.
 
-        The server may have committed even when a response was lost. Operators
-        must reread the current version and audit, not blindly resend a PATCH.
+        Never automatically retry a PATCH: a lost server response may be a
+        committed edit, and a fresh unrelated write can change the version.
         """
+        clean = checked_review_changes(changes)
         payload = {"expected_version": expected_version,
                    "expected_status": expected_status,
                    "attestation_note": attestation_note,
-                   "changes": {"sig": sig}}
-        # _call validates the entire payload before any network request.
+                   "changes": clean}
         response = self._call("PATCH", f"/api/prescriptions/{self._id(rx_id)}",
                               payload=payload)
-        if (type(response.get("version")) is not int or response["version"] <= expected_version
+        if (type(response.get("version")) is not int
+                or response["version"] != expected_version + 1
                 or response.get("prescription_id") != rx_id
                 or not isinstance(response.get("changed"), dict)
-                or set(response["changed"]) != {"sig"}):
+                or set(response["changed"]) != set(clean)):
             raise WorkstationConnectionError(
-                "Uncertain server edit response; refresh prescription and audit before taking further action")
+                "Uncertain server edit response; inspect current Rx and audit before retrying")
         return response
+
+    def review_sig(self, rx_id: str, *, sig: str, expected_version: int,
+                   expected_status: str, attestation_note: str) -> dict:
+        """Narrow backward-compatible caller for the earlier SIG review."""
+        return self.review_fields(rx_id, changes={"sig": sig},
+                                  expected_version=expected_version,
+                                  expected_status=expected_status,
+                                  attestation_note=attestation_note)
+
+    def inspect_uncertain_edit(self, rx_id: str) -> dict:
+        """Read-only reconnection inspection; never proof this edit committed."""
+        context = self.edit_context(rx_id)
+        audit = self.audit(rx_id)
+        return {"version": context["version"], "status": context["status"],
+                "values": {key: context["values"][key] for key in sorted(REVIEW_FIELDS)},
+                "recent_actions": [e.get("action") for e in audit["events"]],
+                "resolution": "MANUAL_REVIEW_REQUIRED_NOT_PROOF_OF_COMMIT"}
 
     def audit(self, rx_id: str, *, limit: int = 100) -> dict:
         if type(limit) is not int or not 1 <= limit <= 200:
