@@ -50,4 +50,4 @@ jobs:
       - name: Install native workstation and test dependencies
         run: python -m pip install -e './python[test,desktop]'
       - name: Exercise native prescription form and permission conflicts
-        run: python -m pytest -q python/tests/test_desktop_prescription.py python/tests/test_qt_recovery_worker.py python/tests/test_qt_workstation_worker.py
+        run: python -m pytest -q python/tests/test_desktop_prescription.py python/tests/test_qt_recovery_worker.py python/tests/test_qt_workstation_worker.py python/tests/test_qt_session_dialog.py
