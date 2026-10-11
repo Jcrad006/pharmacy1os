@@ -36,6 +36,7 @@ from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
 from .cob_correction_plan import CobCorrectionPlanner
+from .cob_correction_worklist import CobCorrectionWorklist
 from .cob_attempts import CobAttemptRegistry
 from .patient_cob_history import PatientCobHistory
 from .third_party_exceptions import ThirdPartyExceptionQueue
@@ -85,6 +86,7 @@ def main() -> None:
 
     from .desktop_prescription import PrescriptionDetailDialog
     from .desktop_third_party import ThirdPartyExceptionDialog
+    from .desktop_cob_corrections import CobCorrectionDialog
 
     base = Path.home() / ".pharmacy1os" / "synthetic"
     base.mkdir(parents=True, exist_ok=True)
@@ -119,6 +121,7 @@ def main() -> None:
     rebill_service = ClaimRebillService(service)
     third_party_workspace = ThirdPartyWorkspace(service)
     cob_correction_planner = CobCorrectionPlanner(service)
+    cob_correction_worklist = CobCorrectionWorklist(service)
     cob_attempt_registry = CobAttemptRegistry(service)
     patient_cob_history_service = PatientCobHistory(service)
     third_party_exception_queue = ThirdPartyExceptionQueue(service)
@@ -404,6 +407,7 @@ def main() -> None:
                 self.action("View Demand History", self.view_inventory_demand_history)
             elif page == 9:
                 self.action("Interactive Third Party Exception Worklist", self.open_third_party_worklist)
+                self.action("Interactive Prepared COB Corrections", self.open_prepared_cob_corrections)
                 self.action("Create Synthetic Payer", self.create_payer)
                 self.action("View Payers", self.show_payers)
                 self.action("Set Patient Coverage Position", self.set_coverage)
@@ -964,6 +968,12 @@ def main() -> None:
                 self.actor, patient_id, limit=25, offset=0)
             QMessageBox.information(self, "Patient synthetic COB / rejection history",
                 json.dumps(report, indent=2)[:24000])
+
+        def open_prepared_cob_corrections(self):
+            dialog = CobCorrectionDialog(
+                self.actor, cob_correction_worklist,
+                cob_correction_planner, cob_selective_corrections, parent=self)
+            dialog.exec()
 
         def open_third_party_worklist(self):
             dialog = ThirdPartyExceptionDialog(

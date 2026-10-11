@@ -13,6 +13,7 @@ from pharmacy1os.claim_transactions import SandboxClaimService
 from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
 from pharmacy1os.cob_attempts import CobAttemptRegistry, SyntheticCobAttempt, SyntheticCobAttemptReversal
 from pharmacy1os.cob_selective_correction import SyntheticCobCorrectionService
+from pharmacy1os.cob_correction_worklist import CobCorrectionWorklist
 from pharmacy1os.label_printing import LabelPrintService
 from pharmacy1os.models import Audit, Claim, Fill, Label, Stock
 from pharmacy1os.service import AccessDenied, PharmacyService, WorkflowError
@@ -555,3 +556,58 @@ def test_increment_52_api_requires_demo_pharmacist_and_exact_active_positions(ca
     assert second.status_code == 200
     assert second.json()["replayed"] is True
     assert second.json()["replacement_fill_id"] == first_result.json()["replacement_fill_id"]
+
+
+def test_synthetic_cob_correction_worklist_is_paged_and_read_only(case):
+    svc, a, out, rx, fill, stocks, exp = case
+    queue = CobCorrectionWorklist(svc)
+    assert queue.page(a["AUDITOR"])["items"] == []
+    before = prepare(case, 3)
+    page = queue.page(a["AUDITOR"], limit=1, offset=0)
+    assert [row["fill_id"] for row in page["items"]] == [fill]
+    assert page["items"][0]["payer_count"] == 3
+    assert page["items"][0]["candidate_only"] is True
+    assert page["next_offset"] is None
+    assert queue.page(a["TECHNICIAN"], rx_query="COB-CORRECT-SYN")["items"][0]["fill_id"] == fill
+    assert queue.page(a["AUDITOR"], rx_query="NONMATCH")["items"] == []
+    assert queue.page(out["AUDITOR"])["items"] == []
+    for kwargs in ({"limit": 0}, {"limit": True}, {"limit": 51},
+                   {"offset": -1}, {"offset": True}, {"offset": 10001},
+                   {"rx_query": "x" * 61}):
+        with pytest.raises(WorkflowError):
+            queue.page(a["AUDITOR"], **kwargs)
+    assert CobAttemptRegistry(svc).history(a["AUDITOR"], fill) == before
+
+
+def test_synthetic_cob_correction_worklist_refresh_after_correct_and_verify(case):
+    from pharmacy1os.cob_correction_plan import CobCorrectionPlanner
+    svc, a, out, rx, fill, stocks, exp = case
+    prepare(case, 2)
+    queue = CobCorrectionWorklist(svc)
+    planner = CobCorrectionPlanner(svc)
+    assert len(queue.page(a["AUDITOR"])["items"]) == 1
+    preview = planner.plan(a["PHARMACIST"], fill, target_position=2)
+    result = SyntheticCobCorrectionService(svc).correct(
+        a["PHARMACIST"], fill,
+        "Native queued fill selected for synthetic payer correction",
+        target_position=2,
+        expected_active_paid_transaction_ids=preview["expected_active_paid_transaction_ids"],
+        corrected_billing_ndc="60000-4444-02")
+    assert result["positions_reprocessed"] == [2]
+    fresh = planner.plan(a["AUDITOR"], fill, target_position=2)
+    assert fresh["expected_active_paid_transaction_ids"] != preview[
+        "expected_active_paid_transaction_ids"]
+    assert [item["fill_id"] for item in queue.page(a["AUDITOR"])["items"]] == [fill]
+    svc.verify(a["PHARMACIST"], fill)
+    assert queue.page(a["AUDITOR"])["items"] == []
+
+
+def test_synthetic_cob_worklist_does_not_offer_partial_reversed_chains(case):
+    svc, a, out, rx, fill, stocks, exp = case
+    prepare(case, 2)
+    queue = CobCorrectionWorklist(svc)
+    assert len(queue.page(a["AUDITOR"])["items"]) == 1
+    with svc.sessions.begin() as s:
+        claims = s.scalars(select(Claim).where(Claim.fill_id == fill)).all()
+        claims[-1].status = "REVERSED_SYNTHETIC"
+    assert queue.page(a["AUDITOR"])["items"] == []

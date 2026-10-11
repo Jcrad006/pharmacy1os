@@ -1,0 +1,13 @@
+# Python parity increment 59 — selection-driven native COB correction worklist
+
+Follows [Increment 58](PYTHON_PARITY_PROGRESS_INCREMENT_58.md) in isolated draft [PR #43](https://github.com/Jcrad006/pharmacy1os/pull/43).
+
+## Implemented
+- Added a bounded and site-scoped read-only `CobCorrectionWorklist.page` to discover pre-verification fills with **2–4 locally paid synthetic payer positions**, including Rx-number filtering, paging, and privacy-minimized display fields. This is explicitly a **candidate list, not proof of correction eligibility**.
+- Added a native PySide6 **Interactive Prepared COB Corrections** action under the F10 Third Party workspace. The dialog allows pharmacists to select a prepared fill, inspect the authoritative versioned payer chain, choose the exact COB position, and select **only an already scanned NDC**.
+- The existing `CobCorrectionPlanner.plan` must first approve the specific fill and position, including its correct paid-transaction suffix and scanned physical products. A second fresh preflight compares those exact IDs/chain immediately before user confirmation; a concurrent change forces refresh. The existing `SyntheticCobCorrectionService.correct` independently performs its locked validation and atomic last-to-first local reversals / forward synthetic reprocessing.
+- Correction requires 12–1000-character pharmacist/administrator documentation, an explicit final confirmation and an authorized role. Technicians/auditors can inspect the candidate worklist and provenance but cannot commit a correction. Original menu-based paths remain available.
+- Added three headless regression tests: empty/prepared site-isolated candidate list with bounds and no mutation, repeated correction preflight with later pharmacist verification removing the candidate, and exclusion of partially reversed synthetic payer chains. No schema migration or new payer interface.
+
+## Safety, verification and remaining parity
+All claims and changes remain strictly local simulations: **no NCPDP claim switch, insurer approval, payment, real stock movement or dispensing authorization**. The original TypeScript system remains authoritative; no live PHI. The candidate list intentionally does not validate every full ledger until a user selects a fill. Qt UI requires live graphical accessibility smoke testing; GitHub CI/PostgreSQL and module compilation must be checked on the new commit. The broader original TypeScript parity, production identity, concurrency, payer/hardware integrations, clinical and legal compliance, legacy data conversion and disaster recovery remain incomplete. Keep PR #43 draft.
