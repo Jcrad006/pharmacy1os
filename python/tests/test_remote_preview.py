@@ -454,3 +454,76 @@ def test_request_receipts_are_isolated_between_actors_and_pharmacy_sites(server)
     with pytest.raises(WorkstationConnectionError) as other_prescription:
         reviewer.review_request_status(other_rx, key)
     assert other_prescription.value.status == 409
+
+
+def test_encrypted_workstation_journal_reconciles_after_process_restart(server, monkeypatch, tmp_path):
+    from pharmacy1os.workstation_recovery_journal import WorkstationRecoveryJournal
+    from pharmacy1os.workstation_recovery import ReviewedEditRecovery
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "journal.pharmacist")
+    root = tmp_path / "station-recovery"
+    direct = reviewer._call
+    def lost_after_commit(method, path, **kwargs):
+        if method == "PATCH":
+            direct(method, path, **kwargs)
+            raise WorkstationConnectionError("Server committed but reply lost")
+        return direct(method, path, **kwargs)
+    monkeypatch.setattr(reviewer, "_call", lost_after_commit)
+    view = reviewer.edit_context(rx)
+    with WorkstationRecoveryJournal(root) as journal:
+        controller = ReviewedEditRecovery(reviewer, journal)
+        with pytest.raises(WorkstationConnectionError, match="reply lost"):
+            controller.submit(rx, changes={"sig": "Fictitious directions after crash"},
+                expected_version=view["version"], expected_status=view["status"],
+                attestation_note="Pharmacist reviewed synthetic source for edit")
+        records = controller.outstanding()
+        assert len(records) == 1 and records[0]["state"] == "PENDING"
+        key = records[0]["request_id"]
+        assert key.encode() not in (root / "journal.enc").read_bytes()
+
+    # New login, new HTTP object, and new decrypted journal object.
+    replacement = LocalSessionWorkstationClient(url)
+    replacement.login("journal.pharmacist", "Synthetic Reviewer Credential 2026!")
+    with WorkstationRecoveryJournal(root) as journal:
+        recovered = ReviewedEditRecovery(replacement, journal)
+        summary = recovered.reconcile()
+        assert summary == {"checked": 1, "recorded": 1, "uncertain": 0,
+                           "errors": [], "remaining": 0}
+        receipt = recovered.outstanding()
+        assert len(receipt) == 1 and receipt[0]["state"] == "RECORDED"
+        assert receipt[0]["request_id"] == key
+        assert replacement.review_request_status(rx, key)["state"] == "RECORDED"
+        recovered.acknowledge(key)
+        assert recovered.outstanding() == []
+    from pharmacy1os.prescription_edit import PrescriptionEditService
+    assert len(PrescriptionEditService(svc).history(actors["AUDITOR"], rx)) == 1
+
+
+def test_reconcile_not_recorded_and_offline_never_resends_mutation(server, tmp_path, monkeypatch):
+    from pharmacy1os.workstation_recovery_journal import WorkstationRecoveryJournal
+    from pharmacy1os.workstation_recovery import ReviewedEditRecovery
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "offline.pharmacist")
+    root = tmp_path / "offline-recovery"
+    with WorkstationRecoveryJournal(root) as journal:
+        recovery = ReviewedEditRecovery(reviewer, journal)
+        key = reviewer.new_review_request_id()
+        journal.register(request_id=key, prescription_id=rx,
+            site_id=reviewer.identity["site_id"],
+            staff_id=reviewer.identity["staff_id"], base_url=reviewer.base_url)
+        calls = []
+        normal = reviewer._call
+        def read_only_capture(method, path, **kwargs):
+            calls.append(method)
+            if method == "GET":
+                raise WorkstationConnectionError("Local synthetic session server unreachable")
+            raise AssertionError("Reconciliation attempted to modify a prescription")
+        monkeypatch.setattr(reviewer, "_call", read_only_capture)
+        report = recovery.reconcile()
+        assert report["checked"] == 1 and report["recorded"] == 0
+        assert report["remaining"] == 1 and len(report["errors"]) == 1
+        assert calls == ["GET"]
+        monkeypatch.setattr(reviewer, "_call", normal)
+        report = recovery.reconcile()
+        assert report["uncertain"] == 1 and report["remaining"] == 1
+        assert recovery.outstanding()[0]["state"] == "PENDING"
