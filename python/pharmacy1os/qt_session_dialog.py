@@ -66,6 +66,7 @@ class SessionLoginDialog(QDialog):
         self._worker: SessionLoginThread | None = None
         self._completed = None
         self._closing = False
+        self._cleanup_thread = None
         self.setWindowTitle("Pharmacy1OS — synthetic local sign-in")
         self.setMinimumWidth(430)
         layout = QVBoxLayout(self)
@@ -127,9 +128,14 @@ class SessionLoginDialog(QDialog):
         self._completed = None
         if self._closing:
             self.identity = None
-            # No window is opened if cancellation was requested.
-            # Explicit logout, when possible, will be handled by the caller.
-            super().reject()
+            # A sign-in can succeed immediately before the user closes the
+            # dialog; finish sign-out in a separate worker before returning.
+            self._cleanup_thread = SessionLogoutThread(self.client)
+            self._cleanup_thread.finished.connect(
+                self._cancel_logout_finished, Qt.ConnectionType.QueuedConnection)
+            self._cleanup_thread.finished.connect(self._cleanup_thread.deleteLater)
+            self._cleanup_thread.start()
+            self.info.setText("Cancelling synthetic login and revoking session…")
             return
         if outcome is not None and outcome[0] == "ok":
             self.identity = outcome[1]
@@ -147,17 +153,22 @@ class SessionLoginDialog(QDialog):
             + (f" (HTTP {code})" if code is not None else ""))
         self.password.setFocus()
 
+    @Slot()
+    def _cancel_logout_finished(self):
+        self._cleanup_thread = None
+        super().reject()
+
     def reject(self):
-        if self._worker is not None:
+        if self._worker is not None or self._cleanup_thread is not None:
             self._closing = True
-            self.info.setText("Finishing active sign-in before closing")
+            self.info.setText("Finishing active session request before closing")
             return
         super().reject()
 
     def closeEvent(self, event):
-        if self._worker is not None:
+        if self._worker is not None or self._cleanup_thread is not None:
             self._closing = True
-            self.info.setText("Finishing active sign-in before closing")
+            self.info.setText("Finishing active session request before closing")
             event.ignore()
         else:
             super().closeEvent(event)
