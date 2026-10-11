@@ -21,7 +21,11 @@ from pharmacy1os.service import PharmacyService, WorkflowError
 
 
 @pytest.fixture
-def scenario():
+def scenario(request):
+    # The demo model enforces globally unique NDCs and barcodes across sites.
+    suffix = "1" if "verify_vs_full" in request.node.name else "2"
+    ndc = "99061-3333-2" + suffix
+    barcode = "INC61-TEST-BAR-" + suffix
     url = os.getenv("PHARMACY1OS_PG_CI_URL")
     if not url:
         pytest.skip("Requires a disposable migrated PostgreSQL CI service")
@@ -35,18 +39,18 @@ def scenario():
         person = svc.add_patient(tech, "Simulated", "MultiWorkstation")
         prescriber = svc.add_prescriber(tech, "Simulated", "Prescriber", "MD")
         drug = svc.add_drug(pharm, "Increment 61 synthetic concurrency", "2 mg", "tablet")
-        product = svc.add_product(pharm, drug, "99061-3333-22",
+        product = svc.add_product(pharm, drug, ndc,
                                   "Local test manufacturer", "Mock pills")
-        svc.register_barcode(tech, product, "INC61-TEST-BAR")
+        svc.register_barcode(tech, product, barcode)
         expiry = (date.today() + timedelta(days=200)).isoformat()
-        stock = svc.receive(tech, "INC61-TEST-BAR", "INC61-LOT", expiry, "100")
+        stock = svc.receive(tech, barcode, "INC61-LOT", expiry, "100")
         rx = svc.add_prescription(tech, person, prescriber, drug,
             "INC61-CI-RX", "One synthetic tablet daily", "50")
         svc.advance_to_dur(tech, rx)
         fill = svc.start_fill(tech, rx, days_supply=50)
-        svc.scan_source(tech, fill, "INC61-TEST-BAR", "INC61-LOT", expiry, "50")
+        svc.scan_source(tech, fill, barcode, "INC61-LOT", expiry, "50")
         svc.prepare_for_review(tech, fill, ["Test Primary", "Test Secondary", "Test Third"])
-        yield svc, a, rx, fill, stock, expiry
+        yield svc, a, rx, fill, stock, expiry, ndc
     finally:
         svc.engine.dispose()
 
@@ -59,7 +63,7 @@ def _current_ids(svc, actor, fill):
 
 def test_pg_verify_vs_full_reversal_cannot_both_win(scenario):
     """Pharmacist verification vs cancellation/rebill races for the same reserved stock."""
-    svc, a, rx, fill, stock, expiry = scenario
+    svc, a, rx, fill, stock, expiry, ndc = scenario
     pharmacist = a["PHARMACIST"]
     expected = _current_ids(svc, pharmacist, fill)
     barrier = Barrier(2)
@@ -115,7 +119,7 @@ def test_pg_verify_vs_full_reversal_cannot_both_win(scenario):
 
 def test_pg_selective_correction_vs_full_reverse_rejects_stale_operator(scenario):
     """Different workstation commands use the same fill lock and current paid IDs."""
-    svc, a, rx, fill, stock, expiry = scenario
+    svc, a, rx, fill, stock, expiry, ndc = scenario
     pharmacist = a["PHARMACIST"]
     initial = CobAttemptRegistry(svc).history(pharmacist, fill)
     full_ids = _current_ids(svc, pharmacist, fill)
@@ -130,7 +134,7 @@ def test_pg_selective_correction_vs_full_reverse_rejects_stale_operator(scenario
                 pharmacist, fill,
                 "Second payer simulated NDC reprocessing while another operator requests reversal",
                 target_position=2, expected_active_paid_transaction_ids=suffix_ids,
-                corrected_billing_ndc="99061-3333-22")
+                corrected_billing_ndc=ndc)
             return ("corrected", result)
         except WorkflowError as exc:
             return ("blocked", str(exc))
