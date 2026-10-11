@@ -15,7 +15,7 @@ from pharmacy1os.cob_attempts import CobAttemptRegistry, SyntheticCobAttempt, Sy
 from pharmacy1os.cob_selective_correction import SyntheticCobCorrectionService
 from pharmacy1os.cob_correction_worklist import CobCorrectionWorklist
 from pharmacy1os.label_printing import LabelPrintService
-from pharmacy1os.models import Audit, Claim, Fill, Label, Stock
+from pharmacy1os.models import Audit, Claim, Fill, FillSource, Label, Stock
 from pharmacy1os.service import AccessDenied, PharmacyService, WorkflowError
 
 
@@ -611,3 +611,45 @@ def test_synthetic_cob_worklist_does_not_offer_partial_reversed_chains(case):
         claims = s.scalars(select(Claim).where(Claim.fill_id == fill)).all()
         claims[-1].status = "REVERSED_SYNTHETIC"
     assert queue.page(a["AUDITOR"])["items"] == []
+
+
+def test_corrected_four_payer_cob_full_reversal_creates_unscanned_replacement(case):
+    from pharmacy1os.claim_rebilling import ClaimRebillService
+    from pharmacy1os.cob_correction_plan import CobCorrectionPlanner
+    from pharmacy1os.cob_replacement_tracker import CobReplacementTracker
+    from pharmacy1os.third_party_exceptions import ThirdPartyExceptionQueue
+    svc, a, outside, rx, fill, stocks, expires = case
+    prepare(case, 4)
+    planner = CobCorrectionPlanner(svc)
+    first = planner.plan(a["AUDITOR"], fill, target_position=2)
+    SyntheticCobCorrectionService(svc).correct(
+        a["PHARMACIST"], fill,
+        "Correct synthetic secondary payer NDC before independent whole-claim rescan",
+        target_position=2,
+        expected_active_paid_transaction_ids=first[
+            "expected_active_paid_transaction_ids"],
+        corrected_billing_ndc="60000-4444-02")
+    plan = planner.plan(a["AUDITOR"], fill, target_position=1)
+    assert [position["active_attempt_number"]
+            for position in plan["full_chain"]] == [1, 2, 2, 2]
+    assert plan["reverse_positions"] == [4, 3, 2, 1]
+    result = ClaimRebillService(svc).reverse_current_cob(
+        a["PHARMACIST"], fill,
+        "Reverse all corrected local payer versions for new independently scanned fill",
+        expected_active_paid_transaction_ids=plan[
+            "expected_active_paid_transaction_ids"])
+    replacement = result["replacement_fill_id"]
+    assert result["coverage_positions_reversed"] == [4, 3, 2, 1]
+    assert CobReplacementTracker(svc).detail(a["AUDITOR"], replacement)[
+        "workflow_stage"] == "AWAITING_PHYSICAL_RESCAN"
+    assert ThirdPartyExceptionQueue(svc).snapshot(
+        a["AUDITOR"], status="REPLACEMENT_RESCAN_REQUIRED")["items"][0][
+            "fill_id"] == replacement
+    with svc.sessions() as s:
+        assert s.get(Fill, fill).status == "RETURNED"
+        assert s.get(Fill, replacement).status == "PRODUCT_FILL"
+        assert s.scalars(select(FillSource).where(FillSource.fill_id == replacement)).all() == []
+        assert s.scalars(select(Claim).where(Claim.fill_id == replacement)).all() == []
+        assert all(s.get(Stock, sid).reserved == 0 for sid in stocks)
+    with pytest.raises(WorkflowError):
+        planner.plan(a["AUDITOR"], fill, target_position=1)

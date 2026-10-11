@@ -10,6 +10,9 @@ from sqlalchemy import select
 from pharmacy1os.api import create_app
 from pharmacy1os.billing import BillingService
 from pharmacy1os.claim_rebilling import ClaimRebillService, SyntheticRebillLink
+from pharmacy1os.cob_attempts import CobAttemptRegistry
+from pharmacy1os.cob_replacement_tracker import CobReplacementTracker
+from pharmacy1os.third_party_exceptions import ThirdPartyExceptionQueue
 from pharmacy1os.claim_transactions import SandboxClaimService
 from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
 from pharmacy1os.fill_completion import FillObligation
@@ -258,3 +261,70 @@ def test_api_is_synthetic_only_and_requires_fresh_claim_ids(case):
                      headers={"x-demo-staff-id": a["AUDITOR"].id})
     assert detail.status_code == 200
     assert detail.json()["links"][0]["original_fill_id"] == fill
+
+
+def test_native_full_cob_rebill_tracks_independent_rescan_and_verification(case):
+    svc, a, outside, rx, fill, expires = case
+    prepare(case, ["Mock Payer One", "Mock Payer Two", "Mock Payer Three"])
+    before = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    ids = [position["attempts"][-1]["paid_transaction_id"]
+           for position in reversed(before["claim_positions"])]
+    tracker = CobReplacementTracker(svc)
+    with pytest.raises(WorkflowError, match="no synthetic rebill replacement"):
+        tracker.detail(a["AUDITOR"], fill)
+    result = ClaimRebillService(svc).reverse_current_cob(
+        a["PHARMACIST"], fill,
+        "All synthetic payer claims must be reversed before a separate physical rescan",
+        expected_active_paid_transaction_ids=ids)
+    replacement = result["replacement_fill_id"]
+    assert result["coverage_positions_reversed"] == [3, 2, 1]
+    assert svc.scanned_sources(a["TECHNICIAN"], replacement) == []
+    initial = tracker.detail(a["AUDITOR"], replacement)
+    assert initial == tracker.detail(a["AUDITOR"], fill)
+    assert initial["workflow_stage"] == "AWAITING_PHYSICAL_RESCAN"
+    assert initial["prior_payer_positions_reversed"] == 3
+    assert initial["prior_local_paid_positions_remaining"] == 0
+    assert not initial["external_payer_contact"]
+    with pytest.raises(WorkflowError):
+        tracker.detail(outside["AUDITOR"], replacement)
+    assert [x["fill_id"] for x in ThirdPartyExceptionQueue(svc).snapshot(
+        a["AUDITOR"], status="REPLACEMENT_RESCAN_REQUIRED")["items"]] == [replacement]
+    svc.scan_source(a["TECHNICIAN"], replacement,
+        "RESTART-BAR-1", "LOT-RESTART-1", expires, "50")
+    partly = tracker.detail(a["AUDITOR"], replacement)
+    assert partly["scanned_physical_quantity"] == "50.000"
+    assert partly["workflow_stage"] == "AWAITING_PHYSICAL_RESCAN"
+    svc.scan_source(a["TECHNICIAN"], replacement,
+        "RESTART-BAR-2", "LOT-RESTART-2", expires, "40")
+    assert tracker.detail(a["AUDITOR"], replacement)[
+        "workflow_stage"] == "AWAITING_SYNTHETIC_CLAIM_PREPARATION"
+    svc.prepare_for_review(a["TECHNICIAN"], replacement, ["Mock Payer Replacement"])
+    assert tracker.detail(a["AUDITOR"], replacement)[
+        "workflow_stage"] == "AWAITING_PHARMACIST_VERIFICATION"
+    svc.verify(a["PHARMACIST"], replacement)
+    assert tracker.detail(a["AUDITOR"], replacement)[
+        "workflow_stage"] == "PHARMACIST_VERIFIED_READY"
+    assert ThirdPartyExceptionQueue(svc).snapshot(a["AUDITOR"])["items"] == []
+
+
+def test_synthetic_rebill_tracker_rejects_tampered_original_claim_ancestry(case):
+    svc, a, outside, rx, fill, expires = case
+    prepare(case)
+    history = CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
+    ids = [x["attempts"][-1]["paid_transaction_id"]
+           for x in reversed(history["claim_positions"])]
+    replacement = ClaimRebillService(svc).reverse_current_cob(
+        a["PHARMACIST"], fill,
+        "Test deliberately corrupted original synthetic payer reversal history",
+        expected_active_paid_transaction_ids=ids)["replacement_fill_id"]
+    assert CobReplacementTracker(svc).detail(a["AUDITOR"], replacement)[
+        "prior_local_paid_positions_remaining"] == 0
+    with svc.sessions.begin() as s:
+        link = s.scalar(select(SyntheticRebillLink).where(
+            SyntheticRebillLink.original_fill_id == fill))
+        link.reversed_claim_ids_json = '["falsified-claim-id"]'
+    with pytest.raises(WorkflowError, match="prior COB reversal is incomplete"):
+        CobReplacementTracker(svc).detail(a["AUDITOR"], replacement)
+    with svc.sessions() as s:
+        assert s.get(Fill, replacement).status == "PRODUCT_FILL"
+        assert s.scalars(select(Claim).where(Claim.fill_id == replacement)).all() == []
