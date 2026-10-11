@@ -7,13 +7,15 @@ projection never sends claims, clears holds or dispenses physical stock.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from sqlalchemy import exists, select
+from sqlalchemy import select
+
+from .cob_attempts import CobAttemptRegistry
 
 from .claim_rebilling import SyntheticRebillLink
 from .claim_transactions import _view
 from .claim_transactions_models import SandboxClaimTransaction
 from .cob_attempts import CobAttemptRegistry
-from .insurance_models import PatientCoverage
+from .insurance_models import ClaimCoverageSnapshot, PatientCoverage
 from .models import Fill, Patient, Prescription
 from .service import Actor, PharmacyService, WorkflowError
 
@@ -46,14 +48,14 @@ class ThirdPartyExceptionQueue:
         if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 10000:
             raise WorkflowError("Exception queue offset must be between 0 and 10000")
 
-        # Each underlying category only needs offset + limit + 1 records:
-        # even after global merge, an older record cannot appear on this page
-        # if the same category has more than that many newer records.
+        # Synthetic development-only worklist: validate *all* site rejection
+        # ancestries before hiding completed retries. Merely finding any
+        # TEST_RETRY row must not make a corrupted or fabricated hold vanish.
+        # This scan is intentionally not presented as a production-scale query.
         bound = offset + limit + 1
         with self.service.sessions() as s:
             self.service._authorized(s, actor, "read")
-            retry_table = SandboxClaimTransaction.__table__.alias("completed_retry")
-            unresolved = s.execute(select(
+            rejects = s.execute(select(
                 SandboxClaimTransaction, Fill, Prescription, Patient
             ).join(Fill, SandboxClaimTransaction.fill_id == Fill.id)
              .join(Prescription, Fill.prescription_id == Prescription.id)
@@ -63,30 +65,27 @@ class ThirdPartyExceptionQueue:
                  Prescription.site_id == actor.site_id,
                  Patient.site_id == actor.site_id,
                  SandboxClaimTransaction.operation == "TEST_REJECT",
-                 ~exists(select(retry_table.c.id).where(
-                     retry_table.c.site_id == actor.site_id,
-                     retry_table.c.original_transaction_id == SandboxClaimTransaction.id,
-                     retry_table.c.operation == "TEST_RETRY",
-                 )),
              ).order_by(
                  SandboxClaimTransaction.recorded_at.desc(),
-                 SandboxClaimTransaction.id.desc()).limit(
-                     bound if status == "ALL" else None)).all()
-            ids = [tx.id for tx, *_ in unresolved]
+                 SandboxClaimTransaction.id.desc())).all()
+            reject_ids = {tx.id for tx, *_ in rejects}
             related = s.scalars(select(SandboxClaimTransaction).where(
                 SandboxClaimTransaction.site_id == actor.site_id,
-                SandboxClaimTransaction.original_transaction_id.in_(ids),
                 SandboxClaimTransaction.operation.in_(("TEST_RESOLVE", "TEST_RETRY"))
-            )).all() if ids else []
+            )).all()
             by_reject: dict[str, dict[str, SandboxClaimTransaction]] = {}
             for event in related:
                 _view(event)
-                if event.original_transaction_id is None:
-                    raise WorkflowError("Orphan test hold response ancestry")
-                by_reject.setdefault(event.original_transaction_id, {})[event.operation] = event
+                if event.original_transaction_id not in reject_ids:
+                    raise WorkflowError(
+                        "Orphan or cross-site synthetic hold resolution/retry requires reconciliation")
+                ancestors = by_reject.setdefault(event.original_transaction_id, {})
+                if event.operation in ancestors:
+                    raise WorkflowError("Duplicate synthetic hold resolution/retry requires reconciliation")
+                ancestors[event.operation] = event
 
             outstanding = []
-            for tx, fill, rx, patient in unresolved:
+            for tx, fill, rx, patient in rejects:
                 data = _view(tx)
                 req = data["request"]
                 if (tx.outcome != "REJECTED_SYNTHETIC"
@@ -102,10 +101,6 @@ class ThirdPartyExceptionQueue:
                     PatientCoverage.patient_id == rx.patient_id))
                 links = by_reject.get(tx.id, {})
                 resolution, retry = links.get("TEST_RESOLVE"), links.get("TEST_RETRY")
-                if retry is not None:
-                    # Concurrent reads may see a retry while scanning a prior
-                    # snapshot. Never present a retried hold as still pending.
-                    continue
                 if resolution is not None:
                     rv = _view(resolution)
                     if (resolution.outcome != "CLEARED_TEST_HOLD"
@@ -115,6 +110,42 @@ class ThirdPartyExceptionQueue:
                             or resolution.claim_id is not None
                             or rv["request"].get("original_transaction_id") != tx.id):
                         raise WorkflowError("Test hold resolution has inconsistent ancestry")
+                if retry is not None:
+                    retry_request = _view(retry)["request"]
+                    selected = retry_request.get("coverage_ids")
+                    if (resolution is None or retry.outcome != "RETRIED_SYNTHETIC"
+                            or retry.fill_id != fill.id
+                            or retry.coverage_id != tx.coverage_id
+                            or retry.payer_id != tx.payer_id
+                            or retry.claim_id is not None
+                            or retry_request.get("original_rejection_id") != tx.id
+                            or retry_request.get("resolution_id") != resolution.id
+                            or not isinstance(selected, list)
+                            or not 1 <= len(selected) <= 4
+                            or any(not isinstance(cid, str) or not cid for cid in selected)
+                            or len(set(selected)) != len(selected)
+                            or tx.coverage_id not in selected):
+                        raise WorkflowError("Synthetic test retry has invalid pharmacist/coverage ancestry")
+                    # A historical retry is only complete if its ordered
+                    # coverage snapshots and versioned synthetic claims exist.
+                    # An injected, claimless TEST_RETRY must never hide a hold.
+                    snapshots = s.scalars(select(ClaimCoverageSnapshot).where(
+                        ClaimCoverageSnapshot.site_id == actor.site_id,
+                        ClaimCoverageSnapshot.fill_id == fill.id
+                    ).order_by(ClaimCoverageSnapshot.coverage_position)).all()
+                    history = CobAttemptRegistry(self.service)._history_tx(
+                        s, actor, fill.id)
+                    if (len(snapshots) != len(selected)
+                            or [snap.coverage_position for snap in snapshots]
+                               != list(range(1, len(selected) + 1))
+                            or [snap.coverage_id for snap in snapshots] != selected
+                            or len(history["claim_positions"]) != len(selected)
+                            or [entry["coverage_position"] for entry in history["claim_positions"]]
+                               != list(range(1, len(selected) + 1))):
+                        raise WorkflowError("Synthetic retry has no complete ordered payer claim evidence")
+                    # A completed synthetic retry is history, not an open
+                    # operational hold. Its evidence was verified above.
+                    continue
                 reconciled = (
                     fill.status == "PRODUCT_FILL" and rx.status == "PRODUCT_FILL"
                     and coverage is not None and coverage.payer_id == tx.payer_id

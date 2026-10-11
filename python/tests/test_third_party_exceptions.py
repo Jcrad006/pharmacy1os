@@ -1,5 +1,7 @@
 """Site-wide synthetic Third Party exception workqueue, no external claims."""
 from datetime import date, timedelta
+import hashlib
+import json
 from decimal import Decimal
 
 import pytest
@@ -8,7 +10,7 @@ from sqlalchemy import select
 
 from pharmacy1os.api import create_app
 from pharmacy1os.claim_rebilling import ClaimRebillService
-from pharmacy1os.claim_transactions import SandboxClaimService
+from pharmacy1os.claim_transactions import SandboxClaimService, _canonical, _record
 from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
 from pharmacy1os.insurance import InsuranceDirectory
 from pharmacy1os.models import Claim, Fill, Prescription, Stock
@@ -195,3 +197,62 @@ def test_filtered_cleared_hold_not_lost_beyond_first_page_of_newer_open_holds(ca
         a["AUDITOR"], status="CLEARED_AWAITING_RETRY", limit=1)
     assert [x["event_id"] for x in result["items"]] == [earlier]
     assert result["next_offset"] is None
+
+
+def test_completed_test_retry_with_corrupt_digest_never_disappears_silently(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    rejection = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_75", "EXCEPTION-RETRY-INTEGRITY-1",
+        "Manually injected synthetic coverage hold for corrupted retry test")
+    resolved = ledger.resolve_rejection(a["PHARMACIST"], rejection,
+        "Pharmacist recorded a simulated resolution for integrity check")
+    retry = ledger.retry_cleared_rejection(a["PHARMACIST"], rejection,
+        expected_resolution_id=resolved, coverage_ids=coverages,
+        reason="Synthetic pharmacist retry with intentional post-commit corruption")
+    assert ThirdPartyExceptionQueue(svc).snapshot(a["AUDITOR"])["items"] == []
+    with svc.sessions.begin() as s:
+        s.get(SandboxClaimTransaction, retry["id"]).response_json = (
+            '{"outcome":"RETRIED_SYNTHETIC","message":"forged"}')
+    with pytest.raises(WorkflowError, match="integrity"):
+        ThirdPartyExceptionQueue(svc).snapshot(a["AUDITOR"])
+
+
+def test_forged_claimless_retry_cannot_hide_unresolved_synthetic_hold(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    rejection = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_70", "EXCEPTION-CLAIMLESS-RETRY",
+        "Manually injected hold before counterfeit local retry event")
+    with svc.sessions.begin() as s:
+        original = s.get(SandboxClaimTransaction, rejection)
+        _record(s, a["PHARMACIST"], fill, "TEST_RETRY", "RETRIED_SYNTHETIC",
+            "synthetic-invalid-test-retry:" + rejection,
+            {"original_rejection_id": rejection, "resolution_id": "not-resolved",
+             "coverage_ids": coverages, "reason": "Simulated incomplete retry"},
+            {"outcome": "RETRIED_SYNTHETIC", "message": "No claims prepared"},
+            payer_id=original.payer_id, coverage_id=original.coverage_id,
+            original_id=rejection)
+    with pytest.raises(WorkflowError, match="ancestry"):
+        ThirdPartyExceptionQueue(svc).snapshot(a["AUDITOR"])
+
+
+def test_rehashed_retry_with_wrong_coverage_selection_is_rejected(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    rejection = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_79", "EXCEPTION-MISLINKED-COVERAGE",
+        "Testing mismatched synthetic paid coverage ancestry")
+    resolved = ledger.resolve_rejection(a["PHARMACIST"], rejection,
+        "Pharmacist cleared simulated hold before a deliberately altered request")
+    retry = ledger.retry_cleared_rejection(a["PHARMACIST"], rejection,
+        expected_resolution_id=resolved, coverage_ids=coverages,
+        reason="Synthetic local retry, with subsequent altered payer selection")
+    with svc.sessions.begin() as s:
+        item = s.get(SandboxClaimTransaction, retry["id"])
+        details = json.loads(item.request_json)
+        details["coverage_ids"] = [coverages[0]]  # omitted actual secondary claim
+        item.request_json = _canonical(details)
+        item.request_sha256 = hashlib.sha256(item.request_json.encode("utf-8")).hexdigest()
+    with pytest.raises(WorkflowError, match="ordered payer claim evidence"):
+        ThirdPartyExceptionQueue(svc).snapshot(a["AUDITOR"])
