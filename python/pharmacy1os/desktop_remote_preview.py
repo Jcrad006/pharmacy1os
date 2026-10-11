@@ -150,7 +150,7 @@ def main() -> None:
         def _read(self, action):
             try:
                 return action()
-            except (WorkstationConnectionError, JournalSafetyError, ValueError) as exc:
+            except (WorkstationConnectionError, JournalSafetyError, ValueError, OSError) as exc:
                 self.info.setText("Action blocked: " + str(exc))
                 QMessageBox.warning(self, "Refresh or sign in again", str(exc))
                 return None
