@@ -9,6 +9,7 @@ from .third_party_workspace import ThirdPartyWorkspace
 from .fill_claim_review import FillClaimReview
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_attempts import CobAttemptRegistry
+from .patient_cob_history import PatientCobHistory
 from .cob_selective_correction import SyntheticCobCorrectionService
 from .service import Actor
 
@@ -106,6 +107,12 @@ def make_billing_router(billing: BillingService, actor_dependency: Callable[...,
     @router.get("/billing/fills/{fill_id}/rebill-lineage")
     def rebill_lineage(fill_id: str, actor: Actor = Depends(actor_dependency)):
         return ClaimRebillService(billing.service).lineage(actor, fill_id)
+
+    @router.get("/third-party/patients/{patient_id}/cob-history")
+    def patient_cob_history(patient_id: str, limit: int = 25, offset: int = 0,
+                            actor: Actor = Depends(actor_dependency)):
+        return PatientCobHistory(billing.service).history(
+            actor, patient_id, limit=limit, offset=offset)
 
     @router.get("/third-party/workspace")
     def workspace(query: str = "", actor: Actor = Depends(actor_dependency)):

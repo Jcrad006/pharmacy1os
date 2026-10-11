@@ -37,6 +37,7 @@ from .claim_rebilling import ClaimRebillService
 from .third_party_workspace import ThirdPartyWorkspace
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_attempts import CobAttemptRegistry
+from .patient_cob_history import PatientCobHistory
 from .cob_selective_correction import SyntheticCobCorrectionService
 from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
@@ -115,6 +116,7 @@ def main() -> None:
     third_party_workspace = ThirdPartyWorkspace(service)
     cob_correction_planner = CobCorrectionPlanner(service)
     cob_attempt_registry = CobAttemptRegistry(service)
+    patient_cob_history_service = PatientCobHistory(service)
     cob_selective_corrections = SyntheticCobCorrectionService(service)
     fill_claim_review = FillClaimReview(service)
     insurance_service = InsuranceDirectory(service)
@@ -409,6 +411,7 @@ def main() -> None:
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
+                self.action("Patient Cross-Fill COB History", self.view_patient_cob_history)
                 self.action("Correct Selective COB Positions (Synthetic)", self.correct_selective_cob)
                 self.action("View Versioned COB Claim Attempts", self.view_cob_attempts)
                 self.action("View COB Correction Dependencies (Read-only)", self.view_cob_correction_plan)
@@ -901,6 +904,13 @@ def main() -> None:
             result = rebill_service.lineage(self.actor, fill_id)
             QMessageBox.information(self, "Synthetic immutable claim lineage",
                 json.dumps(result, indent=2))
+
+        def view_patient_cob_history(self):
+            patient_id = self.choose_insurance_patient()
+            report = patient_cob_history_service.history(
+                self.actor, patient_id, limit=25, offset=0)
+            QMessageBox.information(self, "Patient synthetic COB / rejection history",
+                json.dumps(report, indent=2)[:24000])
 
         def view_third_party_workspace(self):
             query = self.ask("Third Party Workbench",
