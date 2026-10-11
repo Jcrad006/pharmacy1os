@@ -298,3 +298,50 @@ def test_multi_field_review_atomic_and_stale_second_operator(server):
     from pharmacy1os.prescription_edit import PrescriptionEditService
     history = PrescriptionEditService(svc).history(actors["AUDITOR"], rx)
     assert len(history) == 1 and len(history[0]["changes"]) == 3
+
+
+def test_multi_field_local_validation_and_technician_permissions(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    technician = LocalSessionWorkstationClient(url)
+    technician.login("preview.tech", "Synthetic Technician Password 2026!")
+    context = technician.edit_context(rx)
+    bad = [
+        {"source_type": "FAX"},
+        {"drug_id": "not-an-editable-field"},
+        {"quantity": "0"}, {"quantity": "30.1234"},
+        {"quantity": "1e10"}, {"quantity": "-1"}, {"quantity": "1,000"},
+        {"refills_allowed": True}, {"refills_allowed": 1000},
+        {"sig": "  "}, {},
+    ]
+    for changes in bad:
+        with pytest.raises(ValueError):
+            technician.review_fields(rx, changes=changes,
+                expected_version=context["version"], expected_status=context["status"],
+                attestation_note="Synthetic validation sample review note")
+    assert technician.detail(rx)["sig"] == "Mock once daily"
+    with pytest.raises(WorkstationConnectionError) as denied:
+        technician.review_fields(rx, changes={"quantity": "60.000", "refills_allowed": 2},
+            expected_version=context["version"], expected_status=context["status"],
+            attestation_note="Nonpharmacist cannot attest clinical changes")
+    assert denied.value.status == 403
+    with pytest.raises(WorkstationConnectionError) as cross_site:
+        technician.review_fields(other_rx, changes={"sig": "Forbidden cross-site"},
+            expected_version=0, expected_status="DATA_ENTRY",
+            attestation_note="Synthetic outside site review must be refused")
+    assert cross_site.value.status == 409
+    assert technician.edit_context(rx)["version"] == 0
+
+
+def test_review_field_normalization_and_plain_decimal_only():
+    from pharmacy1os.remote_review_fields import (
+        checked_review_changes, collect_review_changes)
+    original = {"sig": "Mock once daily", "quantity": "30.000", "refills_allowed": 0}
+    assert collect_review_changes(original, {
+        "sig": "Mock once daily", "quantity": "30", "refills_allowed": 0}) == {}
+    assert collect_review_changes(original, {
+        "sig": "Mock twice daily", "quantity": "30", "refills_allowed": 2}) == {
+        "sig": "Mock twice daily", "refills_allowed": 2}
+    assert checked_review_changes({"quantity": "0.125"}) == {"quantity": "0.125"}
+    for value in ("0", "0.000", "12.0000", "10e9", "NaN", "+3", "-5", "9999999999"):
+        with pytest.raises(ValueError):
+            checked_review_changes({"quantity": value})
