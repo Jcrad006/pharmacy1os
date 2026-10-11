@@ -20,13 +20,14 @@ class ThirdPartyExceptionDialog(QDialog):
     COLUMNS = ("Status", "Rx", "Patient", "COB", "Mock reject",
                "Workflow", "Fill", "Event")
 
-    def __init__(self, actor, queue, planner, claims, batch, parent=None):
+    def __init__(self, actor, queue, planner, claims, batch, tracker, parent=None):
         super().__init__(parent)
         self.actor = actor
         self.queue = queue
         self.planner = planner
         self.claims = claims
         self.batch = batch
+        self.tracker = tracker
         self.offset = 0
         self.rows: list[dict] = []
         self.setWindowTitle("Third Party — synthetic exception worklist")
@@ -63,6 +64,9 @@ class ThirdPartyExceptionDialog(QDialog):
         self.inspect_button = QPushButton("Review selected evidence")
         self.inspect_button.clicked.connect(lambda _checked=False: self._run(self.inspect))
         commands.addWidget(self.inspect_button)
+        self.track_button = QPushButton("Track selected replacement rescan")
+        self.track_button.clicked.connect(lambda _checked=False: self._run(self.track_replacement))
+        commands.addWidget(self.track_button)
         self.clear_button = QPushButton("Pharmacist: clear selected mock hold")
         self.clear_button.clicked.connect(lambda _checked=False: self._run(self.clear))
         commands.addWidget(self.clear_button)
@@ -227,3 +231,21 @@ class ThirdPartyExceptionDialog(QDialog):
             "Synthetic claims/labels were prepared in the test database. "
             "No external payer response, real payment, or pharmacist verification exists.")
         self.refresh()
+
+    def track_replacement(self):
+        item = self.selected()
+        if item["kind"] != "REPLACEMENT_FILL":
+            raise ValueError("Choose a replacement fill exception to track")
+        report = self.tracker.detail(self.actor, item["fill_id"])
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Local replacement rescan and history")
+        dialog.resize(780, 480)
+        layout = QVBoxLayout(dialog)
+        viewer = QPlainTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setPlainText(json.dumps(report, indent=2))
+        layout.addWidget(viewer)
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec()

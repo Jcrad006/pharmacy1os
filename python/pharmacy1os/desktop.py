@@ -34,6 +34,7 @@ from .provider_parity import PrescriberParityService, PrescriberContractIn
 from .scheduling import SchedulingService
 from .billing import BillingService
 from .claim_rebilling import ClaimRebillService
+from .cob_replacement_tracker import CobReplacementTracker
 from .third_party_workspace import ThirdPartyWorkspace
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_correction_worklist import CobCorrectionWorklist
@@ -119,6 +120,7 @@ def main() -> None:
     scheduling_service = SchedulingService(service)
     billing_service = BillingService(service)
     rebill_service = ClaimRebillService(service)
+    replacement_tracker = CobReplacementTracker(service)
     third_party_workspace = ThirdPartyWorkspace(service)
     cob_correction_planner = CobCorrectionPlanner(service)
     cob_correction_worklist = CobCorrectionWorklist(service)
@@ -972,14 +974,15 @@ def main() -> None:
         def open_prepared_cob_corrections(self):
             dialog = CobCorrectionDialog(
                 self.actor, cob_correction_worklist,
-                cob_correction_planner, cob_selective_corrections, parent=self)
+                cob_correction_planner, cob_selective_corrections,
+                rebill_service, replacement_tracker, parent=self)
             dialog.exec()
 
         def open_third_party_worklist(self):
             dialog = ThirdPartyExceptionDialog(
                 self.actor, third_party_exception_queue,
                 third_party_retry_planner, sandbox_claims,
-                rejection_batch_service, parent=self)
+                rejection_batch_service, replacement_tracker, parent=self)
             dialog.exec()
 
         def view_third_party_exceptions(self):

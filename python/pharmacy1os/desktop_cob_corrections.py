@@ -18,12 +18,15 @@ from PySide6.QtWidgets import (
 class CobCorrectionDialog(QDialog):
     HEADERS = ("Rx", "Patient", "Fill", "Attempt", "Payers", "Quantity", "Fill ID")
 
-    def __init__(self, actor, worklist, planner, correction, parent=None):
+    def __init__(self, actor, worklist, planner, correction, rebill, tracker, parent=None):
         super().__init__(parent)
         self.actor = actor
         self.worklist = worklist
         self.planner = planner
         self.correction = correction
+        self.rebill = rebill
+        self.tracker = tracker
+        self.last_replacement = None
         self.offset = 0
         self.records: list[dict] = []
         self.current_plan: dict | None = None
@@ -68,6 +71,15 @@ class CobCorrectionDialog(QDialog):
         self.apply_button.clicked.connect(lambda _checked=False: self._run(self.apply))
         controls.addWidget(self.apply_button)
         root.addLayout(controls)
+        rebill_actions = QHBoxLayout()
+        self.reverse_button = QPushButton("Pharmacist: reverse entire COB / new rescan")
+        self.reverse_button.clicked.connect(lambda _checked=False: self._run(self.reverse_all))
+        rebill_actions.addWidget(self.reverse_button)
+        self.track_button = QPushButton("Track latest generated replacement")
+        self.track_button.clicked.connect(lambda _checked=False: self._run(self.track_last))
+        self.track_button.setEnabled(False)
+        rebill_actions.addWidget(self.track_button)
+        root.addLayout(rebill_actions)
         self.provenance = QPlainTextEdit()
         self.provenance.setReadOnly(True)
         root.addWidget(self.provenance, 1)
@@ -109,6 +121,7 @@ class CobCorrectionDialog(QDialog):
         self.records = report["items"]
         self.current_plan = None
         self.apply_button.setEnabled(False)
+        self.reverse_button.setEnabled(False)
         self.position.blockSignals(True)
         self.position.clear()
         self.ndc.clear()
@@ -173,6 +186,7 @@ class CobCorrectionDialog(QDialog):
     def preview(self):
         self.current_plan = None
         self.apply_button.setEnabled(False)
+        self.reverse_button.setEnabled(False)
         candidate = self.chosen()
         target = self.position.currentData()
         if target is None:
@@ -198,6 +212,7 @@ class CobCorrectionDialog(QDialog):
             "warning": plan["warning"],
         }, indent=2))
         self.apply_button.setEnabled(self.can_correct and bool(plan["available_billing_ndcs"]))
+        self.reverse_button.setEnabled(self.can_correct)
 
     def apply(self):
         if not self.can_correct:
@@ -248,3 +263,69 @@ class CobCorrectionDialog(QDialog):
             f"position(s), prepared {len(outcome['new_paid_transaction_ids'])} "
             "new local mock attempts.")
         self.refresh()
+
+    def reverse_all(self):
+        """Reverse current versioned mock payer attempts, never physical stock itself."""
+        if not self.can_correct:
+            raise PermissionError("Pharmacist or administrator required for full mock reversal")
+        candidate = self.chosen()
+        shown = self.current_plan
+        if shown is None or shown["fill_id"] != candidate["fill_id"]:
+            raise ValueError("Preview a prepared local COB fill before reversal")
+        planned = self.planner.plan(self.actor, candidate["fill_id"], target_position=1)
+        if shown["full_chain"] != planned["full_chain"]:
+            raise ValueError("Payer history has changed since preview; refresh")
+        note, accepted = QInputDialog.getMultiLineText(
+            self, "Document full synthetic payer reversal",
+            "Why reverse all mock payer claims and require a fresh scan? "
+            "(12–1000 characters)")
+        if not accepted:
+            return
+        reason = note.strip()
+        if not 12 <= len(reason) <= 1000:
+            raise ValueError("Full COB reversal requires 12–1000 characters of documentation")
+        fresh = self.planner.plan(self.actor, candidate["fill_id"], target_position=1)
+        if (fresh["full_chain"] != planned["full_chain"]
+                or fresh["expected_active_paid_transaction_ids"]
+                   != planned["expected_active_paid_transaction_ids"]):
+            raise ValueError("Current payer attempt IDs changed; refresh and review")
+        confirm = QMessageBox.question(
+            self, "Reverse all local synthetic COB positions",
+            f"Reverse CURRENT positions {fresh['reverse_positions']} last-to-first; "
+            "void unused test labels, release reservations and create a new "
+            "unscanned fill requiring Product Fill verification? "
+            "NO insurer or printer will be contacted.")
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        result = self.rebill.reverse_current_cob(
+            self.actor, fresh["fill_id"], reason,
+            expected_active_paid_transaction_ids=fresh[
+                "expected_active_paid_transaction_ids"])
+        self.last_replacement = result["replacement_fill_id"]
+        self.track_button.setEnabled(True)
+        report = self.tracker.detail(self.actor, self.last_replacement)
+        self.refresh()
+        QMessageBox.information(
+            self, "Synthetic replacement awaiting physical rescan",
+            f"Original fill: {result['original_fill_id']}\n"
+            f"Replacement fill: {result['replacement_fill_id']}\n"
+            f"Stage: {report['workflow_stage']}\n"
+            "Use Product Fill for fresh product scans; original scans/claims "
+            "are not carried forward. No real dispensing authorization exists.")
+
+    def track_last(self):
+        if not self.last_replacement:
+            raise ValueError("No replacement generated during this window session")
+        report = self.tracker.detail(self.actor, self.last_replacement)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Local replacement progress")
+        dialog.resize(780, 480)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(json.dumps(report, indent=2))
+        layout.addWidget(view)
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec()
