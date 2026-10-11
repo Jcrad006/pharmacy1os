@@ -22,6 +22,7 @@ def main() -> None:
         from PySide6.QtGui import QKeySequence, QShortcut
         from .qt_recovery_worker import RecoveryLookupThread
         from .qt_workstation_worker import WorkstationRequestThread
+        from .qt_session_dialog import SessionLoginDialog, SessionLogoutThread
         from PySide6.QtWidgets import (
             QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QInputDialog,
             QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
@@ -35,22 +36,12 @@ def main() -> None:
         "PHARMACY1OS_LOOPBACK_URL", "http://127.0.0.1:8008"))
     app = QApplication([])
     app.setApplicationName("Pharmacy1OS — Local Session Workstation (synthetic)")
-    username, ok = QInputDialog.getText(None, "Synthetic session", "Username:")
-    if not ok or not username.strip():
+    signin = SessionLoginDialog(client)
+    if signin.exec() != QDialog.DialogCode.Accepted or signin.identity is None:
+        # The dialog may be closed while a login was in progress. It waits for
+        # that worker to exit and revokes any session it established.
         return
-    password, ok = QInputDialog.getText(
-        None, "Synthetic session", "Password:",
-        QLineEdit.EchoMode.Password)
-    if not ok:
-        return
-    try:
-        identity = client.login(username, password)
-    except WorkstationConnectionError as exc:
-        QMessageBox.critical(None, "Local session unavailable", str(exc))
-        return
-    finally:
-        # Only the session token (in client memory) survives the login dialog.
-        password = None
+    identity = signin.identity
 
     journal = None
     recovery = None
@@ -90,6 +81,8 @@ def main() -> None:
             self._startup_reconcile = False
             self._completed_request = None
             self._handling_result = False
+            self._logout_thread = None
+            self._logout_done = False
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -683,6 +676,20 @@ def main() -> None:
                     f"{actor.get('displayName', '')} ({actor.get('role', '')})")
             self._show_text("Prescription audit trail", "\n".join(lines))
 
+        @Slot(object)
+        def _logout_outcome(self, outcome):
+            # Logout might fail after server revocation (lost reply). Do not
+            # claim that server-side revocation was confirmed.
+            self._logout_result = outcome
+
+        @Slot()
+        def _logout_finished(self):
+            self._logout_done = True
+            self._logout_thread = None
+            if journal is not None:
+                journal.close()
+            QTimer.singleShot(0, self.close)
+
         def closeEvent(self, event):
             if self._request_thread is not None or self._handling_result:
                 self._close_after_request = True
@@ -694,20 +701,32 @@ def main() -> None:
                 event.ignore()
                 return
             if self._lookup_busy:
-                # Never destroy a running QThread or close its journal owner.
                 self._close_after_lookup = True
                 self.info.setText(
                     "Closing after the in-flight read-only receipt lookup ends")
                 event.ignore()
                 return
-            try:
-                client.logout()
-            except WorkstationConnectionError:
-                pass
-            finally:
-                if journal is not None:
-                    journal.close()
-            event.accept()
+            if self._logout_thread is not None:
+                event.ignore()
+                return
+            if self._logout_done:
+                event.accept()
+                return
+            # Closing must not block Qt while network logout is pending.
+            self._close_after_request = True
+            self._next_request = None
+            self._review_draft = None
+            worker = SessionLogoutThread(client)
+            self._logout_thread = worker
+            worker.completed.connect(
+                self._logout_outcome, Qt.ConnectionType.QueuedConnection)
+            worker.finished.connect(
+                self._logout_finished, Qt.ConnectionType.QueuedConnection)
+            worker.finished.connect(worker.deleteLater)
+            self.info.setText(
+                "Signing out local synthetic session in background…")
+            worker.start()
+            event.ignore()
 
     window = LocalWorkstation()
     window.show()
