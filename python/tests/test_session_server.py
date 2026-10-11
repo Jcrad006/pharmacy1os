@@ -36,3 +36,26 @@ def test_loopback_rejects_unmigrated_and_unenrolled_synthetic_database(tmp_path)
             validate_server_database(service)
     finally:
         service.engine.dispose()
+
+
+def test_migrated_local_session_server_requires_offline_enrollment(tmp_path, monkeypatch):
+    """A migrated schema may serve local synthetic sessions only after enrollment."""
+    from alembic import command
+    from pharmacy1os.auth import AuthService
+    from pharmacy1os.db_cli import migration_config
+    url = f"sqlite+pysqlite:///{tmp_path / 'session-pilot.db'}"
+    monkeypatch.setenv("PHARMACY1OS_SYNTHETIC_DEMO", "1")
+    monkeypatch.setenv("PHARMACY1OS_LOCAL_SESSION_API", "1")
+    monkeypatch.setenv("PHARMACY1OS_DATABASE_URL", url)
+    validate_loopback_configuration(url)
+    command.upgrade(migration_config(), "head")
+    svc = PharmacyService(url)
+    try:
+        with pytest.raises(RuntimeError, match="Enroll a synthetic administrator"):
+            validate_server_database(svc)
+        site = svc.bootstrap_demo()["site_id"]
+        AuthService(svc).initialize_offline(
+            site, "local.admin", "Local Preview Synthetic Password 2026")
+        validate_server_database(svc)
+    finally:
+        svc.engine.dispose()
