@@ -37,30 +37,53 @@ class ReviewedEditRecovery:
         return {"site_id": account["site_id"], "staff_id": account["staff_id"],
                 "base_url": self.client.base_url}
 
-    def submit(self, rx_id: str, *, changes: dict, expected_version: int,
-               expected_status: str, attestation_note: str) -> dict:
-        """No HTTP call unless the pending metadata was safely fsynced."""
+    def prepare_submission(self, rx_id: str, *, changes: dict,
+                           attestation_note: str) -> str:
+        """Durably record request ID BEFORE Qt launches a network worker.
+
+        No server calls. If persistence fails, no submission may be launched.
+        """
         from .remote_review_fields import checked_review_changes
         if (not isinstance(attestation_note, str)
                 or not 12 <= len(attestation_note.strip()) <= 2000):
             raise ValueError("Documented review attestation is required")
         checked_review_changes(changes)
         rx_id = self.client._id(rx_id)
-        request_id = self.client.new_review_request_id()
         scope = self._scope()
+        request_id = self.client.new_review_request_id()
         self.journal.register(request_id=request_id, prescription_id=rx_id,
                               **scope)
-        # The exception is deliberately NOT caught here: retaining PENDING is
-        # safer than silently treating a lost response as a failed request.
+        return request_id
+
+    def confirm_submission(self, rx_id: str, request_id: str, result: dict) -> None:
+        """Qt-main-thread transition only on an exact server-confirmed receipt."""
+        from .remote_preview import _request_id
+        rx_id = self.client._id(rx_id)
+        request_id = _request_id(request_id)
+        scope = self._scope()
+        matched = self.journal.entries_for(**scope)
+        if not any(row["request_id"] == request_id
+                   and row["prescription_id"] == rx_id for row in matched):
+            raise JournalSafetyError("Server response does not match a pending local request")
+        if (not isinstance(result, dict)
+                or result.get("request_id") != request_id
+                or result.get("prescription_id") != rx_id):
+            raise JournalSafetyError("Server receipt does not match reviewed edit request")
+        self.journal.mark_recorded(
+            site_id=scope["site_id"], staff_id=scope["staff_id"],
+            request_id=request_id)
+
+    def submit(self, rx_id: str, *, changes: dict, expected_version: int,
+               expected_status: str, attestation_note: str) -> dict:
+        """Synchronous test/CLI compatibility; Qt uses split phases instead."""
+        request_id = self.prepare_submission(
+            rx_id, changes=changes, attestation_note=attestation_note)
+        # A failure retains the PENDING journal record for GET-only lookup.
         receipt = self.client.review_fields(
             rx_id, changes=changes, expected_version=expected_version,
             expected_status=expected_status, attestation_note=attestation_note,
             request_id=request_id)
-        if receipt.get("request_id") != request_id:
-            raise WorkstationConnectionError("Mismatched HTTP mutation response")
-        self.journal.mark_recorded(
-            site_id=scope["site_id"], staff_id=scope["staff_id"],
-            request_id=request_id)
+        self.confirm_submission(rx_id, request_id, receipt)
         return receipt
 
     def outstanding(self) -> list[dict]:
