@@ -345,3 +345,39 @@ def test_review_field_normalization_and_plain_decimal_only():
     for value in ("0", "0.000", "12.0000", "10e9", "NaN", "+3", "-5", "9999999999"):
         with pytest.raises(ValueError):
             checked_review_changes({"quantity": value})
+
+
+def test_lost_response_requires_readback_without_automatic_retry(server, monkeypatch):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "disconnected.reviewer")
+    baseline = reviewer.edit_context(rx)
+    network_call = reviewer._call
+
+    def lose_reply(method, path, **kwargs):
+        if method == "PATCH":
+            network_call(method, path, **kwargs)
+            raise WorkstationConnectionError("Simulated lost reply after database commit")
+        return network_call(method, path, **kwargs)
+
+    monkeypatch.setattr(reviewer, "_call", lose_reply)
+    with pytest.raises(WorkstationConnectionError, match="lost reply"):
+        reviewer.review_fields(rx, changes={"quantity": "60.000", "refills_allowed": 2},
+            expected_version=baseline["version"], expected_status=baseline["status"],
+            attestation_note="Simulation of submitted review with disconnected workstation")
+
+    inspection = reviewer.inspect_uncertain_edit(rx)
+    assert inspection["version"] == 1
+    assert inspection["values"]["quantity"] == "60.000"
+    assert inspection["values"]["refills_allowed"] == 2
+    assert inspection["resolution"] == "MANUAL_REVIEW_REQUIRED_NOT_PROOF_OF_COMMIT"
+    assert "RX_EDIT_REVIEWED" in inspection["recent_actions"]
+    monkeypatch.setattr(reviewer, "_call", network_call)
+
+    # A deliberate attempted replay with its OLD preconditions fails closed.
+    with pytest.raises(WorkstationConnectionError) as replay:
+        reviewer.review_fields(rx, changes={"quantity": "60.000", "refills_allowed": 2},
+            expected_version=baseline["version"], expected_status=baseline["status"],
+            attestation_note="Simulation of submitted review with disconnected workstation")
+    assert replay.value.status == 409
+    from pharmacy1os.prescription_edit import PrescriptionEditService
+    assert len(PrescriptionEditService(svc).history(actors["AUDITOR"], rx)) == 1
