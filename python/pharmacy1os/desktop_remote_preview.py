@@ -10,13 +10,15 @@ import os
 
 from .remote_preview import LocalSessionWorkstationClient, WorkstationConnectionError
 from .remote_review_fields import collect_review_changes
+from .workstation_recovery_journal import JournalSafetyError, WorkstationRecoveryJournal
+from .workstation_recovery import ReviewedEditRecovery
 
 
 def main() -> None:
     if os.getenv("PHARMACY1OS_SYNTHETIC_DEMO") != "1":
         raise SystemExit("Synthetic desktop preview disabled; opt in explicitly")
     try:
-        from PySide6.QtCore import Qt
+        from PySide6.QtCore import Qt, QTimer
         from PySide6.QtGui import QKeySequence, QShortcut
         from PySide6.QtWidgets import (
             QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QInputDialog,
@@ -47,6 +49,21 @@ def main() -> None:
     finally:
         # Only the session token (in client memory) survives the login dialog.
         password = None
+
+    journal = None
+    recovery = None
+    if identity["role"] in ("PHARMACIST", "ADMIN"):
+        try:
+            journal = WorkstationRecoveryJournal()
+            recovery = ReviewedEditRecovery(client, journal)
+        except (JournalSafetyError, OSError) as exc:
+            if journal is not None:
+                journal.close()
+            QMessageBox.critical(None, "Recovery journal unavailable",
+                "Reviewed edits are disabled because the private recovery journal "
+                "could not be verified: " + str(exc))
+            client.logout()
+            return
 
     class LocalWorkstation(QMainWindow):
         def __init__(self):
@@ -105,6 +122,10 @@ def main() -> None:
             outcome = QPushButton("Last review receipt")
             outcome.clicked.connect(self.last_review_outcome)
             actions.addWidget(outcome)
+            if recovery is not None:
+                check_pending = QPushButton("Reconcile pending reviews")
+                check_pending.clicked.connect(self.reconcile_outstanding)
+                actions.addWidget(check_pending)
             actions.addStretch()
             layout.addLayout(actions)
             self.info = QLabel("No database is opened by this desktop")
@@ -117,11 +138,19 @@ def main() -> None:
             QShortcut(QKeySequence("F4"), self, activated=self.audit)
             QShortcut(QKeySequence("F5"), self, activated=self.review_fields)
             self.reload()
+            if recovery is not None:
+                pending = recovery.outstanding()
+                if pending:
+                    self.info.setText(
+                        f"{len(pending)} saved review receipt(s) need confirmation. "
+                        "Only read-only reconciliation is permitted.")
+                    # Small bounded startup check; manually reconcile the rest.
+                    QTimer.singleShot(0, lambda: self.reconcile_outstanding(limit=2))
 
         def _read(self, action):
             try:
                 return action()
-            except (WorkstationConnectionError, ValueError) as exc:
+            except (WorkstationConnectionError, JournalSafetyError, ValueError) as exc:
                 self.info.setText("Action blocked: " + str(exc))
                 QMessageBox.warning(self, "Refresh or sign in again", str(exc))
                 return None
@@ -278,49 +307,88 @@ def main() -> None:
                     QMessageBox.StandardButton.No
             ) != QMessageBox.StandardButton.Yes:
                 return
-            request_id = client.new_review_request_id()
-            # Retain the request ID in memory across a lost response.
-            self.last_review_key = request_id
-            self.last_review_rx = rx_id
-            result = self._read(lambda: client.review_fields(
+            if recovery is None:
+                QMessageBox.warning(self, "Recovery unavailable",
+                                    "Cannot submit without a protected journal")
+                return
+            result = self._read(lambda: recovery.submit(
                 rx_id, changes=changes, expected_version=context["version"],
-                expected_status=context["status"], attestation_note=note,
-                request_id=request_id))
+                expected_status=context["status"], attestation_note=note))
             if result is None:
-                # The operation may have committed. The receipt lookup is the
-                # only authoritative response; don't silently resend the PATCH.
-                self.last_review_outcome()
+                # The request has already been journaled, unless pre-send
+                # validation/storage failed (which forbids any HTTP mutation).
+                # NEVER automatically retry any uncertain submitted review.
+                self.reconcile_outstanding(limit=2)
                 self.reload()
                 return
+            self.last_review_key = result["request_id"]
+            self.last_review_rx = rx_id
             self.reload()
             QMessageBox.information(self, "Synthetic reviewed change saved",
                 f"Prescription now at version {result['version']}. "
-                "Inspect the current Rx details and audit before proceeding.")
+                "The request ID and receipt are saved for post-crash reconciliation.")
+
+        def reconcile_outstanding(self, *, limit: int = 8):
+            if recovery is None:
+                return
+            result = self._read(lambda: recovery.reconcile(limit=limit))
+            if result is None:
+                QMessageBox.warning(self, "Receipt recovery unavailable",
+                    "Saved request IDs remain on disk. No edit has been retried. "
+                    "Sign in and reconcile again when the server is available.")
+                return
+            QMessageBox.information(self, "Synthetic review reconciliation",
+                f"Checked: {result['checked']}; recorded: {result['recorded']}; "
+                f"still uncertain: {result['uncertain']}; "
+                f"lookup failures: {len(result['errors'])}; "
+                f"outstanding: {result['remaining']}.\n\n"
+                "Recorded receipts are retained until explicitly acknowledged. "
+                "NOT_RECORDED is not permission to retry.")
+            self.info.setText(
+                f"{result['remaining']} pending synthetic review request(s); "
+                "No automatic writes or retries")
 
         def last_review_outcome(self):
-            if not self.last_review_key or not self.last_review_rx:
-                QMessageBox.information(self, "No pending review",
-                                        "No review request has been sent from this workstation session")
+            if recovery is None:
                 return
-            key, rx_id = self.last_review_key, self.last_review_rx
+            entries = recovery.outstanding()
+            if not entries:
+                QMessageBox.information(self, "No saved review",
+                                        "No saved request IDs for this synthetic staff session")
+                return
+            options = [
+                f"{x['request_id']} | {x['state']} | Rx {x['prescription_id'][:8]}"
+                for x in entries]
+            selected, ok = QInputDialog.getItem(
+                self, "Recovered review requests",
+                "Choose a saved request (no edits will be submitted):",
+                options, 0, False)
+            if not ok:
+                return
+            entry = entries[options.index(selected)]
+            key, rx_id = entry["request_id"], entry["prescription_id"]
             result = self._read(lambda: client.review_request_status(rx_id, key))
             if result is None:
                 QMessageBox.warning(self, "Receipt unavailable",
-                    f"Keep synthetic request ID {key} for investigation. "
-                    "The workstation cannot establish whether the edit committed.")
+                    f"Keep request ID {key}. Its outcome cannot be confirmed.")
                 return
             if result["state"] == "RECORDED":
-                recorded = result["result"]
-                QMessageBox.information(self, "Reviewed edit recorded on server",
-                    f"Request {key}\nVersion: {recorded['version']}\n"
-                    f"Review record: {recorded['id']}\n"
-                    "Receipt is stored and linked to the audit record. "
-                    "Refresh prescription details before any other operation.")
+                recovered = result["result"]
+                self._read(lambda: journal.mark_recorded(
+                    site_id=identity["site_id"], staff_id=identity["staff_id"],
+                    request_id=key))
+                choice = QMessageBox.question(
+                    self, "Recorded request", f"Server receipt {recovered['id']}\n"
+                    f"Request {key}\nVersion: {recovered['version']}\n\n"
+                    "Mark this confirmed request as acknowledged locally? "
+                    "The server audit and receipt remain immutable.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if choice == QMessageBox.StandardButton.Yes:
+                    self._read(lambda: recovery.acknowledge(key))
             else:
-                QMessageBox.warning(self, "Review outcome still uncertain",
-                    f"Request {key} is not visible in committed receipt history. "
-                    "The server may still be processing it. Do NOT retry automatically; "
-                    "inspect the current record and audit, then reconcile manually.")
+                QMessageBox.warning(self, "Outcome not yet recorded",
+                    f"Request {key} is not currently recorded. It might still "
+                    "be in flight. Do not retry automatically.")
 
         def audit(self):
             rx_id = self.selected_id()
@@ -342,6 +410,9 @@ def main() -> None:
                 client.logout()
             except WorkstationConnectionError:
                 pass
+            finally:
+                if journal is not None:
+                    journal.close()
             event.accept()
 
     window = LocalWorkstation()
