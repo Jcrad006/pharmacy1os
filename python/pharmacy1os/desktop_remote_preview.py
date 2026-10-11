@@ -87,6 +87,9 @@ def main() -> None:
             self._pending_submission = None
             self._close_after_request = False
             self._needs_reconcile = False
+            self._startup_reconcile = False
+            self._completed_request = None
+            self._handling_result = False
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -160,8 +163,9 @@ def main() -> None:
                     self.info.setText(
                         f"{len(pending)} saved review receipt(s) need confirmation. "
                         "Only read-only reconciliation is permitted.")
-                    # Small bounded startup check; manually reconcile the rest.
-                    QTimer.singleShot(0, lambda: self.reconcile_outstanding(limit=2))
+                    self._startup_reconcile = True
+                    # The initial queue GET must finish first. No overlapping
+                    # network workers may use the same session client.
 
         def _read(self, action):
             try:
@@ -172,7 +176,8 @@ def main() -> None:
                 return None
 
         def _request_busy(self) -> bool:
-            return self._request_thread is not None or self._lookup_busy
+            return (self._request_thread is not None or
+                    self._lookup_busy or self._handling_result)
 
         def _set_network_controls(self):
             authorized = (client.identity is not None
@@ -188,7 +193,7 @@ def main() -> None:
                 self.check_pending_button.setEnabled(available)
 
         def _launch_request(self, operation, payload, *, context=None):
-            if self._request_thread is not None:
+            if self._request_thread is not None or self._handling_result:
                 # Only retain the latest refresh/filter. Do not queue mutations,
                 # dialogs or clinical notes for automatic replay.
                 if operation == "queue":
@@ -216,11 +221,13 @@ def main() -> None:
 
         @Slot(object)
         def _on_request_completed(self, result):
-            operation = self._request_operation
-            context = self._request_context
-            if self._close_after_request:
-                # Durable request journal remains for next login; no false save.
-                return
+            # A worker can emit "completed" before QThread emits "finished".
+            # Defer dialogs and follow-on requests until the thread exits,
+            # to avoid nested modal event loops racing a still-active worker.
+            self._completed_request = (
+                self._request_operation, self._request_context, result)
+
+        def _handle_network_completion(self, operation, context, result):
             if result[0] != "ok":
                 error = result[1]
                 code = error.get("status") if isinstance(error, dict) else None
@@ -228,13 +235,11 @@ def main() -> None:
                     f"Server request {operation} failed (HTTP {code or 'unavailable'}). "
                     "No automatic retry.")
                 if operation == "submit_review":
-                    # The server might have committed despite a lost response.
                     self._pending_submission = None
                     self._review_draft = None
                     self._needs_reconcile = True
-                elif operation in ("edit_context",):
+                elif operation == "edit_context":
                     self._review_draft = None
-                self._set_network_controls()
                 return
             data = result[1]
             if operation == "queue":
@@ -253,18 +258,38 @@ def main() -> None:
             self._request_thread = None
             self._request_operation = None
             self._request_context = None
+            completed = self._completed_request
+            self._completed_request = None
             if self._close_after_request:
+                self._review_draft = None
+                self._next_request = None
                 QTimer.singleShot(0, self.close)
                 return
+            if completed is not None:
+                self._handling_result = True
+                try:
+                    self._handle_network_completion(*completed)
+                finally:
+                    self._handling_result = False
+            else:
+                # Unobserved server outcome: fail closed and preserve journal.
+                self.info.setText(
+                    "Request finished without a recognized response; "
+                    "inspect the server receipt before another edit")
+                self._review_draft = None
+                self._needs_reconcile = True
             self._set_network_controls()
             next_request = self._next_request
             self._next_request = None
             if next_request:
                 QTimer.singleShot(0, lambda: self._launch_request(
                     next_request[0], next_request[1], context=next_request[2]))
-            elif self._needs_reconcile:
+            elif self._needs_reconcile or self._startup_reconcile:
+                startup = self._startup_reconcile
                 self._needs_reconcile = False
-                QTimer.singleShot(0, self.reconcile_outstanding)
+                self._startup_reconcile = False
+                QTimer.singleShot(
+                    0, lambda: self.reconcile_outstanding(limit=2 if startup else 8))
 
         def reload(self, *args):
             self._launch_request("queue", self._queue_parameters())
