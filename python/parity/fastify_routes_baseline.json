@@ -1,0 +1,588 @@
+{
+  "schema": 1,
+  "baseline_ref": "1c7ae6e2e21288f1d95c69d53de99674180bd594",
+  "description": "Original Fastify registration inventory. Structural only; not a proof of clinical or Python behavioral parity.",
+  "route_count": 116,
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/medications",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/medications",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/medications/:id/compliance",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/products/:id/compliance",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/medications/:id/products",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/products/:id/lots",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/products/:id/expirations",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/products/:id/barcodes",
+      "source": "catalog.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescriptions/:id/clinical",
+      "source": "clinical.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions/:id/dur/issues",
+      "source": "clinical.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/dur/issues/:id/resolve",
+      "source": "clinical.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions/:id/interventions",
+      "source": "clinical.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/dev/users",
+      "source": "development.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescriptions/:id/documents",
+      "source": "documents.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions/:id/documents/original",
+      "source": "documents.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions/:id/documents/electronic-render",
+      "source": "documents.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/documents/:id/content",
+      "source": "documents.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/documents/:id/annotations",
+      "source": "documents.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescription-changes/:id/apply",
+      "source": "documents.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/annotations/:id/supersede",
+      "source": "documents.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/exceptions",
+      "source": "exceptions.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "source": "health.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/balances",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/balances/:id/adjust",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/holds",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/balances/:id/quarantine",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/holds/:id/release",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/holds/:id/dispose",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/cycle-counts",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/cycle-counts/:id",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/cycle-counts",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/inventory/cycle-counts/:id/lines/:lineId",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/cycle-counts/:id/submit",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/cycle-counts/:id/review",
+      "source": "inventory.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/locations",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/locations",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/locations/move",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/policies",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/inventory/policies/:policyKey",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/demands",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/demands/reconcile",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/fefo",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/balances/:id/as-of",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/exceptions",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/exceptions/:id/acknowledge",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/exceptions/:id/resolve",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/discrepancies",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/discrepancies",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/discrepancies/:id/resolve",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/transfers/:id/custody",
+      "source": "inventoryArchitecture.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/sites",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/transfers",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/transfers",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/transfers/:id/receive",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/transfers/:id/cancel",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/recalls",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/recalls",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/recalls/:id/close",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/inventory/purchase-orders",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/purchase-orders",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/purchase-orders/:id/lines/:lineId/receive",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/inventory/purchase-orders/:id/cancel",
+      "source": "inventoryOperations.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/patients",
+      "source": "patients.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/patients",
+      "source": "patients.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/will-call/stage",
+      "source": "pos.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/will-call/rebag",
+      "source": "pos.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/will-call/relocate",
+      "source": "pos.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/fills/:id/will-call/history",
+      "source": "pos.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/will-call/packages/scan/:barcode",
+      "source": "pos.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/pos/quote",
+      "source": "pos.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/pos/checkout",
+      "source": "pos.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/pos/transactions/:id",
+      "source": "pos.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescribers",
+      "source": "prescribers.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescribers",
+      "source": "prescribers.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescriptions/queue",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescriptions/will-call",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescriptions/:id",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/prescriptions/:id/audit",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/prescriptions/:id",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/prescriptions/:id/status",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions/:id/fills",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/partial",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/prescriptions/:id/emergency-supply",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/emergency-follow-up/complete",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/scan-barcode",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/scan-product",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/fills/:id/billing-product",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/fills/:id/billing-details",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/fills/:id/packaging",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/fills/:id/product-sources/:sourceId",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/nti-manufacturer-consent",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/biologic-communication/complete",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/start",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/return-to-stock",
+      "source": "prescriptions.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/receiving/scan",
+      "source": "receiving.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/receiving/stock",
+      "source": "receiving.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/receiving/assign",
+      "source": "receiving.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/receiving/barcodes/:id/correct",
+      "source": "receiving.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/system/backups",
+      "source": "systemMaintenance.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/system/backups",
+      "source": "systemMaintenance.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/system/backups/:id/verify",
+      "source": "systemMaintenance.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/system/document-vault/integrity-scan",
+      "source": "systemMaintenance.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/system/document-vault/integrity-reports",
+      "source": "systemMaintenance.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/third-party/payers",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/third-party/payers",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "PATCH",
+      "path": "/third-party/payers/:id",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/third-party/payers/:id/history",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/patients/:id/coverages",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "PUT",
+      "path": "/patients/:id/coverages/:position",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "DELETE",
+      "path": "/patients/:id/coverages/:position",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/third-party/workspace",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "GET",
+      "path": "/fills/:id/claims",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/fills/:id/adjudicate",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/third-party/claims/:id/reverse",
+      "source": "thirdParty.ts"
+    },
+    {
+      "method": "POST",
+      "path": "/third-party/print-jobs/:id/printed",
+      "source": "thirdParty.ts"
+    }
+  ]
+}
