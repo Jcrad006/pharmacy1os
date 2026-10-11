@@ -26,8 +26,9 @@ def server(tmp_path, monkeypatch):
     actors = svc.bootstrap_demo()["actors"]
     auth = AuthService(svc)
     site = actors["TECHNICIAN"].site_id
-    auth.initialize_offline(site, "preview.admin", "Synthetic Only Login 2026!")
-    auth.provision(actors["PHARMACIST"], actors["TECHNICIAN"].id,
+    admin_id = auth.initialize_offline(site, "preview.admin", "Synthetic Only Login 2026!")
+    from pharmacy1os.service import Actor
+    auth.provision(Actor(admin_id, site, "ADMIN"), actors["TECHNICIAN"].id,
                    "preview.tech", "Synthetic Technician Password 2026!")
     patient = svc.add_patient(actors["TECHNICIAN"], "Synthetic", "Patient")
     prescriber = svc.add_prescriber(actors["TECHNICIAN"], "Synthetic", "Provider", "MD")
