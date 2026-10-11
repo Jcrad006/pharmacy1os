@@ -57,7 +57,7 @@ def test_rejection_to_resolution_to_retry_disappears_from_queue(case):
     assert issue["recommended_action"] == "PHARMACIST_REVIEW_TEST_REJECTION"
     assert issue["reason_code"] == "TEST_75"
     assert "SECRET-MEMBER" not in str(opened)
-    assert "no" not in opened["warning"].lower() or "claim" in opened["warning"].lower()
+    assert "not payer responses" in opened["warning"].lower()
     resolution = ledger.resolve_rejection(a["PHARMACIST"], reject,
         "Pharmacist has documented this simulated test hold resolution")
     cleared = queue.snapshot(a["AUDITOR"], status="CLEARED_AWAITING_RETRY")
