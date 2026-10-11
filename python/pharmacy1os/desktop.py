@@ -38,6 +38,7 @@ from .third_party_workspace import ThirdPartyWorkspace
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_attempts import CobAttemptRegistry
 from .patient_cob_history import PatientCobHistory
+from .third_party_exceptions import ThirdPartyExceptionQueue
 from .cob_selective_correction import SyntheticCobCorrectionService
 from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
@@ -118,6 +119,7 @@ def main() -> None:
     cob_correction_planner = CobCorrectionPlanner(service)
     cob_attempt_registry = CobAttemptRegistry(service)
     patient_cob_history_service = PatientCobHistory(service)
+    third_party_exception_queue = ThirdPartyExceptionQueue(service)
     cob_selective_corrections = SyntheticCobCorrectionService(service)
     fill_claim_review = FillClaimReview(service)
     insurance_service = InsuranceDirectory(service)
@@ -414,6 +416,7 @@ def main() -> None:
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
                 self.action("Third Party Workbench Overview", self.view_third_party_workspace)
+                self.action("Site-Wide Third Party Exception Queue", self.view_third_party_exceptions)
                 self.action("Patient Cross-Fill COB History", self.view_patient_cob_history)
                 self.action("Correct Selective COB Positions (Synthetic)", self.correct_selective_cob)
                 self.action("View Versioned COB Claim Attempts", self.view_cob_attempts)
@@ -957,6 +960,16 @@ def main() -> None:
                 self.actor, patient_id, limit=25, offset=0)
             QMessageBox.information(self, "Patient synthetic COB / rejection history",
                 json.dumps(report, indent=2)[:24000])
+
+        def view_third_party_exceptions(self):
+            category = self.ask("Synthetic Third Party Exceptions",
+                "Filter (ALL, OPEN_TEST_REJECTION, CLEARED_AWAITING_RETRY, "
+                "REPLACEMENT_RESCAN_REQUIRED, REPLACEMENT_PHARMACIST_REVIEW, RECONCILIATION_REQUIRED)",
+                "ALL")
+            page = third_party_exception_queue.snapshot(
+                self.actor, status=category.strip().upper(), limit=25, offset=0)
+            QMessageBox.information(self, "Site-wide local claim exceptions",
+                json.dumps(page, indent=2)[:25000])
 
         def view_third_party_workspace(self):
             query = self.ask("Third Party Workbench",

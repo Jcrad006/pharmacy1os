@@ -10,6 +10,7 @@ from .fill_claim_review import FillClaimReview
 from .cob_correction_plan import CobCorrectionPlanner
 from .cob_attempts import CobAttemptRegistry
 from .patient_cob_history import PatientCobHistory
+from .third_party_exceptions import ThirdPartyExceptionQueue
 from .cob_selective_correction import SyntheticCobCorrectionService
 from .service import Actor
 
@@ -113,6 +114,12 @@ def make_billing_router(billing: BillingService, actor_dependency: Callable[...,
                             actor: Actor = Depends(actor_dependency)):
         return PatientCobHistory(billing.service).history(
             actor, patient_id, limit=limit, offset=offset)
+
+    @router.get("/third-party/exception-queue")
+    def exception_queue(status: str = "ALL", limit: int = 25, offset: int = 0,
+                        actor: Actor = Depends(actor_dependency)):
+        return ThirdPartyExceptionQueue(billing.service).snapshot(
+            actor, status=status, limit=limit, offset=offset)
 
     @router.get("/third-party/workspace")
     def workspace(query: str = "", actor: Actor = Depends(actor_dependency)):
