@@ -19,27 +19,57 @@ class LifecycleService:
     def __init__(self, service: PharmacyService):
         self.service = service
 
-    def hold(self, actor: Actor, rx_id: str, reason: str) -> None:
+    def _locked_rx(self, s, actor: Actor, rx_id: str, *,
+                   expected_version: int | None = None,
+                   expected_status: str | None = None) -> Prescription:
+        """Site-scoped transactional precondition for all synthetic lifecycle writes.
+
+        PostgreSQL serializes competing terminals on the Rx row. Never trust
+        a prior API read for the workflow state being mutated.
+        """
+        self.service._authorized(s, actor, "process")
+        rx = s.scalar(select(Prescription).where(
+            Prescription.id == rx_id,
+            Prescription.site_id == actor.site_id).with_for_update())
+        if rx is None:
+            raise WorkflowError("Prescription not found at actor's pharmacy site")
+        if (expected_version is not None and rx.version != expected_version
+                or expected_status is not None and rx.status != expected_status):
+            raise WorkflowError(
+                "Prescription changed on another workstation; refresh before continuing")
+        return rx
+
+    def hold(self, actor: Actor, rx_id: str, reason: str, *,
+             expected_version: int | None = None,
+             expected_status: str | None = None) -> None:
         if not reason.strip():
             raise WorkflowError("Hold requires a reason")
         with self.service.sessions.begin() as s:
-            self.service._authorized(s, actor, "process")
-            rx = self.service._site(s, Prescription, rx_id, actor)
+            rx = self._locked_rx(s, actor, rx_id,
+                                 expected_version=expected_version,
+                                 expected_status=expected_status)
             if rx.status not in {"RECEIVED", "DATA_ENTRY", "DUR_REVIEW", "PRODUCT_FILL", "PHARMACIST_REVIEW", "READY", "SOLD"}:
                 raise WorkflowError("Prescription status cannot be held")
             rx.held_from = rx.status
             rx.status = "ON_HOLD"
+            rx.version += 1
             self.service._audit(s, actor, "RX_HELD", rx.id, {"from": rx.held_from, "reason": reason.strip()})
 
-    def resume(self, actor: Actor, rx_id: str, reason: str) -> None:
+    def resume(self, actor: Actor, rx_id: str, reason: str, *,
+               expected_version: int | None = None,
+               expected_status: str | None = None,
+               target_status: str | None = None) -> None:
         if not reason.strip():
             raise WorkflowError("Resume requires a reason")
         with self.service.sessions.begin() as s:
-            self.service._authorized(s, actor, "process")
-            rx = self.service._site(s, Prescription, rx_id, actor)
+            rx = self._locked_rx(s, actor, rx_id,
+                                 expected_version=expected_version,
+                                 expected_status=expected_status)
             if rx.status != "ON_HOLD" or not rx.held_from:
                 raise WorkflowError("Prescription is not on hold")
             before = rx.held_from
+            if target_status is not None and before != target_status:
+                raise WorkflowError("Held prescription target differs from original status")
             if before in {"PRODUCT_FILL", "PHARMACIST_REVIEW", "READY"}:
                 if rx.expiration_date and rx.expiration_date < date.today().isoformat():
                     raise WorkflowError("Cannot resume an expired prescription toward dispensing")
@@ -50,14 +80,18 @@ class LifecycleService:
                     raise WorkflowError("Unresolved high-severity DUR issue")
             rx.status = before
             rx.held_from = None
+            rx.version += 1
             self.service._audit(s, actor, "RX_RESUMED", rx.id, {"to": before, "reason": reason.strip()})
 
-    def cancel(self, actor: Actor, rx_id: str, reason: str) -> None:
+    def cancel(self, actor: Actor, rx_id: str, reason: str, *,
+               expected_version: int | None = None,
+               expected_status: str | None = None) -> None:
         if not reason.strip():
             raise WorkflowError("Cancellation requires a documented reason")
         with self.service.sessions.begin() as s:
-            self.service._authorized(s, actor, "process")
-            rx = self.service._site(s, Prescription, rx_id, actor)
+            rx = self._locked_rx(s, actor, rx_id,
+                                 expected_version=expected_version,
+                                 expected_status=expected_status)
             if rx.status in {"CANCELLED", "TRANSFERRED", "SOLD"} or (
                 rx.status == "ON_HOLD" and rx.held_from == "SOLD"
             ):
@@ -120,5 +154,6 @@ class LifecycleService:
             before = rx.status
             rx.status = "CANCELLED"
             rx.held_from = None
+            rx.version += 1
             self.service._audit(s, actor, "RX_CANCELLED", rx.id,
                 {"from": before, "active_fills_cancelled": [f.id for f in active], "reason": reason.strip()})
