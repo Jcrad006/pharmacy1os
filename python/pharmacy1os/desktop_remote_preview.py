@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 
 from .remote_preview import LocalSessionWorkstationClient, WorkstationConnectionError
+from .remote_review_fields import collect_review_changes
 
 
 def main() -> None:
@@ -20,7 +21,8 @@ def main() -> None:
         from PySide6.QtWidgets import (
             QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QInputDialog,
             QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-            QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+            QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QFormLayout,
+            QDialogButtonBox, QSpinBox,
         )
     except ImportError as exc:
         raise SystemExit("Install native PySide6: pip install -e '.[desktop]'") from exc
@@ -55,7 +57,7 @@ def main() -> None:
             self.setCentralWidget(central)
             layout = QVBoxLayout(central)
             layout.addWidget(QLabel(
-                "SYNTHETIC DATA ONLY • REVIEWED SIG EDIT ONLY • NO DISPENSING"))
+                "SYNTHETIC DATA ONLY • PHARMACIST REVIEWED RX EDITS • NO DISPENSING"))
             layout.addWidget(QLabel(
                 f"Signed-in synthetic role: {identity['role']} • "
                 f"Site: {identity['site_id'][:8]} • Server: {client.base_url}"))
@@ -94,9 +96,9 @@ def main() -> None:
             audit = QPushButton("Selected audit history")
             audit.clicked.connect(self.audit)
             actions.addWidget(audit)
-            self.edit_sig_button = QPushButton("Pharmacist: review SIG change")
+            self.edit_sig_button = QPushButton("Pharmacist: review Rx fields")
             self.edit_sig_button.setEnabled(identity["role"] in ("PHARMACIST", "ADMIN"))
-            self.edit_sig_button.clicked.connect(self.review_sig)
+            self.edit_sig_button.clicked.connect(self.review_fields)
             actions.addWidget(self.edit_sig_button)
             actions.addStretch()
             layout.addLayout(actions)
@@ -108,7 +110,7 @@ def main() -> None:
             QShortcut(QKeySequence("F2"), self, activated=self.search.setFocus)
             QShortcut(QKeySequence("F3"), self, activated=self.detail)
             QShortcut(QKeySequence("F4"), self, activated=self.audit)
-            QShortcut(QKeySequence("F5"), self, activated=self.review_sig)
+            QShortcut(QKeySequence("F5"), self, activated=self.review_fields)
             self.reload()
 
         def _read(self, action):
@@ -185,79 +187,112 @@ def main() -> None:
                 f"Source: {info.get('sourceType', '')}",
                 f"Physical fill attempts: {len(info.get('fills') or [])}",
                 "",
-                "Only a pharmacist-reviewed SIG change is supported in this preview.",
+                "Only reviewed SIG, quantity, and refill changes are supported in this preview.",
             ]
             self._show_text("Synthetic Rx detail", "\n".join(lines))
 
-        def review_sig(self):
+        def review_fields(self):
             rx_id = self.selected_id()
-            if rx_id is None or identity["role"] not in ("PHARMACIST", "ADMIN"):
+            if not rx_id or identity["role"] not in ("PHARMACIST", "ADMIN"):
                 return
             context = self._read(lambda: client.edit_context(rx_id))
             if context is None:
                 return
             if not context["editable"]:
-                QMessageBox.warning(
-                    self, "Review unavailable",
-                    context.get("blocked_reason") or "This prescription cannot be edited")
+                QMessageBox.warning(self, "Review unavailable",
+                    context.get("blocked_reason") or "Prescription cannot be edited")
                 return
-            original = context["values"]["sig"]
-            proposed, ok = QInputDialog.getMultiLineText(
-                self, "Synthetic pharmacist SIG review",
-                "Reviewed replacement SIG:", original)
-            if not ok:
+
+            before_values = context["values"]
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Synthetic pharmacist prescription review")
+            dialog.resize(630, 480)
+            layout = QVBoxLayout(dialog)
+            fields = QFormLayout()
+            sig = QPlainTextEdit()
+            sig.setPlainText(before_values["sig"])
+            fields.addRow("Directions (SIG)", sig)
+            quantity = QLineEdit(before_values["quantity"])
+            fields.addRow("Quantity", quantity)
+            refills = QSpinBox()
+            refills.setRange(0, 999)
+            refills.setValue(before_values["refills_allowed"])
+            fields.addRow("Refills authorized", refills)
+            layout.addLayout(fields)
+            layout.addWidget(QLabel(
+                "Required: describe independent prescriber confirmation and change reason"))
+            attestation = QPlainTextEdit()
+            layout.addWidget(attestation)
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Save |
+                QDialogButtonBox.StandardButton.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
-            if not proposed.strip() or proposed.strip() == original:
-                QMessageBox.warning(self, "No SIG change", "Enter a different, nonempty SIG")
+            try:
+                changes = collect_review_changes(before_values, {
+                    "sig": sig.toPlainText(), "quantity": quantity.text().strip(),
+                    "refills_allowed": refills.value()})
+            except ValueError as exc:
+                QMessageBox.warning(self, "Invalid reviewed fields", str(exc))
                 return
-            note, ok = QInputDialog.getMultiLineText(
-                self, "Review attestation (synthetic)",
-                "Record the independently confirmed change and why it is appropriate:")
-            if not ok:
+            if not changes:
+                QMessageBox.information(self, "No changes", "No fields were modified")
                 return
-            if not 12 <= len(note.strip()) <= 2000:
-                QMessageBox.warning(
-                    self, "Missing review", "Attestation requires 12–2000 characters")
+            note = attestation.toPlainText().strip()
+            if not 12 <= len(note) <= 2000:
+                QMessageBox.warning(self, "Missing clinical attestation",
+                                    "Review documentation requires 12–2000 characters")
                 return
-            # Do not silently use a newer version or overwrite another operator.
-            latest = self._read(lambda: client.edit_context(rx_id))
-            if latest is None:
+
+            # UI preflight never replaces the expected version or status.
+            # The server independently locks the prescription and rechecks.
+            fresh = self._read(lambda: client.edit_context(rx_id))
+            if fresh is None:
                 return
-            if (latest["version"] != context["version"]
-                    or latest["values"]["sig"] != original
-                    or latest["status"] != context["status"]
-                    or not latest["editable"]):
-                QMessageBox.warning(
-                    self, "Prescription changed",
-                    "Another workstation changed or advanced this prescription. "
-                    "Your draft was NOT saved. Reload before editing.")
+            if (not fresh["editable"] or fresh["version"] != context["version"]
+                    or fresh["status"] != context["status"]
+                    or any(fresh["values"][key] != before_values[key]
+                           for key in ("sig", "quantity", "refills_allowed"))):
+                QMessageBox.warning(self, "Prescription changed",
+                                    "Another workstation modified or advanced this Rx. "
+                                    "Your draft was NOT saved; begin a fresh review.")
                 self.reload()
                 return
-            confirmation = (
-                f"Apply pharmacist-reviewed synthetic SIG change to Rx {rx_id[:8]}?\n\n"
-                f"Before: {original}\nAfter: {proposed.strip()}\n\n"
-                "This resets DUR review where appropriate. No source scan, "
-                "payer claim, label or dispensing action will be performed.")
+            summary = "\n".join(
+                f"{key}: {before_values[key]} -> {val}"
+                for key, val in sorted(changes.items()))
             if QMessageBox.question(
-                    self, "Confirm versioned Rx change", confirmation,
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    self, "Confirm versioned pharmacist review",
+                    f"Apply reviewed synthetic Rx changes to {rx_id[:8]}?\n\n"
+                    f"{summary}\n\nThis may reset DUR review. The immutable source is "
+                    "unchanged. No payer, stock, label or dispensing action occurs.",
+                    QMessageBox.StandardButton.Yes |
+                    QMessageBox.StandardButton.No
             ) != QMessageBox.StandardButton.Yes:
                 return
-            result = self._read(lambda: client.review_sig(
-                rx_id, sig=proposed.strip(),
-                expected_version=context["version"],
-                expected_status=context["status"], attestation_note=note.strip()))
+            result = self._read(lambda: client.review_fields(
+                rx_id, changes=changes, expected_version=context["version"],
+                expected_status=context["status"], attestation_note=note))
             if result is None:
-                QMessageBox.information(
-                    self, "Check current state", "Do not automatically retry. "
-                    "Refresh prescription details and its audit to determine "
-                    "whether the requested change committed.")
+                # The server might have committed before a connection dropped.
+                # Never retry automatically; read back only for human review.
+                snapshot = self._read(lambda: client.inspect_uncertain_edit(rx_id))
+                if snapshot is not None:
+                    QMessageBox.warning(self, "Manual reconciliation required",
+                        f"Current Rx version: {snapshot['version']}\n"
+                        f"Current status: {snapshot['status']}\n"
+                        f"Recent audit actions: {snapshot['recent_actions'][:5]}\n\n"
+                        "These facts do NOT prove that the submitted change committed. "
+                        "Inspect the Rx and its review record before taking further action.")
+                self.reload()
                 return
             self.reload()
-            QMessageBox.information(
-                self, "Synthetic edit recorded",
-                f"Review recorded as prescription version {result['version']}. "
-                "Reopen the prescription and audit to verify the current state.")
+            QMessageBox.information(self, "Synthetic reviewed change saved",
+                f"Prescription now at version {result['version']}. "
+                "Inspect the current Rx details and audit before proceeding.")
 
         def audit(self):
             rx_id = self.selected_id()
