@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Callable
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from .lifecycle import LifecycleService
 from .prescription_directory import PrescriptionDirectory
@@ -23,8 +23,11 @@ class GuardedStatusTransitionIn(BaseModel):
     # An explicit reason and stale preconditions are intentionally stricter
     # than the original status-only body, to protect pharmacist workflows.
     reason: str = Field(min_length=12, max_length=2000)
-    expected_version: int = Field(ge=0, strict=True)
-    expected_status: str = Field(min_length=1, max_length=30)
+    expected_version: int = Field(
+        ge=0, strict=True, validation_alias=AliasChoices("expected_version", "expectedVersion"))
+    expected_status: str = Field(
+        min_length=1, max_length=30,
+        validation_alias=AliasChoices("expected_status", "expectedStatus"))
 
 
 def make_status_parity_router(service: PharmacyService,
