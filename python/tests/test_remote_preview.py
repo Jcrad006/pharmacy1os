@@ -20,6 +20,7 @@ from pharmacy1os.service import PharmacyService
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHARMACY1OS_SYNTHETIC_DEMO", "1")
     monkeypatch.setenv("DOCUMENT_STORAGE_ROOT", str(tmp_path / "vault"))
     svc = PharmacyService(f"sqlite+pysqlite:///{tmp_path / 'network-pilot.sqlite3'}")
     svc.create_schema()
