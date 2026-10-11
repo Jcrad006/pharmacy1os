@@ -52,6 +52,8 @@ def main() -> None:
         def __init__(self):
             super().__init__()
             self.setWindowTitle("Pharmacy1OS — Local reviewed-Rx preview")
+            self.last_review_key = None
+            self.last_review_rx = None
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -100,6 +102,9 @@ def main() -> None:
             self.edit_sig_button.setEnabled(identity["role"] in ("PHARMACIST", "ADMIN"))
             self.edit_sig_button.clicked.connect(self.review_fields)
             actions.addWidget(self.edit_sig_button)
+            outcome = QPushButton("Last review receipt")
+            outcome.clicked.connect(self.last_review_outcome)
+            actions.addWidget(outcome)
             actions.addStretch()
             layout.addLayout(actions)
             self.info = QLabel("No database is opened by this desktop")
@@ -273,26 +278,49 @@ def main() -> None:
                     QMessageBox.StandardButton.No
             ) != QMessageBox.StandardButton.Yes:
                 return
+            request_id = client.new_review_request_id()
+            # Retain the request ID in memory across a lost response.
+            self.last_review_key = request_id
+            self.last_review_rx = rx_id
             result = self._read(lambda: client.review_fields(
                 rx_id, changes=changes, expected_version=context["version"],
-                expected_status=context["status"], attestation_note=note))
+                expected_status=context["status"], attestation_note=note,
+                request_id=request_id))
             if result is None:
-                # The server might have committed before a connection dropped.
-                # Never retry automatically; read back only for human review.
-                snapshot = self._read(lambda: client.inspect_uncertain_edit(rx_id))
-                if snapshot is not None:
-                    QMessageBox.warning(self, "Manual reconciliation required",
-                        f"Current Rx version: {snapshot['version']}\n"
-                        f"Current status: {snapshot['status']}\n"
-                        f"Recent audit actions: {snapshot['recent_actions'][:5]}\n\n"
-                        "These facts do NOT prove that the submitted change committed. "
-                        "Inspect the Rx and its review record before taking further action.")
+                # The operation may have committed. The receipt lookup is the
+                # only authoritative response; don't silently resend the PATCH.
+                self.last_review_outcome()
                 self.reload()
                 return
             self.reload()
             QMessageBox.information(self, "Synthetic reviewed change saved",
                 f"Prescription now at version {result['version']}. "
                 "Inspect the current Rx details and audit before proceeding.")
+
+        def last_review_outcome(self):
+            if not self.last_review_key or not self.last_review_rx:
+                QMessageBox.information(self, "No pending review",
+                                        "No review request has been sent from this workstation session")
+                return
+            key, rx_id = self.last_review_key, self.last_review_rx
+            result = self._read(lambda: client.review_request_status(rx_id, key))
+            if result is None:
+                QMessageBox.warning(self, "Receipt unavailable",
+                    f"Keep synthetic request ID {key} for investigation. "
+                    "The workstation cannot establish whether the edit committed.")
+                return
+            if result["state"] == "RECORDED":
+                recorded = result["result"]
+                QMessageBox.information(self, "Reviewed edit recorded on server",
+                    f"Request {key}\nVersion: {recorded['version']}\n"
+                    f"Review record: {recorded['id']}\n"
+                    "Receipt is stored and linked to the audit record. "
+                    "Refresh prescription details before any other operation.")
+            else:
+                QMessageBox.warning(self, "Review outcome still uncertain",
+                    f"Request {key} is not visible in committed receipt history. "
+                    "The server may still be processing it. Do NOT retry automatically; "
+                    "inspect the current record and audit, then reconcile manually.")
 
         def audit(self):
             rx_id = self.selected_id()
