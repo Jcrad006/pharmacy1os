@@ -16,6 +16,8 @@ test = ["pytest>=8,<10", "httpx>=0.27,<1"]
 
 [project.scripts]
 pharmacy1os-desktop = "pharmacy1os.desktop:main"
+pharmacy1os-loopback-desktop = "pharmacy1os.desktop_remote_preview:main"
+pharmacy1os-loopback-server = "pharmacy1os.session_server:main"
 pharmacy1os-api = "pharmacy1os.api:main"
 pharmacy1os-db = "pharmacy1os.db_cli:main"
 pharmacy1os-backup = "pharmacy1os.backup:main"
