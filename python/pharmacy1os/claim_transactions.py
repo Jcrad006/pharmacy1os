@@ -32,15 +32,19 @@ def _record(s, actor: Actor, fill_id: str, operation: str, outcome: str,
             *, claim_id: str | None = None, payer_id: str | None = None,
             coverage_id: str | None = None,
             original_id: str | None = None) -> SandboxClaimTransaction:
+    if response.get("outcome") != outcome:
+        raise WorkflowError("Local test response outcome does not match recorded transaction outcome")
     request_json = _canonical(request)
+    response_json = _canonical(response)
     event = SandboxClaimTransaction(
         site_id=actor.site_id, fill_id=fill_id, claim_id=claim_id,
         payer_id=payer_id, coverage_id=coverage_id,
         original_transaction_id=original_id, operation=operation,
         outcome=outcome, idempotency_key=key,
         request_json=request_json,
-        response_json=_canonical(response),
+        response_json=response_json,
         request_sha256=hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
+        response_sha256=hashlib.sha256(response_json.encode("utf-8")).hexdigest(),
         actor_id=actor.id)
     s.add(event)
     s.flush()
@@ -141,17 +145,27 @@ def record_test_reversal(s, actor: Actor, claim: Claim, reason: str) -> None:
 
 
 def _view(tx: SandboxClaimTransaction) -> dict[str, Any]:
-    request = json.loads(tx.request_json)
+    try:
+        request = json.loads(tx.request_json)
+        response = json.loads(tx.response_json)
+        if not isinstance(request, dict) or not isinstance(response, dict):
+            raise ValueError("Expected object payload")
+    except (TypeError, ValueError) as exc:
+        raise WorkflowError("Synthetic transaction payload integrity check failed") from exc
     if hashlib.sha256(_canonical(request).encode("utf-8")).hexdigest() != tx.request_sha256:
-        raise WorkflowError("Synthetic transaction integrity check failed")
+        raise WorkflowError("Synthetic transaction request integrity check failed")
+    if hashlib.sha256(_canonical(response).encode("utf-8")).hexdigest() != tx.response_sha256:
+        raise WorkflowError("Synthetic transaction response integrity check failed")
+    if response.get("outcome") != tx.outcome:
+        raise WorkflowError("Synthetic transaction response outcome integrity check failed")
     return {
         "id": tx.id, "fill_id": tx.fill_id, "claim_id": tx.claim_id,
         "payer_id": tx.payer_id, "coverage_id": tx.coverage_id,
         "original_transaction_id": tx.original_transaction_id,
         "operation": tx.operation, "outcome": tx.outcome,
         "idempotency_key": tx.idempotency_key,
-        "request": request, "response": json.loads(tx.response_json),
-        "request_sha256": tx.request_sha256,
+        "request": request, "response": response,
+        "request_sha256": tx.request_sha256, "response_sha256": tx.response_sha256,
         "actor_id": tx.actor_id, "recorded_at": tx.recorded_at.isoformat(),
         "warning": "SYNTHETIC_LOCAL_ADAPTER_NO_REAL_INSURANCE_ADJUDICATION",
     }
@@ -192,7 +206,7 @@ class SandboxClaimService:
                     SandboxClaimTransaction.site_id == actor.site_id,
                     SandboxClaimTransaction.original_transaction_id == item.id,
                     SandboxClaimTransaction.operation == "TEST_RETRY"))
-                details = json.loads(item.response_json)
+                details = _view(item)["response"]
                 output.append({
                     "id": item.id, "fill_id": item.fill_id,
                     "payer_id": item.payer_id, "coverage_id": item.coverage_id,
@@ -274,6 +288,7 @@ class SandboxClaimService:
                 SandboxClaimTransaction.operation == "TEST_REJECT"))
             if original is None:
                 raise WorkflowError("Synthetic rejection not found")
+            _view(original)
             fill = s.scalar(select(Fill).where(Fill.id == original.fill_id).with_for_update())
             if fill is None:
                 raise WorkflowError("Source fill not found")

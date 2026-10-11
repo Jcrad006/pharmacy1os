@@ -159,7 +159,8 @@ def test_migration_backfills_earlier_local_bill_and_reversal(tmp_path, monkeypat
     from alembic import command
     from pharmacy1os.db_cli import migration_config, revision_at_head
     from pharmacy1os.models import Claim
-    from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+    from sqlalchemy import text
+    from pharmacy1os.models import utcnow
 
     url = "sqlite+pysqlite:///" + str(tmp_path / "prior-synthetic.sqlite3")
     monkeypatch.setenv("PHARMACY1OS_SYNTHETIC_DEMO", "1")
@@ -194,25 +195,42 @@ def test_migration_backfills_earlier_local_bill_and_reversal(tmp_path, monkeypat
                 "physical_part_quantity": "20.000"}, sort_keys=True, separators=(",", ":"))
             from pharmacy1os.models import uuid
             bill_id = uuid()
-            s.add(SandboxClaimTransaction(
-                id=bill_id, site_id=pharm.site_id, fill_id=fill,
-                claim_id=claim.id, operation="BILL", outcome="PAID_SYNTHETIC",
-                idempotency_key="test-prior-bill:" + claim.id,
-                request_json=paid_json, response_json='{"outcome":"PAID_SYNTHETIC"}',
-                request_sha256=sha256(paid_json.encode()).hexdigest(),
-                actor_id=tech.id))
-            s.flush()
-            reversal_json = json.dumps({"claim_id": claim.id, "original_transaction_id": bill_id},
+            # This fixture intentionally uses the OLD migrated schema, which
+            # has no response_sha256 column. Insert through raw SQL instead of
+            # newer ORM mappings to exercise the actual migration backfill.
+            s.execute(text("""
+                INSERT INTO py_sandbox_claim_transactions
+                  (id, site_id, fill_id, claim_id, operation, outcome,
+                   idempotency_key, request_json, response_json,
+                   request_sha256, actor_id, recorded_at)
+                VALUES
+                  (:id, :site_id, :fill_id, :claim_id, 'BILL',
+                   'PAID_SYNTHETIC', :key, :request, :response,
+                   :digest, :actor_id, :at)
+            """), dict(id=bill_id, site_id=pharm.site_id, fill_id=fill,
+                      claim_id=claim.id, key="test-prior-bill:" + claim.id,
+                      request=paid_json, response='{"outcome":"PAID_SYNTHETIC"}',
+                      digest=sha256(paid_json.encode()).hexdigest(),
+                      actor_id=tech.id, at=utcnow()))
+            reversal_json = json.dumps(
+                {"claim_id": claim.id, "original_transaction_id": bill_id},
                 sort_keys=True, separators=(",", ":"))
-            s.add(SandboxClaimTransaction(
-                id=uuid(), site_id=pharm.site_id, fill_id=fill,
-                claim_id=claim.id, original_transaction_id=bill_id,
-                operation="REVERSE", outcome="REVERSED_SYNTHETIC",
-                idempotency_key="test-prior-reversal:" + claim.id,
-                request_json=reversal_json,
-                response_json='{"outcome":"REVERSED_SYNTHETIC"}',
-                request_sha256=sha256(reversal_json.encode()).hexdigest(),
-                actor_id=pharm.id))
+            s.execute(text("""
+                INSERT INTO py_sandbox_claim_transactions
+                  (id, site_id, fill_id, claim_id, original_transaction_id,
+                   operation, outcome, idempotency_key, request_json,
+                   response_json, request_sha256, actor_id, recorded_at)
+                VALUES
+                  (:id, :site_id, :fill_id, :claim_id, :original_id,
+                   'REVERSE', 'REVERSED_SYNTHETIC', :key, :request,
+                   :response, :digest, :actor_id, :at)
+            """), dict(id=uuid(), site_id=pharm.site_id, fill_id=fill,
+                      claim_id=claim.id, original_id=bill_id,
+                      key="test-prior-reversal:" + claim.id,
+                      request=reversal_json,
+                      response='{"outcome":"REVERSED_SYNTHETIC"}',
+                      digest=sha256(reversal_json.encode()).hexdigest(),
+                      actor_id=pharm.id, at=utcnow()))
         command.upgrade(migration_config(), "head")
         assert revision_at_head(service.engine)
         history = CobAttemptRegistry(service).history(actors["AUDITOR"], fill)

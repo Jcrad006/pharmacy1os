@@ -28,6 +28,7 @@ class SandboxClaimTransaction(Base):
     request_json: Mapped[str] = mapped_column(Text, nullable=False)
     response_json: Mapped[str] = mapped_column(Text, nullable=False)
     request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                    nullable=False, default=utcnow)

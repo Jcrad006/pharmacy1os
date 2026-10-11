@@ -168,7 +168,9 @@ def _bulk_local_events(svc, actor, fill_id, count):
                 idempotency_key=f"test-workbench-history-spill-{i}",
                 request_json=payload,
                 response_json='{"outcome":"CLEARED_TEST_HOLD"}',
-                request_sha256=digest, actor_id=actor.id)
+                request_sha256=digest,
+                response_sha256=sha256(b'{"outcome":"CLEARED_TEST_HOLD"}').hexdigest(),
+                actor_id=actor.id)
             for i in range(count)
         ])
 

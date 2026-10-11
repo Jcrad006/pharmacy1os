@@ -98,6 +98,37 @@ class PharmacyService:
                         "ADD COLUMN recall_id VARCHAR(36) REFERENCES py_recall_cases(id)")
                     conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS "
                         "ix_py_inventory_holds_recall_id ON py_inventory_holds (recall_id)")
+                # Earlier synthetic Qt database files contain only request
+                # checksums. Add and backfill immutable response digests once.
+                # Never rewrite an already present checksum: mismatch must be
+                # detected instead of silently 'repaired' on application start.
+                event_columns = {row[1] for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('py_sandbox_claim_transactions')").all()}
+                if "response_sha256" not in event_columns:
+                    import hashlib
+                    from .claim_transactions import _canonical
+                    conn.exec_driver_sql(
+                        "ALTER TABLE py_sandbox_claim_transactions "
+                        "ADD COLUMN response_sha256 VARCHAR(64) NOT NULL DEFAULT 'UNVALIDATED'")
+                    history = conn.exec_driver_sql(
+                        "SELECT id, response_json, outcome, request_json, request_sha256 "
+                        "FROM py_sandbox_claim_transactions").all()
+                    for event_id, response_raw, outcome, request_raw, request_hash in history:
+                        try:
+                            request = json.loads(request_raw)
+                            response = json.loads(response_raw)
+                            if (not isinstance(request, dict) or not isinstance(response, dict)
+                                    or response.get("outcome") != outcome
+                                    or hashlib.sha256(_canonical(request).encode()).hexdigest() != request_hash):
+                                raise ValueError("Legacy synthetic claim evidence is inconsistent")
+                            digest = hashlib.sha256(_canonical(response).encode()).hexdigest()
+                        except (TypeError, ValueError) as exc:
+                            raise WorkflowError(
+                                "Cannot backfill changed historical synthetic claim response") from exc
+                        conn.execute(text(
+                            "UPDATE py_sandbox_claim_transactions "
+                            "SET response_sha256 = :digest WHERE id = :id"),
+                            {"digest": digest, "id": event_id})
                 # Narrow compatibility for an existing opt-in synthetic SQLite
                 # desktop DB. Production migrations always use Alembic instead.
                 fill_columns = {row[1] for row in conn.exec_driver_sql(

@@ -10,6 +10,7 @@ from sqlalchemy import exists, or_, select
 
 from .claim_rebilling import SyntheticRebillLink
 from .claim_transactions_models import SandboxClaimTransaction
+from .claim_transactions import _view
 from .insurance import _mask
 from .insurance_models import InsurancePayer, PatientCoverage
 from .label_printing import LabelPrintJob
@@ -78,6 +79,10 @@ class ThirdPartyWorkspace:
                 SandboxClaimTransaction.original_transaction_id.in_(ids),
                 SandboxClaimTransaction.operation.in_((
                     "REVERSE", "TEST_RESOLVE", "TEST_RETRY")))).all() if ids else []
+            for tx, _, _, _ in transactions:
+                _view(tx)
+            for tx in linked:
+                _view(tx)
             reversed_ids = {tx.original_transaction_id for tx in linked
                             if tx.operation == "REVERSE"
                             and tx.outcome == "REVERSED_SYNTHETIC"}
@@ -128,6 +133,8 @@ class ThirdPartyWorkspace:
              )
              .order_by(SandboxClaimTransaction.recorded_at.desc(),
                        SandboxClaimTransaction.id.desc()).limit(101)).all()
+            for tx, _, _, _ in open_rows:
+                _view(tx)
             issues = [{
                 "id": tx.id, "fill_id": fill.id, "rx_number": rx.rx_number,
                 "patient_id": patient.id, "patient_name": f"{patient.last_name}, {patient.first_name}",
