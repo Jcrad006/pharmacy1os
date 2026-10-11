@@ -174,3 +174,24 @@ def test_camel_case_preconditions_supported_without_plain_status_shortcut(env):
     assert response.status_code == 200, response.text
     assert response.json()["prescription"]["version"] == 1
     assert persisted(svc, rx) == ("ON_HOLD", "DATA_ENTRY", 1)
+
+
+def test_ready_to_sold_and_review_to_ready_cannot_bypass_dedicated_workflows(env):
+    svc, actors, _, rx, client = env
+    for current, target in (
+        ("READY", "SOLD"),
+        ("PHARMACIST_REVIEW", "READY"),
+        ("PRODUCT_FILL", "PHARMACIST_REVIEW"),
+    ):
+        # Synthetic setup deliberately simulates a stale/unverified database
+        # status without constructing a completed bill, claim, or physical fill.
+        with svc.sessions.begin() as session:
+            record = session.get(Prescription, rx)
+            record.status = current
+            record.version += 1
+            version = record.version
+        denied = patch(client, rx, actors["PHARMACIST"],
+                       target, current, version)
+        assert denied.status_code == 409, (current, target, denied.text)
+        assert persisted(svc, rx) == (current, None, version)
+    assert not transition_events(svc, rx)
