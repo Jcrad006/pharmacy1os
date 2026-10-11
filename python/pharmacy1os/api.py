@@ -392,7 +392,10 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "synthetic_only": True, "enabled": synthetic_enabled}
+        from fastapi.responses import JSONResponse
+        from .health_contract import api_health
+        code, body = api_health(svc, docs.root, synthetic_enabled=synthetic_enabled)
+        return JSONResponse(body, status_code=code)
 
     @app.get("/api/queue")
     def queue(actor: DemoActor, q: str = ""):
