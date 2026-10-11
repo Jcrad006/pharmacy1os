@@ -64,6 +64,7 @@ from .patient_directory import PatientDirectory
 from .patient_api import make_patient_router
 from .prescription_directory import PrescriptionDirectory
 from .prescription_directory_api import make_prescription_directory_router
+from .prescription_status_parity_api import make_status_parity_router
 from .exceptions import ExceptionService
 from .exceptions_api import make_exceptions_router
 from .date_rules import DateRulesService
@@ -385,6 +386,7 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     app.include_router(make_pos_router(PosService(svc), staff_actor))
     app.include_router(make_patient_router(PatientDirectory(svc), staff_actor))
     app.include_router(make_prescription_directory_router(PrescriptionDirectory(svc), staff_actor))
+    app.include_router(make_status_parity_router(svc, staff_actor))
     app.include_router(make_exceptions_router(ExceptionService(svc), staff_actor))
     app.include_router(make_date_rules_router(DateRulesService(svc), staff_actor))
     app.include_router(make_communications_router(CommunicationService(svc, docs), staff_actor))
