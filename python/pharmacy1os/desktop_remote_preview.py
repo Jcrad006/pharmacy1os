@@ -478,6 +478,9 @@ def main() -> None:
             ) != QMessageBox.StandardButton.Yes:
                 self._review_draft = None
                 return
+            if self._close_after_request:
+                self._review_draft = None
+                return
             if recovery is None:
                 self._review_draft = None
                 QMessageBox.warning(self, "Recovery unavailable",
