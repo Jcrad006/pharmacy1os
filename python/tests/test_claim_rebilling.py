@@ -328,3 +328,44 @@ def test_synthetic_rebill_tracker_rejects_tampered_original_claim_ancestry(case)
     with svc.sessions() as s:
         assert s.get(Fill, replacement).status == "PRODUCT_FILL"
         assert s.scalars(select(Claim).where(Claim.fill_id == replacement)).all() == []
+
+
+def test_tracker_validates_every_link_of_multi_rebill_history(case):
+    """A later healthy replacement must not conceal an earlier corrupt rebill."""
+    svc, actors, outside, rx, fill, expiry = case
+    tech, pharmacist = actors["TECHNICIAN"], actors["PHARMACIST"]
+    prepare(case, ["Mock Primary", "Mock Secondary"])
+    first_history = CobAttemptRegistry(svc).history(pharmacist, fill)
+    first_ids = [p["attempts"][-1]["paid_transaction_id"]
+                 for p in reversed(first_history["claim_positions"])]
+    first_replacement = ClaimRebillService(svc).reverse_current_cob(
+        pharmacist, fill,
+        "First locally simulated two-payer reversal for multi-attempt ancestry test",
+        expected_active_paid_transaction_ids=first_ids)["replacement_fill_id"]
+    svc.scan_source(tech, first_replacement, "RESTART-BAR-1",
+                    "LOT-RESTART-1", expiry, "65")
+    svc.scan_source(tech, first_replacement, "RESTART-BAR-2",
+                    "LOT-RESTART-2", expiry, "25")
+    svc.prepare_for_review(tech, first_replacement,
+                           ["Replacement Primary", "Replacement Secondary"])
+    next_history = CobAttemptRegistry(svc).history(pharmacist, first_replacement)
+    next_ids = [p["attempts"][-1]["paid_transaction_id"]
+                for p in reversed(next_history["claim_positions"])]
+    second_replacement = ClaimRebillService(svc).reverse_current_cob(
+        pharmacist, first_replacement,
+        "Second locally simulated reversal preserving independent rescan history",
+        expected_active_paid_transaction_ids=next_ids)["replacement_fill_id"]
+    report = CobReplacementTracker(svc).detail(actors["AUDITOR"], second_replacement)
+    assert report["attempt_count"] == 3
+    assert report["workflow_stage"] == "AWAITING_PHYSICAL_RESCAN"
+    assert report["root_fill_id"] == fill
+    with svc.sessions.begin() as s:
+        earlier = s.scalar(select(SyntheticRebillLink).where(
+            SyntheticRebillLink.original_fill_id == fill))
+        earlier.reversed_claim_ids_json = '["stale-fabricated-claim"]'
+    with pytest.raises(WorkflowError, match="prior COB reversal is incomplete"):
+        CobReplacementTracker(svc).detail(actors["AUDITOR"], second_replacement)
+    with svc.sessions() as s:
+        assert s.get(Fill, second_replacement).status == "PRODUCT_FILL"
+        assert s.scalars(select(Claim).where(
+            Claim.fill_id == second_replacement)).all() == []

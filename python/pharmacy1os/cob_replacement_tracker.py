@@ -27,32 +27,49 @@ class CobReplacementTracker:
         with self.service.sessions() as s:
             self.service._authorized(s, actor, "read")
             latest = s.get(Fill, history["latest_fill_id"])
-            link_info = history["links"][-1]
-            prior = s.get(Fill, link_info["original_fill_id"])
-            if latest is None or prior is None:
+            if latest is None:
                 raise WorkflowError("Synthetic replacement references absent fill")
             rx = self.service._site(s, Prescription, latest.prescription_id, actor)
-            if (prior.prescription_id != rx.id or prior.status != "RETURNED"
-                    or prior.fill_number != latest.fill_number
-                    or prior.attempt + 1 != latest.attempt):
-                raise WorkflowError("Synthetic replacement ancestry inconsistent")
-            link = s.scalar(select(SyntheticRebillLink).where(
-                SyntheticRebillLink.site_id == actor.site_id,
-                SyntheticRebillLink.original_fill_id == prior.id,
-                SyntheticRebillLink.replacement_fill_id == latest.id))
-            if link is None:
-                raise WorkflowError("Replacement has no site-local link")
-            original = CobAttemptRegistry(self.service)._history_tx(s, actor, prior.id)
-            payers = original["claim_positions"]
-            try:
-                expected = json.loads(link.reversed_claim_ids_json)
-            except (TypeError, ValueError) as exc:
-                raise WorkflowError("Replacement has invalid reversed claim snapshot") from exc
-            if (not payers or [p["claim_id"] for p in payers] != expected
-                    or original["active_local_paid_positions"] != 0
-                    or any(p["attempts"][-1]["reversal_transaction_id"] is None
-                           for p in payers)):
-                raise WorkflowError("Replacement prior COB reversal is incomplete")
+            # Do not accept a healthy newest replacement if an earlier
+            # multi-attempt rebill link was altered. All historical originals
+            # must have an intact site-local, fully reversed versioned COB.
+            prior = None
+            payers = []
+            previous_id = history["root_fill_id"]
+            registry = CobAttemptRegistry(self.service)
+            for link_info in history["links"]:
+                old = s.get(Fill, link_info["original_fill_id"])
+                replacement = s.get(Fill, link_info["replacement_fill_id"])
+                if (old is None or replacement is None
+                        or old.id != previous_id
+                        or old.prescription_id != rx.id
+                        or replacement.prescription_id != rx.id
+                        or old.status != "RETURNED"
+                        or old.fill_number != replacement.fill_number
+                        or old.attempt + 1 != replacement.attempt):
+                    raise WorkflowError("Synthetic replacement ancestry inconsistent")
+                link = s.scalar(select(SyntheticRebillLink).where(
+                    SyntheticRebillLink.site_id == actor.site_id,
+                    SyntheticRebillLink.original_fill_id == old.id,
+                    SyntheticRebillLink.replacement_fill_id == replacement.id))
+                if link is None or link.id != link_info["id"]:
+                    raise WorkflowError("Replacement has no site-local link")
+                original = registry._history_tx(s, actor, old.id)
+                positions = original["claim_positions"]
+                try:
+                    expected = json.loads(link.reversed_claim_ids_json)
+                except (TypeError, ValueError) as exc:
+                    raise WorkflowError("Replacement has invalid reversed claim snapshot") from exc
+                if (not positions or [p["claim_id"] for p in positions] != expected
+                        or original["active_local_paid_positions"] != 0
+                        or any(not p["attempts"] or
+                               p["attempts"][-1]["reversal_transaction_id"] is None
+                               for p in positions)):
+                    raise WorkflowError("Replacement prior COB reversal is incomplete")
+                prior, payers = old, positions
+                previous_id = replacement.id
+            if previous_id != latest.id or prior is None:
+                raise WorkflowError("Synthetic rebill latest attempt does not match its ancestry")
             scanned = s.scalars(select(FillSource).where(
                 FillSource.fill_id == latest.id)).all()
             quantity = Decimal("0")

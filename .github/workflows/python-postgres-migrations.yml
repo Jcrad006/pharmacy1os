@@ -65,4 +65,4 @@ jobs:
           alembic check
       - name: Run PostgreSQL audit/inventory integration smoke
         working-directory: python
-        run: python -m pytest -q tests/test_postgres_migrated.py
+        run: python -m pytest -q tests/test_postgres_migrated.py tests/test_postgres_cob_races.py
