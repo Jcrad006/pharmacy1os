@@ -5,8 +5,17 @@ Never replay or infer success from NOT_RECORDED or unrelated edit history.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .remote_preview import LocalSessionWorkstationClient, WorkstationConnectionError
 from .workstation_recovery_journal import JournalSafetyError, WorkstationRecoveryJournal
+
+
+@dataclass(frozen=True)
+class RecoveryLookupBatch:
+    """Immutable account scope plus request/Rx identifier pairs, no pharmacy content."""
+    scope: tuple[str, str, str]
+    entries: tuple[tuple[str, str], ...]
 
 
 class ReviewedEditRecovery:
@@ -57,39 +66,117 @@ class ReviewedEditRecovery:
     def outstanding(self) -> list[dict]:
         return self.journal.entries_for(**self._scope())
 
-    def reconcile(self, *, limit: int = 8) -> dict:
-        """Only authenticated read requests; never automatically PATCH.
+    def prepare_lookup(self, *, limit: int = 8,
+                       request_id: str | None = None) -> RecoveryLookupBatch:
+        """UI/main-thread operation: snapshot private journal under its lock.
 
-        Bounded read batch avoids making the Qt UI unresponsive while checking
-        requests. A recorded receipt is correlated with one exact UUID.
+        No networking and no UI data content captured. Explicit request_id can
+        refer to a PENDING or RECORDED receipt for manual acknowledgement.
         """
         if type(limit) is not int or not 1 <= limit <= 16:
             raise ValueError("Reconciliation batch must be between 1 and 16")
         scope = self._scope()
-        pending = self.journal.entries_for(**scope, state="PENDING")
-        report = {"checked": 0, "recorded": 0, "uncertain": 0,
-                  "errors": [], "remaining": len(pending)}
-        for entry in pending[:limit]:
-            report["checked"] += 1
+        if request_id is None:
+            chosen = self.journal.entries_for(**scope, state="PENDING")[:limit]
+        else:
+            from .remote_preview import _request_id
+            key = _request_id(request_id)
+            chosen = [entry for entry in self.journal.entries_for(**scope)
+                      if entry["request_id"] == key]
+            if len(chosen) != 1:
+                raise JournalSafetyError("Selected request ID is not in this account's journal")
+        return RecoveryLookupBatch(
+            scope=(scope["site_id"], scope["staff_id"], scope["base_url"]),
+            entries=tuple((item["request_id"], item["prescription_id"])
+                          for item in chosen))
+
+    def lookup_receipts(self, batch: RecoveryLookupBatch) -> tuple[dict, ...]:
+        """Network-only phase; safe to run on a Qt worker thread.
+
+        There is intentionally NO journal access and NO HTTP mutation in this
+        function. Never retain or emit clinical change content.
+        """
+        if not isinstance(batch, RecoveryLookupBatch) or len(batch.entries) > 16:
+            raise JournalSafetyError("Invalid recovery request batch")
+        results = []
+        for request_id, rx_id in batch.entries:
             try:
-                result = self.client.review_request_status(
-                    entry["prescription_id"], entry["request_id"])
-            except (WorkstationConnectionError, ValueError) as exc:
-                # Avoid including any eRx, staff credentials or review content
-                # in journal state or error report.
-                report["errors"].append({"request_id": entry["request_id"],
-                                         "type": "LOOKUP_FAILED"})
+                answer = self.client.review_request_status(rx_id, request_id)
+            except (WorkstationConnectionError, ValueError):
+                results.append({"request_id": request_id, "prescription_id": rx_id,
+                                "state": "LOOKUP_FAILED"})
                 continue
-            if result["state"] == "RECORDED":
+            if answer["state"] == "RECORDED":
+                receipt = answer["result"]
+                results.append({
+                    "request_id": request_id, "prescription_id": rx_id,
+                    "state": "RECORDED", "review_id": receipt["id"],
+                    "version": receipt["version"]})
+            else:
+                results.append({"request_id": request_id, "prescription_id": rx_id,
+                                "state": "NOT_RECORDED"})
+        return tuple(results)
+
+    def apply_lookup(self, batch: RecoveryLookupBatch,
+                     responses: tuple[dict, ...]) -> dict:
+        """UI/main-thread phase: verify current account and persist outcomes.
+
+        Only a specific receipt verified by the existing authenticated client
+        can move a previously PENDING journal entry to RECORDED.
+        """
+        scope = self._scope()
+        expected = (scope["site_id"], scope["staff_id"], scope["base_url"])
+        if not isinstance(batch, RecoveryLookupBatch) or batch.scope != expected:
+            raise JournalSafetyError("Recovery session changed since request lookup")
+        if not isinstance(responses, tuple) or len(responses) != len(batch.entries):
+            raise JournalSafetyError("Recovery response count does not match requested batch")
+        entries = {item["request_id"]: item for item in self.journal.entries_for(**scope)}
+        details = []
+        seen = set()
+        report = {"checked": 0, "recorded": 0, "uncertain": 0,
+                  "errors": [], "remaining": 0, "details": details}
+        for (request_id, rx_id), item in zip(batch.entries, responses):
+            if request_id in seen or not isinstance(item, dict):
+                raise JournalSafetyError("Duplicated/malformed recovery result")
+            seen.add(request_id)
+            local = entries.get(request_id)
+            if (local is None or local["prescription_id"] != rx_id
+                    or item.get("request_id") != request_id
+                    or item.get("prescription_id") != rx_id):
+                raise JournalSafetyError("Recovery receipt identity or account mismatch")
+            state = item.get("state")
+            if state not in ("RECORDED", "NOT_RECORDED", "LOOKUP_FAILED"):
+                raise JournalSafetyError("Unrecognized recovery receipt state")
+            report["checked"] += 1
+            if state == "RECORDED":
+                if not isinstance(item.get("review_id"), str) or (
+                        type(item.get("version")) is not int
+                        or item["version"] < 1):
+                    raise JournalSafetyError("Invalid committed review receipt")
                 self.journal.mark_recorded(
                     site_id=scope["site_id"], staff_id=scope["staff_id"],
-                    request_id=entry["request_id"])
+                    request_id=request_id)
                 report["recorded"] += 1
-            else:
+            elif state == "NOT_RECORDED":
                 report["uncertain"] += 1
+            else:
+                report["errors"].append({"request_id": request_id,
+                                         "type": "LOOKUP_FAILED"})
+            details.append(dict(item))
         report["remaining"] = len(self.journal.entries_for(
             **scope, state="PENDING"))
         return report
+
+    def reconcile(self, *, limit: int = 8) -> dict:
+        """Synchronous compatibility API for tests/CLI; never retry a PATCH.
+
+        Native Qt delegates only lookup_receipts to a QThread and applies the
+        results on the main thread, so recovery GETs do not block the UI.
+        """
+        batch = self.prepare_lookup(limit=limit)
+        result = self.apply_lookup(batch, self.lookup_receipts(batch))
+        result.pop("details")
+        return result
 
     def acknowledge(self, request_id: str) -> None:
         """Called only after the operator explicitly confirms recorded receipt."""
