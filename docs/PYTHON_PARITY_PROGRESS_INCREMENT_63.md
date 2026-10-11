@@ -16,3 +16,7 @@ Extends [Increment 62](PYTHON_PARITY_PROGRESS_INCREMENT_62.md) and the [October 
 This is **not** yet the full native prescription editor: only SIG changes, not multi-field Rx review, original React UX, writes to other modules, or a network-accessible pharmacy service. The pilot is **localhost HTTP only** for fictional records, with synthetic accounts. No production authentication/TLS, real PHI, eRx, payer, physical dispensing or clinical validation. The old local SQLite desktop is unaffected; this code does **not** signify exact TypeScript parity.
 
 **Next:** generalize authoritative per-workflow version checks and idempotency to controlled server-side mutation endpoints; implement reconnect-safe client state handling and PostgreSQL multi-process acceptance tests. Preserve independent TypeScript/Prisma source and review all clinical/legal constraints before any live use.
+
+## Stale-status review precondition
+
+A prescription can progress from Data Entry to DUR Review without changing its edit version. The authenticated workstation therefore now sends both the captured version and the original review **status**; the existing server-side Rx editor compares both under the row lock before allowing the modification. Existing direct edit clients without a status precondition remain backward compatible. Tests simulate a stale Data Entry window where status changes but version does not, and require a fresh review instead of a silent overwrite.

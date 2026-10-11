@@ -82,10 +82,13 @@ class LocalSessionWorkstationClient:
         if reviewed_sig_edit:
             if not authenticated or params:
                 raise ValueError("Reviewed SIG changes require an authenticated request without query parameters")
-            if not isinstance(payload, dict) or set(payload) != {"expected_version", "attestation_note", "changes"}:
+            if not isinstance(payload, dict) or set(payload) != {"expected_version", "expected_status", "attestation_note", "changes"}:
                 raise ValueError("Only versioned, documented SIG changes may be submitted")
             version, note, changes = (payload[k] for k in ("expected_version", "attestation_note", "changes"))
-            if (type(version) is not int or version < 0 or not isinstance(note, str)
+            status = payload["expected_status"]
+            if (type(version) is not int or version < 0
+                    or status not in ("DATA_ENTRY", "DUR_REVIEW", "ON_HOLD")
+                    or not isinstance(note, str)
                     or not 12 <= len(note.strip()) <= 2000
                     or not isinstance(changes, dict) or set(changes) != {"sig"}
                     or not isinstance(changes["sig"], str)
@@ -192,18 +195,20 @@ class LocalSessionWorkstationClient:
         values = data.get("values")
         if (not isinstance(values, dict) or not isinstance(values.get("sig"), str)
                 or type(data.get("version")) is not int or data["version"] < 0
-                or not isinstance(data.get("editable"), bool)):
+                or not isinstance(data.get("editable"), bool)
+                or not isinstance(data.get("status"), str) or not data["status"]):
             raise WorkstationConnectionError("Invalid review context from synthetic server")
         return data
 
     def review_sig(self, rx_id: str, *, sig: str, expected_version: int,
-                   attestation_note: str) -> dict:
+                   expected_status: str, attestation_note: str) -> dict:
         """Submit exactly one reviewed SIG change. NEVER auto-retry after timeout.
 
         The server may have committed even when a response was lost. Operators
         must reread the current version and audit, not blindly resend a PATCH.
         """
         payload = {"expected_version": expected_version,
+                   "expected_status": expected_status,
                    "attestation_note": attestation_note,
                    "changes": {"sig": sig}}
         # _call validates the entire payload before any network request.

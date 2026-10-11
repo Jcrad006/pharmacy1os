@@ -154,6 +154,7 @@ class RxIn(BaseModel):
 
 class RxEditIn(BaseModel):
     expected_version: int = Field(ge=0)
+    expected_status: str | None = None
     attestation_note: str = Field(min_length=12, max_length=2000)
     changes: dict[str, str | int | None] = Field(min_length=1, max_length=10)
 
@@ -482,7 +483,8 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def edit_rx(rx_id: str, payload: RxEditIn, actor: DemoActor):
         return PrescriptionEditService(svc).update(
             actor, rx_id, payload.changes,
-            payload.expected_version, payload.attestation_note)
+            payload.expected_version, payload.attestation_note,
+            expected_status=payload.expected_status)
 
     @app.get("/api/prescriptions/{rx_id}/edits")
     def list_rx_edits(rx_id: str, actor: DemoActor):

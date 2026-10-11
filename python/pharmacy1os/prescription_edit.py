@@ -111,6 +111,7 @@ class PrescriptionEditService:
             return {
                 "editable": reason is None, "blocked_reason": reason,
                 "version": rx.version,
+                "status": rx.status,
                 "values": {key: _value(getattr(rx, key)) for key in sorted(EDITABLE)},
                 "prescribers": [{"id": p.id,
                     "label": f"{p.last_name}, {p.first_name} ({p.practice_level})"}
@@ -122,10 +123,13 @@ class PrescriptionEditService:
             }
 
     def update(self, actor: Actor, prescription_id: str, changes: dict[str, Any],
-               expected_version: int, attestation_note: str) -> dict[str, Any]:
+               expected_version: int, attestation_note: str,
+               *, expected_status: str | None = None) -> dict[str, Any]:
         if (isinstance(expected_version, bool) or not isinstance(expected_version, int)
                 or expected_version < 0):
             raise WorkflowError("Expected version must be a nonnegative integer")
+        if expected_status is not None and expected_status not in {"DATA_ENTRY", "DUR_REVIEW", "ON_HOLD"}:
+            raise WorkflowError("Invalid expected prescription review status")
         note = attestation_note.strip() if isinstance(attestation_note, str) else ""
         if not 12 <= len(note) <= 2000:
             raise WorkflowError("Pharmacist review attestation must contain 12–2000 characters")
@@ -142,6 +146,8 @@ class PrescriptionEditService:
                 raise WorkflowError("Prescription not found at pharmacy site")
             if rx.version != expected_version:
                 raise WorkflowError("Prescription version changed; reload before editing")
+            if expected_status is not None and rx.status != expected_status:
+                raise WorkflowError("Prescription review status changed; reload before editing")
             self._require_editable(s, rx)
             result = {key: getattr(rx, key) for key in EDITABLE}
             for name, raw in changes.items():

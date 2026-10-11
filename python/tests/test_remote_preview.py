@@ -170,16 +170,20 @@ def test_two_authenticated_workstations_reject_stale_reviewed_sig(server):
     context_b = second.edit_context(rx)
     assert context_a["editable"] and context_a["version"] == 0
     assert context_b["version"] == 0
+    # Capture both editor views from DUR to isolate the version race.
     svc.advance_to_dur(actors["TECHNICIAN"], rx)
+    context_a = first.edit_context(rx)
+    context_b = second.edit_context(rx)
+    assert context_a["status"] == "DUR_REVIEW"
     saved = first.review_sig(
         rx, sig="Synthetic revised directions", expected_version=context_a["version"],
-        attestation_note="Reviewed fictitious directions with test prescriber")
+        expected_status=context_a["status"], attestation_note="Reviewed fictitious directions with test prescriber")
     assert saved["version"] == 1 and saved["status"] == "DATA_ENTRY"
     assert second.detail(rx)["sig"] == "Synthetic revised directions"
     with pytest.raises(WorkstationConnectionError) as stale:
         second.review_sig(
             rx, sig="Stale overwrite", expected_version=context_b["version"],
-            attestation_note="Another simulated review note for testing")
+            expected_status=context_b["status"], attestation_note="Another simulated review note for testing")
     assert stale.value.status == 409
     assert second.edit_context(rx)["version"] == 1
     from pharmacy1os.prescription_edit import PrescriptionEditService
@@ -200,7 +204,7 @@ def test_reviewed_sig_server_enforces_permissions_and_site(server):
     with pytest.raises(WorkstationConnectionError) as wrong_role:
         technician.review_sig(
             rx, sig="Unauthorized test edit", expected_version=0,
-            attestation_note="Technician cannot self-authorize this change")
+            expected_status="DATA_ENTRY", attestation_note="Technician cannot self-authorize this change")
     assert wrong_role.value.status == 403
     with pytest.raises(WorkstationConnectionError) as cross_site:
         technician.edit_context(other_rx)
@@ -231,3 +235,27 @@ def test_reviewed_sig_client_refuses_non_sig_edits_and_unversioned_patch(server)
     with pytest.raises(ValueError):
         reader._call("PATCH", f"/api/fills/{rx}/verify", payload=bad[0])
     assert reader.detail(rx)["sig"] == "Mock once daily"
+
+
+def test_server_refuses_status_stale_review_without_editor_version_change(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    admin = auth.verify(auth.login("preview.admin", "Synthetic Only Login 2026!")["access_token"])
+    auth.provision(admin, actors["PHARMACIST"].id, "preview.statuspharm",
+                   "Synthetic Status Reviewer Password 2026!")
+    reviewer = LocalSessionWorkstationClient(url)
+    reviewer.login("preview.statuspharm", "Synthetic Status Reviewer Password 2026!")
+    draft = reviewer.edit_context(rx)
+    assert draft["status"] == "DATA_ENTRY" and draft["version"] == 0
+    svc.advance_to_dur(actors["TECHNICIAN"], rx)
+    with pytest.raises(WorkstationConnectionError) as stale:
+        reviewer.review_sig(rx, sig="Stale review must not commit",
+            expected_version=draft["version"], expected_status=draft["status"],
+            attestation_note="Independent synthetic prescriber review")
+    assert stale.value.status == 409
+    assert reviewer.detail(rx)["sig"] == "Mock once daily"
+    fresh = reviewer.edit_context(rx)
+    assert fresh["status"] == "DUR_REVIEW" and fresh["version"] == 0
+    saved = reviewer.review_sig(rx, sig="Reviewed after refresh",
+        expected_version=fresh["version"], expected_status=fresh["status"],
+        attestation_note="Reviewed simulated change after state refresh")
+    assert saved["version"] == 1 and saved["status"] == "DATA_ENTRY"

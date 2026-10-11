@@ -224,7 +224,9 @@ def main() -> None:
             if latest is None:
                 return
             if (latest["version"] != context["version"]
-                    or latest["values"]["sig"] != original or not latest["editable"]):
+                    or latest["values"]["sig"] != original
+                    or latest["status"] != context["status"]
+                    or not latest["editable"]):
                 QMessageBox.warning(
                     self, "Prescription changed",
                     "Another workstation changed or advanced this prescription. "
@@ -243,7 +245,8 @@ def main() -> None:
                 return
             result = self._read(lambda: client.review_sig(
                 rx_id, sig=proposed.strip(),
-                expected_version=context["version"], attestation_note=note.strip()))
+                expected_version=context["version"],
+                expected_status=context["status"], attestation_note=note.strip()))
             if result is None:
                 QMessageBox.information(
                     self, "Check current state", "Do not automatically retry. "
