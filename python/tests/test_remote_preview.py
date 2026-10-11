@@ -259,3 +259,42 @@ def test_server_refuses_status_stale_review_without_editor_version_change(server
         expected_version=fresh["version"], expected_status=fresh["status"],
         attestation_note="Reviewed simulated change after state refresh")
     assert saved["version"] == 1 and saved["status"] == "DATA_ENTRY"
+
+
+def pharmacist_preview(server, username="field.reviewer"):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    admin = auth.verify(auth.login(
+        "preview.admin", "Synthetic Only Login 2026!")["access_token"])
+    auth.provision(admin, actors["PHARMACIST"].id, username,
+                   "Synthetic Reviewer Credential 2026!")
+    a = LocalSessionWorkstationClient(url)
+    a.login(username, "Synthetic Reviewer Credential 2026!")
+    return a
+
+
+def test_multi_field_review_atomic_and_stale_second_operator(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    a = pharmacist_preview(server)
+    b = LocalSessionWorkstationClient(url)
+    b.login("field.reviewer", "Synthetic Reviewer Credential 2026!")
+    svc.advance_to_dur(actors["TECHNICIAN"], rx)
+    first, second = a.edit_context(rx), b.edit_context(rx)
+    result = a.review_fields(rx,
+        changes={"sig": "Synthetic revised directions", "quantity": "45.000",
+                 "refills_allowed": 3},
+        expected_version=first["version"], expected_status=first["status"],
+        attestation_note="Three fields independently verified in synthetic review")
+    assert result["version"] == 1 and result["status"] == "DATA_ENTRY"
+    assert set(result["changed"]) == {"sig", "quantity", "refills_allowed"}
+    current = b.detail(rx)
+    assert current["quantityWritten"] == "45.000"
+    assert current["refillsAllowed"] == 3
+    assert current["sig"] == "Synthetic revised directions"
+    with pytest.raises(WorkstationConnectionError) as stale:
+        b.review_fields(rx, changes={"quantity": "60"},
+            expected_version=second["version"], expected_status=second["status"],
+            attestation_note="Second operator must not overwrite prior review")
+    assert stale.value.status == 409
+    from pharmacy1os.prescription_edit import PrescriptionEditService
+    history = PrescriptionEditService(svc).history(actors["AUDITOR"], rx)
+    assert len(history) == 1 and len(history[0]["changes"]) == 3
