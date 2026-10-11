@@ -18,7 +18,7 @@ def main() -> None:
     if os.getenv("PHARMACY1OS_SYNTHETIC_DEMO") != "1":
         raise SystemExit("Synthetic desktop preview disabled; opt in explicitly")
     try:
-        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtCore import Qt, QTimer, QThread, Signal
         from PySide6.QtGui import QKeySequence, QShortcut
         from PySide6.QtWidgets import (
             QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QInputDialog,
@@ -65,12 +65,31 @@ def main() -> None:
             client.logout()
             return
 
+    class RecoveryLookupThread(QThread):
+        """Fetch verified receipts without accessing the journal or Qt controls."""
+        completed = Signal(object)
+
+        def __init__(self, batch):
+            super().__init__()
+            self.batch = batch
+
+        def run(self):
+            try:
+                answer = recovery.lookup_receipts(self.batch)
+                self.completed.emit(("ok", answer))
+            except Exception:
+                # Fail closed, never expose credentials or review text in UI.
+                self.completed.emit(("error", None))
+
     class LocalWorkstation(QMainWindow):
         def __init__(self):
             super().__init__()
             self.setWindowTitle("Pharmacy1OS — Local reviewed-Rx preview")
             self.last_review_key = None
             self.last_review_rx = None
+            self._lookup_thread = None
+            self._lookup_busy = False
+            self._close_after_lookup = False
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -123,9 +142,9 @@ def main() -> None:
             outcome.clicked.connect(self.last_review_outcome)
             actions.addWidget(outcome)
             if recovery is not None:
-                check_pending = QPushButton("Reconcile pending reviews")
-                check_pending.clicked.connect(self.reconcile_outstanding)
-                actions.addWidget(check_pending)
+                self.check_pending_button = QPushButton("Reconcile pending reviews")
+                self.check_pending_button.clicked.connect(self.reconcile_outstanding)
+                actions.addWidget(self.check_pending_button)
             actions.addStretch()
             layout.addLayout(actions)
             self.info = QLabel("No database is opened by this desktop")
@@ -226,6 +245,11 @@ def main() -> None:
             self._show_text("Synthetic Rx detail", "\n".join(lines))
 
         def review_fields(self):
+            if self._lookup_busy or self._close_after_lookup:
+                QMessageBox.warning(
+                    self, "Recovery in progress",
+                    "Prescription editing is disabled while receipt reconciliation runs.")
+                return
             rx_id = self.selected_id()
             if not rx_id or identity["role"] not in ("PHARMACIST", "ADMIN"):
                 return
@@ -328,67 +352,127 @@ def main() -> None:
                 f"Prescription now at version {result['version']}. "
                 "The request ID and receipt are saved for post-crash reconciliation.")
 
-        def reconcile_outstanding(self, *, limit: int = 8):
+        def _start_receipt_lookup(self, batch, *, manual_request_id=None,
+                                  notify=True):
+            if recovery is None or self._lookup_busy:
+                if notify and not self._close_after_lookup:
+                    QMessageBox.information(
+                        self, "Receipt check already running",
+                        "A receipt lookup is already in progress; no edit was retried.")
+                return
+            if not batch.entries:
+                if notify:
+                    QMessageBox.information(
+                        self, "No pending receipts", "No unconfirmed review IDs remain.")
+                return
+            self._lookup_busy = True
+            self.edit_sig_button.setEnabled(False)
+            self.check_pending_button.setEnabled(False)
+            self.info.setText(
+                f"Checking {len(batch.entries)} synthetic receipt(s) in background; "
+                "edits temporarily disabled")
+            worker = RecoveryLookupThread(batch)
+            self._lookup_thread = worker
+            worker.completed.connect(
+                lambda outcome: self._recovery_result(
+                    batch, outcome, manual_request_id, notify))
+            worker.finished.connect(self._recovery_finished)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+
+        def _recovery_result(self, batch, outcome, manual_request_id, notify):
+            if self._close_after_lookup:
+                # The user requested close: do not modify or acknowledge the
+                # journal from an obsolete window; remaining entries stay safe.
+                return
+            if outcome[0] != "ok":
+                self.info.setText(
+                    "Receipt check failed; saved IDs remain pending; no retry sent")
+                if notify:
+                    QMessageBox.warning(
+                        self, "Recovery lookup unavailable",
+                        "Saved request IDs remain in the protected journal. "
+                        "Sign in and reconcile again; no request was resent.")
+                return
+            report = self._read(lambda: recovery.apply_lookup(batch, outcome[1]))
+            if report is None:
+                self.info.setText(
+                    "Recovery application blocked; saved IDs remain for manual review")
+                return
+            self.info.setText(
+                f"Receipt check: {report['recorded']} confirmed, "
+                f"{report['remaining']} pending; no edits were resent")
+            if manual_request_id:
+                detail = next((item for item in report["details"]
+                               if item["request_id"] == manual_request_id), None)
+                if detail is not None and detail["state"] == "RECORDED":
+                    choice = QMessageBox.question(
+                        self, "Server confirmed recorded review",
+                        f"Request {manual_request_id}\nReview {detail['review_id']}\n"
+                        f"Version {detail['version']}\n\n"
+                        "Acknowledge this server-confirmed receipt locally? "
+                        "The server's immutable audit record will remain.",
+                        QMessageBox.StandardButton.Yes |
+                        QMessageBox.StandardButton.No)
+                    if choice == QMessageBox.StandardButton.Yes:
+                        self._read(lambda: recovery.acknowledge(manual_request_id))
+                else:
+                    QMessageBox.warning(
+                        self, "Request not confirmed",
+                        f"Request {manual_request_id} remains uncertain. "
+                        "NOT_RECORDED or a failed lookup is NOT permission to retry.")
+            elif notify:
+                QMessageBox.information(
+                    self, "Read-only receipt reconciliation",
+                    f"Checked {report['checked']}; recorded {report['recorded']}; "
+                    f"still unconfirmed {report['uncertain']}; "
+                    f"lookup failures {len(report['errors'])}; "
+                    f"pending {report['remaining']}.\n\n"
+                    "No prescription edit was automatically retried.")
+
+        def _recovery_finished(self):
+            self._lookup_busy = False
+            self._lookup_thread = None
+            if self._close_after_lookup:
+                QTimer.singleShot(0, self.close)
+            else:
+                self.edit_sig_button.setEnabled(
+                    recovery is not None and
+                    identity["role"] in ("PHARMACIST", "ADMIN"))
+                self.check_pending_button.setEnabled(recovery is not None)
+
+        def reconcile_outstanding(self, checked=False, *, limit: int = 8):
             if recovery is None:
                 return
-            result = self._read(lambda: recovery.reconcile(limit=limit))
-            if result is None:
-                QMessageBox.warning(self, "Receipt recovery unavailable",
-                    "Saved request IDs remain on disk. No edit has been retried. "
-                    "Sign in and reconcile again when the server is available.")
+            if self._lookup_busy:
                 return
-            QMessageBox.information(self, "Synthetic review reconciliation",
-                f"Checked: {result['checked']}; recorded: {result['recorded']}; "
-                f"still uncertain: {result['uncertain']}; "
-                f"lookup failures: {len(result['errors'])}; "
-                f"outstanding: {result['remaining']}.\n\n"
-                "Recorded receipts are retained until explicitly acknowledged. "
-                "NOT_RECORDED is not permission to retry.")
-            self.info.setText(
-                f"{result['remaining']} pending synthetic review request(s); "
-                "No automatic writes or retries")
+            batch = self._read(lambda: recovery.prepare_lookup(limit=limit))
+            if batch is not None:
+                self._start_receipt_lookup(batch, notify=limit != 2)
 
         def last_review_outcome(self):
-            if recovery is None:
+            if recovery is None or self._lookup_busy:
                 return
-            entries = recovery.outstanding()
+            entries = self._read(recovery.outstanding)
             if not entries:
-                QMessageBox.information(self, "No saved review",
-                                        "No saved request IDs for this synthetic staff session")
+                QMessageBox.information(
+                    self, "No saved review", "No saved review IDs for this account")
                 return
             options = [
                 f"{x['request_id']} | {x['state']} | Rx {x['prescription_id'][:8]}"
                 for x in entries]
             selected, ok = QInputDialog.getItem(
-                self, "Recovered review requests",
-                "Choose a saved request (no edits will be submitted):",
+                self, "Saved review request IDs",
+                "Select one synthetic request (read-only lookup):",
                 options, 0, False)
             if not ok:
                 return
-            entry = entries[options.index(selected)]
-            key, rx_id = entry["request_id"], entry["prescription_id"]
-            result = self._read(lambda: client.review_request_status(rx_id, key))
-            if result is None:
-                QMessageBox.warning(self, "Receipt unavailable",
-                    f"Keep request ID {key}. Its outcome cannot be confirmed.")
-                return
-            if result["state"] == "RECORDED":
-                recovered = result["result"]
-                self._read(lambda: journal.mark_recorded(
-                    site_id=identity["site_id"], staff_id=identity["staff_id"],
-                    request_id=key))
-                choice = QMessageBox.question(
-                    self, "Recorded request", f"Server receipt {recovered['id']}\n"
-                    f"Request {key}\nVersion: {recovered['version']}\n\n"
-                    "Mark this confirmed request as acknowledged locally? "
-                    "The server audit and receipt remain immutable.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                if choice == QMessageBox.StandardButton.Yes:
-                    self._read(lambda: recovery.acknowledge(key))
-            else:
-                QMessageBox.warning(self, "Outcome not yet recorded",
-                    f"Request {key} is not currently recorded. It might still "
-                    "be in flight. Do not retry automatically.")
+            key = entries[options.index(selected)]["request_id"]
+            batch = self._read(
+                lambda: recovery.prepare_lookup(request_id=key, limit=1))
+            if batch is not None:
+                self._start_receipt_lookup(
+                    batch, manual_request_id=key, notify=True)
 
         def audit(self):
             rx_id = self.selected_id()
@@ -406,6 +490,13 @@ def main() -> None:
             self._show_text("Prescription audit trail", "\n".join(lines))
 
         def closeEvent(self, event):
+            if self._lookup_busy:
+                # Never destroy a running QThread or close its journal owner.
+                self._close_after_lookup = True
+                self.info.setText(
+                    "Closing after the in-flight read-only receipt lookup ends")
+                event.ignore()
+                return
             try:
                 client.logout()
             except WorkstationConnectionError:
