@@ -138,11 +138,11 @@ def test_client_refuses_arbitrary_paths_and_bad_identifiers(server):
         client.queue(sort="unknown")
     with pytest.raises(ValueError):
         client._call("GET", "https://example.org")
-    with pytest.raises(ValueError, match="Read-only preview"):
+    with pytest.raises(ValueError, match="refuses this endpoint"):
         client._call("POST", f"/api/prescriptions/{rx}/fills", payload={"quantity": "99"})
-    with pytest.raises(ValueError, match="Read-only preview"):
+    with pytest.raises(ValueError, match="refuses this endpoint"):
         client._call("POST", "/api/fills/mutate")
-    with pytest.raises(ValueError, match="Read-only preview"):
+    with pytest.raises(ValueError, match="refuses this endpoint"):
         client._call("GET", "/api/auth/logout")
 
 
