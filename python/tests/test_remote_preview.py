@@ -138,6 +138,12 @@ def test_client_refuses_arbitrary_paths_and_bad_identifiers(server):
         client.queue(sort="unknown")
     with pytest.raises(ValueError):
         client._call("GET", "https://example.org")
+    with pytest.raises(ValueError, match="Read-only preview"):
+        client._call("POST", f"/api/prescriptions/{rx}/fills", payload={"quantity": "99"})
+    with pytest.raises(ValueError, match="Read-only preview"):
+        client._call("POST", "/api/fills/mutate")
+    with pytest.raises(ValueError, match="Read-only preview"):
+        client._call("GET", "/api/auth/logout")
 
 
 def test_unreachable_server_fails_closed():

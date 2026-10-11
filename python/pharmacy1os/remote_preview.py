@@ -63,8 +63,18 @@ class LocalSessionWorkstationClient:
               params: dict | None = None, authenticated: bool = True) -> dict:
         if authenticated and not self._token:
             raise WorkstationConnectionError("Sign in to the synthetic workstation first", status=401)
-        if not path.startswith("/api/") or "//" in path or ".." in path:
-            raise ValueError("Only explicit synthetic API paths are permitted")
+        # Exact endpoint allowlist: even accidental use of this transport
+        # from another Qt action cannot submit fill, Rx, payer or POS mutations.
+        public_login = method == "POST" and path == "/api/auth/login"
+        logout = method == "POST" and path == "/api/auth/logout"
+        read = method == "GET" and (
+            path in ("/api/auth/me", "/api/prescriptions/queue")
+            or re.fullmatch(
+                r"/api/prescriptions/[a-fA-F0-9-]{36}(?:/audit)?", path) is not None)
+        if not (public_login or logout or read):
+            raise ValueError("Read-only preview refuses this endpoint or HTTP method")
+        if public_login == authenticated or (payload is not None and not public_login):
+            raise ValueError("Invalid preview authentication or request payload")
         path_url = self.base_url + path
         if params:
             path_url += "?" + urlencode(params)
