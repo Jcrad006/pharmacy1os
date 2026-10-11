@@ -450,6 +450,6 @@ def test_request_receipts_are_isolated_between_actors_and_pharmacy_sites(server)
     with pytest.raises(WorkstationConnectionError) as other_actor:
         admin_client.review_request_status(rx, key)
     assert other_actor.value.status == 409
-    with pytest.raises(WorkstationConnectionError) as other_rx:
+    with pytest.raises(WorkstationConnectionError) as other_prescription:
         reviewer.review_request_status(other_rx, key)
-    assert other_rx.value.status == 409
+    assert other_prescription.value.status == 409
