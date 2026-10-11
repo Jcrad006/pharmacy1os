@@ -47,6 +47,7 @@ def test_python_inventory_identifies_matched_and_unmatched_original_signatures()
             ("GET", "/prescriptions/queue"),
             ("GET", "/prescriptions/:id"),
             ("GET", "/prescriptions/:id/audit"),
+            ("PATCH", "/prescriptions/:id/status"),
         ):
             assert statuses[known] == "PATH_AND_METHOD_ONLY", known
         # These original platform administration endpoints have no validated
