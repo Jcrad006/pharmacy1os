@@ -224,6 +224,19 @@ def main() -> None:
             if result[0] != "ok":
                 error = result[1]
                 code = error.get("status") if isinstance(error, dict) else None
+                if code == 401 or client.identity is None:
+                    # Server-side session expiry/revocation invalidates all
+                    # previously displayed synthetic prescription details.
+                    # Preserve encrypted pending request IDs for next login.
+                    self.table.setRowCount(0)
+                    self._review_draft = None
+                    self._next_request = None
+                    self.info.setText(
+                        "Synthetic session expired or revoked; close and sign "
+                        "in again. Review receipt journal remains protected.")
+                    if operation == "submit_review":
+                        self._pending_submission = None
+                    return
                 self.info.setText(
                     f"Server request {operation} failed (HTTP {code or 'unavailable'}). "
                     "No automatic retry.")
