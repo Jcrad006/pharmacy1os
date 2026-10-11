@@ -133,8 +133,8 @@ class ReviewedEditRecovery:
         entries = {item["request_id"]: item for item in self.journal.entries_for(**scope)}
         details = []
         seen = set()
-        report = {"checked": 0, "recorded": 0, "uncertain": 0,
-                  "errors": [], "remaining": 0, "details": details}
+        # Validate the *entire* returned batch before any journal mutation.
+        # A malformed second response must not partially acknowledge the first.
         for (request_id, rx_id), item in zip(batch.entries, responses):
             if request_id in seen or not isinstance(item, dict):
                 raise JournalSafetyError("Duplicated/malformed recovery result")
@@ -147,12 +147,19 @@ class ReviewedEditRecovery:
             state = item.get("state")
             if state not in ("RECORDED", "NOT_RECORDED", "LOOKUP_FAILED"):
                 raise JournalSafetyError("Unrecognized recovery receipt state")
+            if (state == "RECORDED" and
+                    (not isinstance(item.get("review_id"), str)
+                     or type(item.get("version")) is not int
+                     or item["version"] < 1)):
+                raise JournalSafetyError("Invalid committed review receipt")
+
+        report = {"checked": 0, "recorded": 0, "uncertain": 0,
+                  "errors": [], "remaining": 0, "details": details}
+        for item in responses:
+            request_id = item["request_id"]
+            state = item["state"]
             report["checked"] += 1
             if state == "RECORDED":
-                if not isinstance(item.get("review_id"), str) or (
-                        type(item.get("version")) is not int
-                        or item["version"] < 1):
-                    raise JournalSafetyError("Invalid committed review receipt")
                 self.journal.mark_recorded(
                     site_id=scope["site_id"], staff_id=scope["staff_id"],
                     request_id=request_id)
