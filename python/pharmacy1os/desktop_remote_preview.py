@@ -18,8 +18,9 @@ def main() -> None:
     if os.getenv("PHARMACY1OS_SYNTHETIC_DEMO") != "1":
         raise SystemExit("Synthetic desktop preview disabled; opt in explicitly")
     try:
-        from PySide6.QtCore import Qt, QTimer, QThread, Signal
+        from PySide6.QtCore import Qt, QTimer
         from PySide6.QtGui import QKeySequence, QShortcut
+        from .qt_recovery_worker import RecoveryLookupThread
         from PySide6.QtWidgets import (
             QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QInputDialog,
             QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
@@ -64,22 +65,6 @@ def main() -> None:
                 "could not be verified: " + str(exc))
             client.logout()
             return
-
-    class RecoveryLookupThread(QThread):
-        """Fetch verified receipts without accessing the journal or Qt controls."""
-        completed = Signal(object)
-
-        def __init__(self, batch):
-            super().__init__()
-            self.batch = batch
-
-        def run(self):
-            try:
-                answer = recovery.lookup_receipts(self.batch)
-                self.completed.emit(("ok", answer))
-            except Exception:
-                # Fail closed, never expose credentials or review text in UI.
-                self.completed.emit(("error", None))
 
     class LocalWorkstation(QMainWindow):
         def __init__(self):
@@ -371,7 +356,7 @@ def main() -> None:
             self.info.setText(
                 f"Checking {len(batch.entries)} synthetic receipt(s) in background; "
                 "edits temporarily disabled")
-            worker = RecoveryLookupThread(batch)
+            worker = RecoveryLookupThread(recovery, batch)
             self._lookup_thread = worker
             worker.completed.connect(
                 lambda outcome: self._recovery_result(
