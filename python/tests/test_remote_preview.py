@@ -381,3 +381,75 @@ def test_lost_response_requires_readback_without_automatic_retry(server, monkeyp
     assert replay.value.status == 409
     from pharmacy1os.prescription_edit import PrescriptionEditService
     assert len(PrescriptionEditService(svc).history(actors["AUDITOR"], rx)) == 1
+
+
+def test_authenticated_receipt_replay_after_lost_response(server, monkeypatch):
+    """A stable request UUID identifies an edit already committed on the server."""
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "receipt.reviewer")
+    before = reviewer.edit_context(rx)
+    key = reviewer.new_review_request_id()
+    note = "Independent synthetic verification of requested quantity change"
+    network_call = reviewer._call
+    def commit_then_drop_reply(method, path, **kwargs):
+        if method == "PATCH":
+            network_call(method, path, **kwargs)
+            raise WorkstationConnectionError("Simulated review response was lost")
+        return network_call(method, path, **kwargs)
+    monkeypatch.setattr(reviewer, "_call", commit_then_drop_reply)
+    with pytest.raises(WorkstationConnectionError, match="response was lost"):
+        reviewer.review_fields(rx, changes={"quantity": "75.000"},
+            expected_version=before["version"], expected_status=before["status"],
+            attestation_note=note, request_id=key)
+    receipt = reviewer.review_request_status(rx, key)
+    assert receipt["state"] == "RECORDED"
+    assert receipt["result"]["version"] == 1
+    assert receipt["result"]["request_id"] == key
+    assert set(receipt["result"]["changed"]) == {"quantity"}
+    monkeypatch.setattr(reviewer, "_call", network_call)
+    replay = reviewer.review_fields(rx, changes={"quantity": "75.000"},
+        expected_version=before["version"], expected_status=before["status"],
+        attestation_note=note, request_id=key)
+    assert replay == receipt["result"]
+    from pharmacy1os.prescription_edit import PrescriptionEditService
+    assert len(PrescriptionEditService(svc).history(actors["AUDITOR"], rx)) == 1
+    with pytest.raises(WorkstationConnectionError) as mismatch:
+        reviewer.review_fields(rx, changes={"quantity": "80.000"},
+            expected_version=before["version"], expected_status=before["status"],
+            attestation_note=note, request_id=key)
+    assert mismatch.value.status == 409
+
+
+def test_uncertain_receipt_lookup_is_not_a_permission_to_retry(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "pending.reviewer")
+    key = reviewer.new_review_request_id()
+    state = reviewer.review_request_status(rx, key)
+    assert state == {"state": "NOT_RECORDED", "request_id": key,
+                     "safe_to_retry": False}
+    from pharmacy1os.remote_preview import WorkstationConnectionError
+    with pytest.raises(ValueError, match="UUIDv4"):
+        reviewer.review_request_status(rx, "non-uuid")
+    assert reviewer.detail(rx)["sig"] == "Mock once daily"
+    assert reviewer.audit(rx)["events"][0]["action"] == "RX_CREATED"
+
+
+def test_request_receipts_are_isolated_between_actors_and_pharmacy_sites(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reviewer = pharmacist_preview(server, "original.reviewer")
+    original = reviewer.edit_context(rx)
+    key = reviewer.new_review_request_id()
+    reviewer.review_fields(rx, changes={"sig": "Reviewed mock directions"},
+        expected_version=original["version"], expected_status=original["status"],
+        attestation_note="Reviewed prescription documentation in synthetic setting",
+        request_id=key)
+    # The enrolled synthetic administrator has a different identity even at
+    # the same site: it cannot inspect the pharmacist's request receipt.
+    admin_client = LocalSessionWorkstationClient(url)
+    admin_client.login("preview.admin", "Synthetic Only Login 2026!")
+    with pytest.raises(WorkstationConnectionError) as other_actor:
+        admin_client.review_request_status(rx, key)
+    assert other_actor.value.status == 409
+    with pytest.raises(WorkstationConnectionError) as other_rx:
+        reviewer.review_request_status(other_rx, key)
+    assert other_rx.value.status == 409
