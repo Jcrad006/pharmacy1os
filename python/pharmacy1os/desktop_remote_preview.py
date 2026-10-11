@@ -86,6 +86,7 @@ def main() -> None:
             self._review_draft = None
             self._pending_submission = None
             self._close_after_request = False
+            self._needs_reconcile = False
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -230,7 +231,7 @@ def main() -> None:
                     # The server might have committed despite a lost response.
                     self._pending_submission = None
                     self._review_draft = None
-                    QTimer.singleShot(0, self.reconcile_outstanding)
+                    self._needs_reconcile = True
                 elif operation in ("edit_context",):
                     self._review_draft = None
                 self._set_network_controls()
@@ -261,6 +262,9 @@ def main() -> None:
             if next_request:
                 QTimer.singleShot(0, lambda: self._launch_request(
                     next_request[0], next_request[1], context=next_request[2]))
+            elif self._needs_reconcile:
+                self._needs_reconcile = False
+                QTimer.singleShot(0, self.reconcile_outstanding)
 
         def reload(self, *args):
             self._launch_request("queue", self._queue_parameters())
@@ -376,7 +380,7 @@ def main() -> None:
                 buttons.accepted.connect(dialog.accept)
                 buttons.rejected.connect(dialog.reject)
                 layout.addWidget(buttons)
-                if dialog.exec() != QDialog.DialogCode.Accepted:
+                if dialog.exec() != QDialog.DialogCode.Accepted or self._close_after_request:
                     return
                 try:
                     changes = collect_review_changes(before, {
@@ -464,10 +468,15 @@ def main() -> None:
             if not isinstance(context, dict):
                 self.info.setText("Uncertain review outcome; manual recovery required")
                 return
-            saved = self._read(lambda: recovery.confirm_submission(
-                context["rx_id"], context["request_id"], receipt))
-            # confirm_submission returns None on success too. Look up local
-            # status only if a journal-write exception wasn't raised.
+            try:
+                recovery.confirm_submission(
+                    context["rx_id"], context["request_id"], receipt)
+            except (JournalSafetyError, WorkstationConnectionError, ValueError, OSError):
+                self.info.setText(
+                    "Server review response received, but local receipt confirmation "
+                    "failed. Preserve journal and reconcile; do NOT repeat the edit.")
+                self._needs_reconcile = True
+                return
             self.last_review_rx = context["rx_id"]
             self.last_review_key = context["request_id"]
             self._next_request = ("queue", self._queue_parameters(), None)
@@ -482,8 +491,10 @@ def main() -> None:
 
         def _start_receipt_lookup(self, batch, *, manual_request_id=None,
                                   notify=True):
-            if recovery is None or self._lookup_busy:
-                if notify and not self._close_after_lookup:
+            if (recovery is None or self._lookup_busy
+                    or self._request_thread is not None
+                    or self._close_after_request or self._close_after_lookup):
+                if notify and not self._close_after_lookup and not self._close_after_request:
                     QMessageBox.information(
                         self, "Receipt check already running",
                         "A receipt lookup is already in progress; no edit was retried.")
@@ -494,6 +505,7 @@ def main() -> None:
                         self, "No pending receipts", "No unconfirmed review IDs remain.")
                 return
             self._lookup_busy = True
+            self._set_network_controls()
             self.edit_sig_button.setEnabled(False)
             self.check_pending_button.setEnabled(False)
             self.info.setText(
@@ -579,13 +591,7 @@ def main() -> None:
             if self._close_after_lookup:
                 QTimer.singleShot(0, self.close)
             else:
-                live_identity = client.identity
-                allowed = (recovery is not None and live_identity is not None
-                           and live_identity.get("staff_id") == identity["staff_id"]
-                           and live_identity.get("site_id") == identity["site_id"]
-                           and live_identity.get("role") in ("PHARMACIST", "ADMIN"))
-                self.edit_sig_button.setEnabled(allowed)
-                self.check_pending_button.setEnabled(allowed)
+                self._set_network_controls()
 
         def reconcile_outstanding(self, checked=False, *, limit: int = 8):
             if recovery is None:
@@ -635,6 +641,15 @@ def main() -> None:
             self._show_text("Prescription audit trail", "\n".join(lines))
 
         def closeEvent(self, event):
+            if self._request_thread is not None:
+                self._close_after_request = True
+                self._review_draft = None
+                self._next_request = None
+                self.info.setText(
+                    "Closing after in-flight network request completes; "
+                    "no edit will be automatically retried")
+                event.ignore()
+                return
             if self._lookup_busy:
                 # Never destroy a running QThread or close its journal owner.
                 self._close_after_lookup = True
