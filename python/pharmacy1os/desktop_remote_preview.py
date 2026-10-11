@@ -585,6 +585,16 @@ def main() -> None:
                 # The user requested close: do not modify or acknowledge the
                 # journal from an obsolete window; remaining entries stay safe.
                 return
+            if client.identity is None:
+                # Recovery GET can also discover server session revocation.
+                # Keep journal data safe, but blank any previously shown Rx.
+                self.table.setRowCount(0)
+                self._review_draft = None
+                self._next_request = None
+                self.info.setText(
+                    "Synthetic session expired; pending journal unchanged. "
+                    "Close and sign in again to reconcile.")
+                return
             if outcome[0] != "ok":
                 self.info.setText(
                     "Receipt check failed; saved IDs remain pending; no retry sent")
