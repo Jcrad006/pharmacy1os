@@ -1,7 +1,8 @@
-"""Loopback-only, authenticated HTTP boundary for a read-only Qt workstation pilot.
+"""Loopback-only, authenticated HTTP boundary for a narrowly editable Qt pilot.
 
-Separate-process transport, not a database adapter. Deliberately no payer, fill,
-claim, prescription mutation or remote-host access. SYNTHETIC development only.
+Separate-process transport, not a database adapter. Allows one explicitly
+validated, pharmacist-reviewed SIG edit using a stale-version guard; no fill,
+claim, inventory, POS or remote-host actions. SYNTHETIC development only.
 """
 from __future__ import annotations
 
@@ -29,10 +30,11 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class LocalSessionWorkstationClient:
-    """Isolated native workstation reads from a localhost session API.
+    """Isolated native workstation talks to a localhost authenticated API.
 
-    Never accepts x-demo-staff-id; there is no access to SQLAlchemy, local
-    database files, document originals or mutable pharmacy commands.
+    Never accepts x-demo-staff-id. No SQLAlchemy, workstation database file,
+    source-document write, filling, payer, inventory or checkout commands.
+    Only pharmacist-attested, versioned prescription SIG changes are allowed.
     """
     def __init__(self, base_url: str = "http://127.0.0.1:8008", *, timeout: float = 3):
         if not isinstance(base_url, str):
@@ -63,18 +65,32 @@ class LocalSessionWorkstationClient:
               params: dict | None = None, authenticated: bool = True) -> dict:
         if authenticated and not self._token:
             raise WorkstationConnectionError("Sign in to the synthetic workstation first", status=401)
-        # Exact endpoint allowlist: even accidental use of this transport
-        # from another Qt action cannot submit fill, Rx, payer or POS mutations.
+        # Exact allowlist: a very narrow reviewed SIG edit is the ONLY
+        # client-side mutation (aside from login/logout). Never use this
+        # method as a general-purpose pharmacy REST client.
+        rx_path = r"/api/prescriptions/[a-fA-F0-9-]{36}"
         public_login = method == "POST" and path == "/api/auth/login"
         logout = method == "POST" and path == "/api/auth/logout"
+        reviewed_sig_edit = method == "PATCH" and re.fullmatch(rx_path, path) is not None
         read = method == "GET" and (
             path in ("/api/auth/me", "/api/prescriptions/queue")
-            or re.fullmatch(
-                r"/api/prescriptions/[a-fA-F0-9-]{36}(?:/audit)?", path) is not None)
-        if not (public_login or logout or read):
-            raise ValueError("Read-only preview refuses this endpoint or HTTP method")
-        if public_login == authenticated or (payload is not None and not public_login):
+            or re.fullmatch(rx_path + r"(?:/audit|/edit-context)?", path) is not None)
+        if not (public_login or logout or read or reviewed_sig_edit):
+            raise ValueError("Read-only or reviewed-SIG preview refuses this endpoint or HTTP method")
+        if public_login == authenticated or (payload is not None and not (public_login or reviewed_sig_edit)):
             raise ValueError("Invalid preview authentication or request payload")
+        if reviewed_sig_edit:
+            if not authenticated or params:
+                raise ValueError("Reviewed SIG changes require an authenticated request without query parameters")
+            if not isinstance(payload, dict) or set(payload) != {"expected_version", "attestation_note", "changes"}:
+                raise ValueError("Only versioned, documented SIG changes may be submitted")
+            version, note, changes = (payload[k] for k in ("expected_version", "attestation_note", "changes"))
+            if (type(version) is not int or version < 0 or not isinstance(note, str)
+                    or not 12 <= len(note.strip()) <= 2000
+                    or not isinstance(changes, dict) or set(changes) != {"sig"}
+                    or not isinstance(changes["sig"], str)
+                    or not 1 <= len(changes["sig"].strip()) <= 4000):
+                raise ValueError("Invalid documented SIG change")
         path_url = self.base_url + path
         if params:
             path_url += "?" + urlencode(params)
@@ -107,7 +123,7 @@ class LocalSessionWorkstationClient:
                 message = f"Synthetic service returned HTTP {exc.code}"
             raise WorkstationConnectionError(message, status=exc.code) from None
         except (URLError, OSError, TimeoutError):
-            raise WorkstationConnectionError("Local synthetic Python service is unavailable") from None
+            raise WorkstationConnectionError("Local synthetic Python service is unavailable; verify current Rx and audit before retrying any edit") from None
         if len(content) > MAX_RESPONSE_BYTES:
             raise WorkstationConnectionError("Server response exceeds preview limit")
         try:
@@ -166,6 +182,40 @@ class LocalSessionWorkstationClient:
         if not isinstance(record.get("prescription"), dict):
             raise WorkstationConnectionError("Missing structured prescription detail")
         return record["prescription"]
+
+    def edit_context(self, rx_id: str) -> dict:
+        """Retrieve authoritative edit permission, current version and SIG.
+
+        The server will recheck all state under a locked transaction on PATCH.
+        """
+        data = self._call("GET", f"/api/prescriptions/{self._id(rx_id)}/edit-context")
+        values = data.get("values")
+        if (not isinstance(values, dict) or not isinstance(values.get("sig"), str)
+                or type(data.get("version")) is not int or data["version"] < 0
+                or not isinstance(data.get("editable"), bool)):
+            raise WorkstationConnectionError("Invalid review context from synthetic server")
+        return data
+
+    def review_sig(self, rx_id: str, *, sig: str, expected_version: int,
+                   attestation_note: str) -> dict:
+        """Submit exactly one reviewed SIG change. NEVER auto-retry after timeout.
+
+        The server may have committed even when a response was lost. Operators
+        must reread the current version and audit, not blindly resend a PATCH.
+        """
+        payload = {"expected_version": expected_version,
+                   "attestation_note": attestation_note,
+                   "changes": {"sig": sig}}
+        # _call validates the entire payload before any network request.
+        response = self._call("PATCH", f"/api/prescriptions/{self._id(rx_id)}",
+                              payload=payload)
+        if (type(response.get("version")) is not int or response["version"] <= expected_version
+                or response.get("prescription_id") != rx_id
+                or not isinstance(response.get("changed"), dict)
+                or set(response["changed"]) != {"sig"}):
+            raise WorkstationConnectionError(
+                "Uncertain server edit response; refresh prescription and audit before taking further action")
+        return response
 
     def audit(self, rx_id: str, *, limit: int = 100) -> dict:
         if type(limit) is not int or not 1 <= limit <= 200:

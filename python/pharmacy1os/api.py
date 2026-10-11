@@ -472,6 +472,12 @@ def create_app(service: PharmacyService | None = None, *, synthetic_enabled: boo
     def receive(payload: ReceiveIn, actor: DemoActor):
         return {"id": svc.receive(actor, **payload.model_dump())}
 
+    @app.get("/api/prescriptions/{rx_id}/edit-context")
+    def prescription_edit_context(rx_id: str, actor: DemoActor):
+        # Read-only capability and version snapshot. The PATCH handler is
+        # still authoritative and rechecks all guards under a row lock.
+        return PrescriptionEditService(svc).context(actor, rx_id)
+
     @app.patch("/api/prescriptions/{rx_id}")
     def edit_rx(rx_id: str, payload: RxEditIn, actor: DemoActor):
         return PrescriptionEditService(svc).update(

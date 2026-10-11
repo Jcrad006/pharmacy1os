@@ -154,3 +154,80 @@ def test_unreachable_server_fails_closed():
     client = LocalSessionWorkstationClient(f"http://127.0.0.1:{port}", timeout=0.5)
     with pytest.raises(WorkstationConnectionError, match="unavailable"):
         client.login("synthetic.staff", "Synthetic Password Only 2026")
+
+def test_two_authenticated_workstations_reject_stale_reviewed_sig(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    from pharmacy1os.service import Actor
+    admin_token = auth.login("preview.admin", "Synthetic Only Login 2026!")["access_token"]
+    admin = auth.verify(admin_token)
+    auth.provision(admin, actors["PHARMACIST"].id, "preview.pharm",
+                   "Synthetic Pharmacist Password 2026!")
+    first = LocalSessionWorkstationClient(url)
+    second = LocalSessionWorkstationClient(url)
+    first.login("preview.pharm", "Synthetic Pharmacist Password 2026!")
+    second.login("preview.pharm", "Synthetic Pharmacist Password 2026!")
+    context_a = first.edit_context(rx)
+    context_b = second.edit_context(rx)
+    assert context_a["editable"] and context_a["version"] == 0
+    assert context_b["version"] == 0
+    svc.advance_to_dur(actors["TECHNICIAN"], rx)
+    saved = first.review_sig(
+        rx, sig="Synthetic revised directions", expected_version=context_a["version"],
+        attestation_note="Reviewed fictitious directions with test prescriber")
+    assert saved["version"] == 1 and saved["status"] == "DATA_ENTRY"
+    assert second.detail(rx)["sig"] == "Synthetic revised directions"
+    with pytest.raises(WorkstationConnectionError) as stale:
+        second.review_sig(
+            rx, sig="Stale overwrite", expected_version=context_b["version"],
+            attestation_note="Another simulated review note for testing")
+    assert stale.value.status == 409
+    assert second.edit_context(rx)["version"] == 1
+    from pharmacy1os.prescription_edit import PrescriptionEditService
+    history = PrescriptionEditService(svc).history(actors["AUDITOR"], rx)
+    assert len(history) == 1
+    assert history[0]["version_before"] == 0 and history[0]["version_after"] == 1
+    assert "Reviewed fictitious directions" in history[0]["attestation_note"]
+    assert any(e["action"] == "RX_EDIT_REVIEWED" for e in first.audit(rx)["events"])
+    assert "fictitious directions" not in str(first.audit(rx))
+
+
+def test_reviewed_sig_server_enforces_permissions_and_site(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    technician = LocalSessionWorkstationClient(url)
+    technician.login("preview.tech", "Synthetic Technician Password 2026!")
+    context = technician.edit_context(rx)
+    assert not context["editable"] and context["version"] == 0
+    with pytest.raises(WorkstationConnectionError) as wrong_role:
+        technician.review_sig(
+            rx, sig="Unauthorized test edit", expected_version=0,
+            attestation_note="Technician cannot self-authorize this change")
+    assert wrong_role.value.status == 403
+    with pytest.raises(WorkstationConnectionError) as cross_site:
+        technician.edit_context(other_rx)
+    assert cross_site.value.status == 409
+    assert technician.detail(rx)["sig"] == "Mock once daily"
+
+
+def test_reviewed_sig_client_refuses_non_sig_edits_and_unversioned_patch(server):
+    svc, url, actors, outside, rx, other_rx, auth = server
+    reader = LocalSessionWorkstationClient(url)
+    reader.login("preview.tech", "Synthetic Technician Password 2026!")
+    path = f"/api/prescriptions/{rx}"
+    bad = [
+        {"expected_version": 0, "attestation_note": "Test review note with sufficient length",
+         "changes": {"quantity": "200"}},
+        {"expected_version": 0, "attestation_note": "Test review note with sufficient length",
+         "changes": {"sig": "Synthetic", "source_type": "FAX"}},
+        {"expected_version": True, "attestation_note": "Test review note with sufficient length",
+         "changes": {"sig": "Synthetic"}},
+        {"expected_version": 0, "attestation_note": "too short",
+         "changes": {"sig": "Synthetic"}},
+    ]
+    for payload in bad:
+        with pytest.raises(ValueError):
+            reader._call("PATCH", path, payload=payload)
+    with pytest.raises(ValueError):
+        reader._call("POST", path, payload=bad[0])
+    with pytest.raises(ValueError):
+        reader._call("PATCH", f"/api/fills/{rx}/verify", payload=bad[0])
+    assert reader.detail(rx)["sig"] == "Mock once daily"

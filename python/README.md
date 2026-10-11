@@ -24,7 +24,7 @@ It listens only on `127.0.0.1:8008`; synthetic actor headers are **not authentic
 
 ## Separate-process synthetic loopback workstation (read-only)
 
-The new opt-in network-boundary pilot uses `pharmacy1os-loopback-server` (localhost session API) and `pharmacy1os-loopback-desktop` (native Qt over authenticated HTTP; **no desktop DB access**). Both processes must run on the **same machine**. The client refuses remote hosts; do not use with real patients. Requires an Alembic-migrated disposable synthetic database and an offline-enrolled synthetic account. See [Increment 62 walkthrough](../docs/PYTHON_PARITY_PROGRESS_INCREMENT_62.md).
+The opt-in network-boundary pilot uses `pharmacy1os-loopback-server` (localhost session API) and `pharmacy1os-loopback-desktop` (native Qt over authenticated HTTP; **no desktop DB access**). Both processes must run on the **same machine**. Increment 63 adds only a pharmacist-reviewed, version-checked **SIG edit**, not general prescription mutation, dispensing or billing. The client refuses remote hosts; do not use with real patients. Requires an Alembic-migrated disposable synthetic database and an offline-enrolled synthetic account. See [Increment 62 walkthrough](../docs/PYTHON_PARITY_PROGRESS_INCREMENT_62.md) and [Increment 63 scope](../docs/PYTHON_PARITY_PROGRESS_INCREMENT_63.md).
 
 ## Tests
 
