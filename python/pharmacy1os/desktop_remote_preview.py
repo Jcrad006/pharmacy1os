@@ -421,10 +421,13 @@ def main() -> None:
             if self._close_after_lookup:
                 QTimer.singleShot(0, self.close)
             else:
-                self.edit_sig_button.setEnabled(
-                    recovery is not None and
-                    identity["role"] in ("PHARMACIST", "ADMIN"))
-                self.check_pending_button.setEnabled(recovery is not None)
+                live_identity = client.identity
+                allowed = (recovery is not None and live_identity is not None
+                           and live_identity.get("staff_id") == identity["staff_id"]
+                           and live_identity.get("site_id") == identity["site_id"]
+                           and live_identity.get("role") in ("PHARMACIST", "ADMIN"))
+                self.edit_sig_button.setEnabled(allowed)
+                self.check_pending_button.setEnabled(allowed)
 
         def reconcile_outstanding(self, checked=False, *, limit: int = 8):
             if recovery is None:
