@@ -887,7 +887,10 @@ class PharmacyService:
                 any(not isinstance(name, str) or not name.strip() for name in payers)):
             raise WorkflowError("Maximum four named COB payers")
         from .claim_transactions import require_no_open_test_rejections
+        from .rejection_batch import require_rejections_retried_for_preparation
         require_no_open_test_rejections(s, actor, f)
+        require_rejections_retried_for_preparation(
+            s, actor, f, selected_coverage_ids=coverage_ids)
         from .fill_completion import FillCompletion
         is_completion = s.scalar(select(FillCompletion.id).where(FillCompletion.fill_id == f.id)) is not None
         if is_completion and payers:

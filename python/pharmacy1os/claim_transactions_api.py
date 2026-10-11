@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from .claim_transactions import SandboxClaimService
+from .rejection_batch import RejectionBatchService
 from .service import Actor
 
 
@@ -21,6 +22,18 @@ class InjectRejectionIn(BaseModel):
 
 class ClearTestRejectionIn(BaseModel):
     note: str = Field(min_length=12, max_length=2000)
+
+
+class BatchRejectionPair(BaseModel):
+    rejection_id: str = Field(min_length=1)
+    expected_resolution_id: str = Field(min_length=1)
+
+
+class RetryBatchRejectionsIn(BaseModel):
+    fill_id: str = Field(min_length=1)
+    rejections: list[BatchRejectionPair] = Field(min_length=2, max_length=4)
+    coverage_ids: list[str] = Field(min_length=1, max_length=4)
+    reason: str = Field(min_length=12, max_length=2000)
 
 
 class RetryTestRejectionIn(BaseModel):
@@ -51,6 +64,14 @@ def make_claim_transaction_router(service: SandboxClaimService,
               actor: Actor = Depends(actor_dependency)):
         return {"id": service.resolve_rejection(actor, rejection_id, payload.note),
                 "synthetic_only": True, "external_approval": False}
+
+    @router.post("/third-party/test-rejections/retry-batch")
+    def retry_batch(payload: RetryBatchRejectionsIn,
+                    actor: Actor = Depends(actor_dependency)):
+        return RejectionBatchService(service.service).retry(
+            actor, payload.fill_id,
+            rejections=[pair.model_dump() for pair in payload.rejections],
+            coverage_ids=payload.coverage_ids, reason=payload.reason)
 
     @router.post("/third-party/test-rejections/{rejection_id}/retry")
     def retry(rejection_id: str, payload: RetryTestRejectionIn,

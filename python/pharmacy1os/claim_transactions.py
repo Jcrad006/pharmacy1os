@@ -374,6 +374,8 @@ class SandboxClaimService:
                 SandboxClaimTransaction.site_id == actor.site_id,
                 SandboxClaimTransaction.fill_id == fill.id,
                 SandboxClaimTransaction.operation == "TEST_REJECT")).all()
+            if len(rejects) != 1:
+                raise WorkflowError("Multiple test rejections require atomic batch retry")
             rejected_coverage_ids = {event.coverage_id for event in rejects}
             if not rejected_coverage_ids.issubset(set(coverage_ids)):
                 raise WorkflowError("Every previously rejected coverage must remain in the retry COB selection")

@@ -42,6 +42,7 @@ from .cob_selective_correction import SyntheticCobCorrectionService
 from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
+from .rejection_batch import RejectionBatchService
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
@@ -121,6 +122,7 @@ def main() -> None:
     fill_claim_review = FillClaimReview(service)
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
+    rejection_batch_service = RejectionBatchService(service)
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
@@ -407,6 +409,7 @@ def main() -> None:
                 self.action("View Rejection Queue", self.show_test_rejections)
                 self.action("Inject Development Test Rejection", self.inject_test_rejection)
                 self.action("Pharmacist Clear Test Rejection", self.clear_test_rejection)
+                self.action("Pharmacist Retry Multiple Test Rejections", self.retry_batch_rejections)
                 self.action("Pharmacist Retry Cleared Test Rejection", self.retry_test_rejection)
                 self.action("Claim History", self.claim_history)
                 self.action("Fill Claims / Labels / Print Events", self.view_fill_claim_review)
@@ -689,6 +692,49 @@ def main() -> None:
             sandbox_claims.resolve_rejection(self.actor, chosen["id"], note)
             QMessageBox.information(self, "Test hold cleared",
                 "Local development hold cleared; NO insurance approval was obtained.")
+
+        def retry_batch_rejections(self):
+            with service.sessions() as s:
+                service._authorized(s, self.actor, "correct")
+            queue = sandbox_claims.rejection_queue(self.actor)
+            fills = {}
+            for row in queue:
+                fills.setdefault(row["fill_id"], []).append(row)
+            candidates = []
+            for fill_id, holds in fills.items():
+                if 2 <= len(holds) <= 4 and all(
+                        h["status"] == "CLEARED_TEST_HOLD" for h in holds):
+                    with service.sessions() as s:
+                        fill = s.get(Fill, fill_id)
+                        if fill is None:
+                            continue
+                        rx = service._site(s, Prescription, fill.prescription_id, self.actor)
+                        patient_id = rx.patient_id
+                    coverages = insurance_service.list_coverages(self.actor, patient_id)
+                    ordered = [c["id"] for c in sorted(coverages,
+                        key=lambda c: c["position"]) if c["active"] and c["payer_active"]]
+                    order = {cid: position for position, cid in enumerate(ordered)}
+                    if (all(h["coverage_id"] in order for h in holds)
+                            and len(set(h["coverage_id"] for h in holds)) == len(holds)):
+                        candidates.append((fill_id, holds, ordered, order))
+            selected = self.choose_item("Multiple mock holds",
+                "Select a prepared-to-retry fill with 2–4 resolved test holds", candidates,
+                lambda x: f"Fill {x[0][:8]} | {len(x[1])} pharmacist-cleared holds")
+            fill_id, holds, coverage_ids, order = selected
+            note = self.ask("Batch mock rejection retry",
+                "Document correction and reason to retry all local test holds")
+            approve = QMessageBox.question(self, "Synthetic mock retry only",
+                f"Retry all {len(holds)} documented test holds and prepare one COB "
+                "chain? No real payer or printer will be contacted.")
+            if approve != QMessageBox.StandardButton.Yes:
+                return
+            result = rejection_batch_service.retry(self.actor, fill_id,
+                rejections=[{"rejection_id": h["id"],
+                             "expected_resolution_id": h["resolution_id"]}
+                            for h in sorted(holds, key=lambda h: order[h["coverage_id"]])],
+                coverage_ids=coverage_ids, reason=note)
+            QMessageBox.information(self, "Local test holds retried",
+                json.dumps(result, indent=2)[:12000])
 
         def retry_test_rejection(self):
             with service.sessions() as s:

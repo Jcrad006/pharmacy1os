@@ -921,3 +921,70 @@ def test_postgres_two_pharmacists_latest_corrected_cob_reverse_is_once_only():
                 for x in reversed(retired["claim_positions"])]==results[0]["reversal_transaction_ids"]
     finally:
         svc.engine.dispose()
+
+@pytest.mark.skipif(not os.getenv("PHARMACY1OS_PG_CI_URL"),
+                    reason="requires isolated PostgreSQL CI service")
+def test_postgres_concurrent_pharmacist_batch_rejection_replay():
+    """One atomic test retry and one replay despite two workstation requests."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    from threading import Barrier
+    from pharmacy1os.insurance import InsuranceDirectory
+    from pharmacy1os.rejection_batch import RejectionBatchService
+    from pharmacy1os.claim_transactions import SandboxClaimService
+    from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+    from pharmacy1os.models import Claim, Stock
+
+    url = os.environ["PHARMACY1OS_PG_CI_URL"]
+    if not url.startswith("postgresql+psycopg://"):
+        pytest.fail("requires isolated migrated PostgreSQL")
+    svc = PharmacyService(url)
+    try:
+        assert revision_at_head(svc.engine)
+        a = svc.bootstrap_demo()["actors"]
+        tech, pharm = a["TECHNICIAN"], a["PHARMACIST"]
+        pat = svc.add_patient(tech, "Concurrent", "MockBatch")
+        doc = svc.add_prescriber(tech, "Concurrent", "Doctor", "MD")
+        drug = svc.add_drug(pharm, "PostgreSQL test mock batch", "10mg", "tablet")
+        prod = svc.add_product(pharm, drug, "70003-4444-80", "Demo", "Local tablet")
+        svc.register_barcode(tech, prod, "PG-BATCH-RETRY-BAR")
+        exp = (date.today() + timedelta(days=200)).isoformat()
+        stock = svc.receive(tech, "PG-BATCH-RETRY-BAR", "PG-BATCH-LOT", exp, "90")
+        rx = svc.add_prescription(tech, pat, doc, drug,
+            "PG-BATCH-MOCK-RX", "once daily", "45")
+        svc.advance_to_dur(tech, rx)
+        fill = svc.start_fill(tech, rx)
+        svc.scan_source(tech, fill, "PG-BATCH-RETRY-BAR", "PG-BATCH-LOT", exp, "45")
+        insurance = InsuranceDirectory(svc)
+        payer1 = insurance.create_payer(pharm, "Concurrent Primary")
+        payer2 = insurance.create_payer(pharm, "Concurrent Secondary")
+        cov = [
+            insurance.upsert_coverage(pharm, pat, 1, payer1, "MOCK-ONLY-1"),
+            insurance.upsert_coverage(pharm, pat, 2, payer2, "MOCK-ONLY-2"),
+        ]
+        ledger = SandboxClaimService(svc)
+        ids = [ledger.inject_rejection(pharm, fill, cov[i], "TEST_75",
+                f"PG-BATCH-REJECT-{i}", "Synthetic rejection simulated by pharmacist")
+               for i in range(2)]
+        pairs = [{"rejection_id": rid, "expected_resolution_id":
+                  ledger.resolve_rejection(pharm, rid,
+                      "Pharmacist corrected the mock payer rejection")}
+                 for rid in ids]
+        barrier = Barrier(2)
+        def run():
+            barrier.wait(timeout=15)
+            return RejectionBatchService(svc).retry(
+                pharm, fill, rejections=pairs, coverage_ids=cov,
+                reason="Both mock holds cleared and batch payer retry authorized")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: run(), (1, 2)))
+        assert sorted(r["replayed"] for r in results) == [False, True], results
+        assert results[0]["retry_transaction_ids"] == results[1]["retry_transaction_ids"]
+        with svc.sessions() as s:
+            assert len(s.scalars(select(Claim).where(Claim.fill_id == fill)).all()) == 2
+            assert len(s.scalars(select(SandboxClaimTransaction).where(
+                SandboxClaimTransaction.fill_id == fill,
+                SandboxClaimTransaction.operation == "TEST_RETRY")).all()) == 2
+            assert s.get(Stock, stock).reserved == 45
+    finally:
+        svc.engine.dispose()
