@@ -23,6 +23,8 @@ class ReviewedEditRecovery:
         account = self.client.identity
         if account is None:
             raise JournalSafetyError("Session ended; sign in before reconciliation")
+        if account["role"] not in ("PHARMACIST", "ADMIN"):
+            raise JournalSafetyError("Review permissions changed; sign in with an authorized account")
         return {"site_id": account["site_id"], "staff_id": account["staff_id"],
                 "base_url": self.client.base_url}
 
@@ -30,7 +32,8 @@ class ReviewedEditRecovery:
                expected_status: str, attestation_note: str) -> dict:
         """No HTTP call unless the pending metadata was safely fsynced."""
         from .remote_review_fields import checked_review_changes
-        if not 12 <= len(attestation_note.strip()) <= 2000:
+        if (not isinstance(attestation_note, str)
+                or not 12 <= len(attestation_note.strip()) <= 2000):
             raise ValueError("Documented review attestation is required")
         checked_review_changes(changes)
         rx_id = self.client._id(rx_id)
