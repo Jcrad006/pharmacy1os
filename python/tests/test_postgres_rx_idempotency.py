@@ -101,3 +101,48 @@ def test_parallel_mismatched_uuid_reuse_rejected_without_second_edit(scenario):
         assert len(s.scalars(select(PrescriptionEditRequest).where(
             PrescriptionEditRequest.prescription_id == rx)).all()) == 1
     assert editor.request_status(pharmacist, rx, key)["result"] == saved[0]
+
+
+def test_parallel_status_hold_vs_cancel_obeys_row_lock_and_stale_version(scenario):
+    """One concurrent terminal wins; no duplicate status side effects."""
+    from pharmacy1os.lifecycle import LifecycleService
+    from pharmacy1os.models import Audit
+
+    svc, actors, rx = scenario
+    lifecycle = LifecycleService(svc)
+    with svc.sessions() as session:
+        initial = session.get(Prescription, rx)
+        before_status = initial.status
+        before_version = initial.version
+    assert before_status == "DUR_REVIEW"
+    barrier = Barrier(2)
+
+    def run(target):
+        barrier.wait(timeout=15)
+        try:
+            if target == "ON_HOLD":
+                lifecycle.hold(actors["TECHNICIAN"], rx,
+                    "Synthetic documented hold after clinical request",
+                    expected_version=before_version,
+                    expected_status=before_status)
+            else:
+                lifecycle.cancel(actors["PHARMACIST"], rx,
+                    "Synthetic documented cancellation before product fill",
+                    expected_version=before_version,
+                    expected_status=before_status)
+            return "COMMITTED"
+        except WorkflowError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(run, ("ON_HOLD", "CANCELLED")))
+    assert outcomes.count("COMMITTED") == 1
+    assert sum("changed on another workstation" in value for value in outcomes) == 1
+    with svc.sessions() as session:
+        current = session.get(Prescription, rx)
+        assert current.version == before_version + 1
+        assert current.status in ("ON_HOLD", "CANCELLED")
+        history = session.scalars(select(Audit).where(
+            Audit.subject_id == rx,
+            Audit.kind.in_(("RX_HELD", "RX_CANCELLED")))).all()
+        assert len(history) == 1
