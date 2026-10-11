@@ -21,6 +21,7 @@ def main() -> None:
         from PySide6.QtCore import Qt, QTimer, Slot
         from PySide6.QtGui import QKeySequence, QShortcut
         from .qt_recovery_worker import RecoveryLookupThread
+        from .qt_workstation_worker import WorkstationRequestThread
         from PySide6.QtWidgets import (
             QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QInputDialog,
             QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
@@ -78,6 +79,13 @@ def main() -> None:
             self._active_lookup_batch = None
             self._active_manual_request_id = None
             self._active_lookup_notify = False
+            self._request_thread = None
+            self._request_operation = None
+            self._request_context = None
+            self._next_request = None
+            self._review_draft = None
+            self._pending_submission = None
+            self._close_after_request = False
             self.resize(920, 630)
             central = QWidget()
             self.setCentralWidget(central)
@@ -162,12 +170,107 @@ def main() -> None:
                 QMessageBox.warning(self, "Refresh or sign in again", str(exc))
                 return None
 
+        def _request_busy(self) -> bool:
+            return self._request_thread is not None or self._lookup_busy
+
+        def _set_network_controls(self):
+            authorized = (client.identity is not None
+                          and client.identity.get("staff_id") == identity["staff_id"]
+                          and client.identity.get("site_id") == identity["site_id"])
+            available = (not self._request_busy() and not self._close_after_request
+                         and not self._close_after_lookup and authorized)
+            self.refresh_button.setEnabled(available)
+            self.edit_sig_button.setEnabled(
+                available and recovery is not None
+                and client.identity.get("role") in ("PHARMACIST", "ADMIN"))
+            if recovery is not None:
+                self.check_pending_button.setEnabled(available)
+
+        def _launch_request(self, operation, payload, *, context=None):
+            if self._request_thread is not None:
+                # Only retain the latest refresh/filter. Do not queue mutations,
+                # dialogs or clinical notes for automatic replay.
+                if operation == "queue":
+                    self._next_request = (operation, dict(payload), None)
+                return False
+            if self._lookup_busy or self._close_after_lookup or self._close_after_request:
+                return False
+            if client.identity is None:
+                self.info.setText("Session expired; sign in again")
+                self._set_network_controls()
+                return False
+            worker = WorkstationRequestThread(client, operation, payload)
+            self._request_thread = worker
+            self._request_operation = operation
+            self._request_context = context
+            self._set_network_controls()
+            self.info.setText(f"Checking synthetic {operation.replace('_', ' ')} on service…")
+            worker.completed.connect(
+                self._on_request_completed, Qt.ConnectionType.QueuedConnection)
+            worker.finished.connect(
+                self._on_request_finished, Qt.ConnectionType.QueuedConnection)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+            return True
+
+        @Slot(object)
+        def _on_request_completed(self, result):
+            operation = self._request_operation
+            context = self._request_context
+            if self._close_after_request:
+                # Durable request journal remains for next login; no false save.
+                return
+            if result[0] != "ok":
+                error = result[1]
+                code = error.get("status") if isinstance(error, dict) else None
+                self.info.setText(
+                    f"Server request {operation} failed (HTTP {code or 'unavailable'}). "
+                    "No automatic retry.")
+                if operation == "submit_review":
+                    # The server might have committed despite a lost response.
+                    self._pending_submission = None
+                    self._review_draft = None
+                    QTimer.singleShot(0, self.reconcile_outstanding)
+                elif operation in ("edit_context",):
+                    self._review_draft = None
+                self._set_network_controls()
+                return
+            data = result[1]
+            if operation == "queue":
+                self._render_queue(data)
+            elif operation == "detail":
+                self._display_detail(data)
+            elif operation == "audit":
+                self._display_audit(data)
+            elif operation == "edit_context":
+                self._received_edit_context(data, context)
+            elif operation == "submit_review":
+                self._received_submission(data, context)
+
+        @Slot()
+        def _on_request_finished(self):
+            self._request_thread = None
+            self._request_operation = None
+            self._request_context = None
+            if self._close_after_request:
+                QTimer.singleShot(0, self.close)
+                return
+            self._set_network_controls()
+            next_request = self._next_request
+            self._next_request = None
+            if next_request:
+                QTimer.singleShot(0, lambda: self._launch_request(
+                    next_request[0], next_request[1], context=next_request[2]))
+
         def reload(self, *args):
-            result = self._read(lambda: client.queue(
-                query=self.search.text().strip(), status=self.status.currentData(),
-                sort=self.sort.currentData(), limit=100))
-            if result is None:
-                self.table.setRowCount(0)
+            self._launch_request("queue", {
+                "query": self.search.text().strip(),
+                "status": self.status.currentData(),
+                "sort": self.sort.currentData(), "limit": 100})
+
+        def _render_queue(self, result):
+            if not isinstance(result, dict) or not isinstance(result.get("prescriptions"), list):
+                self.info.setText("Malformed prescription queue; refresh required")
                 return
             items = result["prescriptions"]
             self.table.setRowCount(len(items))
@@ -180,8 +283,8 @@ def main() -> None:
                     record.get("status", ""),
                     record.get("updatedAt") or "unknown",
                 ]
-                for col, text in enumerate(values):
-                    cell = QTableWidgetItem(str(text))
+                for col, text_value in enumerate(values):
+                    cell = QTableWidgetItem(str(text_value))
                     if col == 0:
                         cell.setData(Qt.ItemDataRole.UserRole, record.get("id"))
                     self.table.setItem(row, col, cell)
