@@ -6,7 +6,9 @@ inferred from a user-typed clinical attestation.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+from uuid import UUID
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -45,6 +47,70 @@ class PrescriptionEdit(Base):
         UniqueConstraint("prescription_id", "version_after", name="uq_py_rx_edit_version"),
         CheckConstraint("version_after = version_before + 1", name="ck_py_rx_edit_increment"),
     )
+
+
+
+class PrescriptionEditRequest(Base):
+    """Committed, site-scoped immutable Rx review receipt (no free-text duplication)."""
+    __tablename__ = "py_rx_edit_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid)
+    site_id: Mapped[str] = mapped_column(ForeignKey("py_sites.id"), nullable=False, index=True)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    prescription_id: Mapped[str] = mapped_column(ForeignKey("py_prescriptions.id"), nullable=False)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("py_staff.id"), nullable=False)
+    edit_id: Mapped[str] = mapped_column(ForeignKey("py_prescription_edits.id"),
+                                          nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    response_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True),
+                                             nullable=False, default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("site_id", "request_id", name="uq_py_rx_edit_request_site_key"),
+    )
+
+
+def _request_key(value: str) -> str:
+    if not isinstance(value, str) or len(value) != 36:
+        raise WorkflowError("Reviewed edit request ID must be a UUIDv4")
+    try:
+        parsed = UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise WorkflowError("Reviewed edit request ID must be a UUIDv4") from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise WorkflowError("Reviewed edit request ID must be a canonical UUIDv4")
+    return value
+
+
+def _canonical(value: dict) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True, allow_nan=False)
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _verified_receipt(s: Session, receipt: PrescriptionEditRequest) -> dict:
+    if _sha(receipt.response_json) != receipt.response_sha256:
+        raise WorkflowError("Stored prescription edit receipt integrity failure")
+    try:
+        body = json.loads(receipt.response_json)
+    except (ValueError, TypeError) as exc:
+        raise WorkflowError("Stored prescription edit receipt cannot be decoded") from exc
+    edit = s.get(PrescriptionEdit, receipt.edit_id)
+    if (not isinstance(body, dict) or edit is None
+            or edit.site_id != receipt.site_id
+            or edit.prescription_id != receipt.prescription_id
+            or edit.actor_id != receipt.actor_id
+            or body.get("id") != edit.id
+            or body.get("prescription_id") != receipt.prescription_id
+            or body.get("version") != edit.version_after
+            or body.get("status") != edit.resulting_status
+            or body.get("request_id") != receipt.request_id
+            or body.get("changed") != json.loads(edit.changes_json)):
+        raise WorkflowError("Stored prescription edit receipt does not match immutable edit record")
+    return body
 
 
 def _iso_date(value: Any, field: str) -> str | None:
@@ -124,7 +190,8 @@ class PrescriptionEditService:
 
     def update(self, actor: Actor, prescription_id: str, changes: dict[str, Any],
                expected_version: int, attestation_note: str,
-               *, expected_status: str | None = None) -> dict[str, Any]:
+               *, expected_status: str | None = None,
+               request_id: str | None = None) -> dict[str, Any]:
         if (isinstance(expected_version, bool) or not isinstance(expected_version, int)
                 or expected_version < 0):
             raise WorkflowError("Expected version must be a nonnegative integer")
@@ -137,6 +204,18 @@ class PrescriptionEditService:
                 len(changes) > len(EDITABLE) or
                 any(field not in EDITABLE for field in changes)):
             raise WorkflowError("Unsupported prescription edits or immutable source fields")
+        key = _request_key(request_id) if request_id is not None else None
+        fingerprint = None
+        if key is not None:
+            try:
+                fingerprint = _sha(_canonical({
+                    "actor_id": actor.id, "site_id": actor.site_id,
+                    "prescription_id": prescription_id, "changes": changes,
+                    "expected_version": expected_version,
+                    "expected_status": expected_status, "attestation_note": note,
+                }))
+            except (TypeError, ValueError) as exc:
+                raise WorkflowError("Reviewed edit request is not serializable") from exc
         with self.service.sessions.begin() as s:
             self.service._authorized(s, actor, "clinical")
             rx = s.scalar(select(Prescription).where(
@@ -144,6 +223,18 @@ class PrescriptionEditService:
                 Prescription.site_id == actor.site_id).with_for_update())
             if rx is None:
                 raise WorkflowError("Prescription not found at pharmacy site")
+            # Lock the prescription BEFORE looking up a receipt: PostgreSQL
+            # serializes requests for the same Rx, including duplicate tokens.
+            if key is not None:
+                existing = s.scalar(select(PrescriptionEditRequest).where(
+                    PrescriptionEditRequest.site_id == actor.site_id,
+                    PrescriptionEditRequest.request_id == key))
+                if existing is not None:
+                    if (existing.actor_id != actor.id
+                            or existing.prescription_id != prescription_id
+                            or existing.request_sha256 != fingerprint):
+                        raise WorkflowError("Reviewed edit request ID reused with different content or actor")
+                    return _verified_receipt(s, existing)
             if rx.version != expected_version:
                 raise WorkflowError("Prescription version changed; reload before editing")
             if expected_status is not None and rx.status != expected_status:
@@ -225,8 +316,39 @@ class PrescriptionEditService:
                 "original_source_mutated": False, "prior_status": old_status,
                 "resulting_status": rx.status,
             })
-            return {"id": event.id, "prescription_id": rx.id, "version": rx.version,
-                    "status": rx.status, "changed": before_after}
+            result = {"id": event.id, "prescription_id": rx.id, "version": rx.version,
+                      "status": rx.status, "changed": before_after}
+            if key is not None:
+                result["request_id"] = key
+                rendered = _canonical(result)
+                s.add(PrescriptionEditRequest(
+                    site_id=actor.site_id, request_id=key,
+                    prescription_id=rx.id, actor_id=actor.id,
+                    edit_id=event.id, request_sha256=fingerprint,
+                    response_json=rendered, response_sha256=_sha(rendered)))
+                s.flush()
+            return result
+
+    def request_status(self, actor: Actor, prescription_id: str, request_id: str) -> dict:
+        """Read-only outcome lookup; NOT_RECORDED does not mean safe to retry.
+
+        In-flight transactions can be invisible. A recorded receipt proves that
+        *this actor* successfully committed the original request.
+        """
+        key = _request_key(request_id)
+        with self.service.sessions() as s:
+            self.service._authorized(s, actor, "clinical")
+            self.service._site(s, Prescription, prescription_id, actor)
+            row = s.scalar(select(PrescriptionEditRequest).where(
+                PrescriptionEditRequest.site_id == actor.site_id,
+                PrescriptionEditRequest.request_id == key))
+            if row is None:
+                return {"state": "NOT_RECORDED", "request_id": key,
+                        "safe_to_retry": False}
+            if row.actor_id != actor.id or row.prescription_id != prescription_id:
+                raise WorkflowError("Reviewed edit request not found for this actor/prescription")
+            return {"state": "RECORDED", "request_id": key,
+                    "result": _verified_receipt(s, row)}
 
     def history(self, actor: Actor, prescription_id: str) -> list[dict[str, Any]]:
         with self.service.sessions() as s:
