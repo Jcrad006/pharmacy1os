@@ -77,7 +77,13 @@ def test_rejection_holds_fill_until_pharmacist_documents_clearance(env):
     with pytest.raises(WorkflowError, match="already cleared"):
         ledger.resolve_rejection(a["PHARMACIST"], rejection_id,
             "Duplicate resolution should not be accepted")
-    svc.prepare_for_review(a["TECHNICIAN"], fill, [], coverage_ids=[coverage])
+    with pytest.raises(WorkflowError, match="pharmacist resolution and retry"):
+        svc.prepare_for_review(a["TECHNICIAN"], fill, [], coverage_ids=[coverage])
+    result = ledger.retry_cleared_rejection(a["PHARMACIST"], rejection_id,
+        expected_resolution_id=cleared, coverage_ids=[coverage],
+        reason="Explicit pharmacist retry after locally resolving the simulated insurance hold")
+    assert len(result["claim_ids"]) == 1
+    assert ledger.rejection_queue(a["AUDITOR"])[0]["status"] == "RETRY_PREPARED_SYNTHETIC"
     with svc.sessions() as s:
         assert len(s.scalars(select(Claim)).all()) == 1
 
