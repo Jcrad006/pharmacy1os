@@ -12,10 +12,12 @@ from pharmacy1os.api import create_app
 from pharmacy1os.claim_rebilling import ClaimRebillService
 from pharmacy1os.claim_transactions import SandboxClaimService, _canonical, _record
 from pharmacy1os.claim_transactions_models import SandboxClaimTransaction
+from pharmacy1os.insurance_models import PatientCoverage
 from pharmacy1os.insurance import InsuranceDirectory
 from pharmacy1os.models import Claim, Fill, Prescription, Stock
 from pharmacy1os.service import PharmacyService, WorkflowError
 from pharmacy1os.third_party_exceptions import ThirdPartyExceptionQueue
+from pharmacy1os.third_party_retry_planner import ThirdPartyRetryPlanner
 
 
 @pytest.fixture
@@ -256,3 +258,74 @@ def test_rehashed_retry_with_wrong_coverage_selection_is_rejected(case):
         item.request_sha256 = hashlib.sha256(item.request_json.encode("utf-8")).hexdigest()
     with pytest.raises(WorkflowError, match="ordered payer claim evidence"):
         ThirdPartyExceptionQueue(svc).snapshot(a["AUDITOR"])
+
+
+def test_third_party_retry_planner_single_resolved_hold_and_explicit_no_live_claims(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    planner = ThirdPartyRetryPlanner(svc)
+    reject = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_75", "WORKBENCH-SINGLE-REJECTION",
+        "Synthetic local retry planning for pharmacist review")
+    with pytest.raises(WorkflowError, match="clearance"):
+        planner.plan(a["AUDITOR"], fill)
+    resolution = ledger.resolve_rejection(a["PHARMACIST"], reject,
+        "Pharmacist reviewed the deliberately simulated coverage hold")
+    plan = planner.plan(a["AUDITOR"], fill)
+    assert plan["mode"] == "SINGLE" and plan["test_holds"] == 1
+    assert plan["rejections"][0]["rejection_id"] == reject
+    assert plan["rejections"][0]["expected_resolution_id"] == resolution
+    assert plan["coverage_ids"] == coverages
+    assert plan["external_submission"] is False
+    assert "SECRET-MEMBER" not in str(plan)
+    assert "not_payer_approval" in plan["warning"].lower()
+    with pytest.raises(WorkflowError):
+        planner.plan(outside["AUDITOR"], fill)
+    ledger.retry_cleared_rejection(a["PHARMACIST"], reject,
+        expected_resolution_id=plan["rejections"][0]["expected_resolution_id"],
+        coverage_ids=plan["coverage_ids"],
+        reason="Pharmacist prepared simulated ordered coverage claims only")
+    with pytest.raises(WorkflowError, match="Product Fill|payer or label history"):
+        planner.plan(a["PHARMACIST"], fill)
+
+
+def test_third_party_retry_planner_batch_requires_all_cleared_and_ordered(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    first = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_70", "WORKBENCH-REJECT-POS-ONE",
+        "Simulated first payer rejection requiring manual test review")
+    second = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[1],
+        "TEST_79", "WORKBENCH-REJECT-POS-TWO",
+        "Simulated second payer rejection requiring manual test review")
+    ledger.resolve_rejection(a["PHARMACIST"], second,
+        "Clear secondary mock hold before clearing first payer hold")
+    with pytest.raises(WorkflowError, match="clearance"):
+        ThirdPartyRetryPlanner(svc).plan(a["AUDITOR"], fill)
+    ledger.resolve_rejection(a["PHARMACIST"], first,
+        "Clear primary mock hold after review of the test evidence")
+    plan = ThirdPartyRetryPlanner(svc).plan(a["AUDITOR"], fill)
+    assert plan["mode"] == "BATCH" and plan["test_holds"] == 2
+    assert [p["coverage_position"] for p in plan["rejections"]] == [1, 2]
+    assert [p["rejection_id"] for p in plan["rejections"]] == [first, second]
+    assert plan["coverage_ids"] == coverages
+
+
+def test_third_party_retry_planner_rejects_stale_coverage_and_tampering(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    rejection = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_75", "WORKBENCH-STALE-COVERAGE",
+        "Synthetic test rejection for active coverage drift validation")
+    ledger.resolve_rejection(a["PHARMACIST"], rejection,
+        "Pharmacist cleared test hold before payer position was changed")
+    with svc.sessions.begin() as s:
+        s.get(PatientCoverage, coverages[0]).active = False
+    with pytest.raises(WorkflowError, match="COB coverage order"):
+        ThirdPartyRetryPlanner(svc).plan(a["AUDITOR"], fill)
+    with svc.sessions.begin() as s:
+        s.get(PatientCoverage, coverages[0]).active = True
+        tx = s.get(SandboxClaimTransaction, rejection)
+        tx.request_json = '{"modified":"broken"}'
+    with pytest.raises(WorkflowError, match="integrity"):
+        ThirdPartyRetryPlanner(svc).plan(a["AUDITOR"], fill)

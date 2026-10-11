@@ -44,6 +44,7 @@ from .fill_claim_review import FillClaimReview
 from .insurance import InsuranceDirectory
 from .claim_transactions import SandboxClaimService
 from .rejection_batch import RejectionBatchService
+from .third_party_retry_planner import ThirdPartyRetryPlanner
 from .willcall import WillCallService
 from .pos import PosService
 from .patient_directory import PatientDirectory
@@ -83,6 +84,7 @@ def main() -> None:
         raise SystemExit("Install the native UI dependency: pip install -e './python[desktop]'") from exc
 
     from .desktop_prescription import PrescriptionDetailDialog
+    from .desktop_third_party import ThirdPartyExceptionDialog
 
     base = Path.home() / ".pharmacy1os" / "synthetic"
     base.mkdir(parents=True, exist_ok=True)
@@ -125,6 +127,7 @@ def main() -> None:
     insurance_service = InsuranceDirectory(service)
     sandbox_claims = SandboxClaimService(service)
     rejection_batch_service = RejectionBatchService(service)
+    third_party_retry_planner = ThirdPartyRetryPlanner(service)
     will_call_service = WillCallService(service)
     pos_service = PosService(service)
     patient_directory = PatientDirectory(service)
@@ -400,6 +403,7 @@ def main() -> None:
                 self.action("Cancel Manual / Reorder Demand", self.cancel_inventory_demand)
                 self.action("View Demand History", self.view_inventory_demand_history)
             elif page == 9:
+                self.action("Interactive Third Party Exception Worklist", self.open_third_party_worklist)
                 self.action("Create Synthetic Payer", self.create_payer)
                 self.action("View Payers", self.show_payers)
                 self.action("Set Patient Coverage Position", self.set_coverage)
@@ -960,6 +964,13 @@ def main() -> None:
                 self.actor, patient_id, limit=25, offset=0)
             QMessageBox.information(self, "Patient synthetic COB / rejection history",
                 json.dumps(report, indent=2)[:24000])
+
+        def open_third_party_worklist(self):
+            dialog = ThirdPartyExceptionDialog(
+                self.actor, third_party_exception_queue,
+                third_party_retry_planner, sandbox_claims,
+                rejection_batch_service, parent=self)
+            dialog.exec()
 
         def view_third_party_exceptions(self):
             category = self.ask("Synthetic Third Party Exceptions",
