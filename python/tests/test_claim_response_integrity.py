@@ -80,7 +80,7 @@ def test_changed_paid_response_blocks_history_ready_and_correction(case):
         FillClaimReview(svc).detail(a["AUDITOR"], fill)
     with pytest.raises(WorkflowError, match="response integrity"):
         ThirdPartyWorkspace(svc).snapshot(a["AUDITOR"])
-    with pytest.raises(WorkflowError, match="response integrity"):
+    with pytest.raises(WorkflowError, match="manual billing reconciliation"):
         svc.verify(a["PHARMACIST"], fill)
     with pytest.raises(WorkflowError, match="response integrity"):
         SyntheticCobCorrectionService(svc).correct(
@@ -184,5 +184,5 @@ def test_original_response_cannot_be_silently_replaced_after_selective_correctio
         tx.response_json = '{"outcome":"PAID_SYNTHETIC","authorization_number":"FAKE"}'
     with pytest.raises(WorkflowError, match="response integrity"):
         CobAttemptRegistry(svc).history(a["AUDITOR"], fill)
-    with pytest.raises(WorkflowError, match="response integrity"):
+    with pytest.raises(WorkflowError, match="manual billing reconciliation"):
         svc.verify(a["PHARMACIST"], fill)
