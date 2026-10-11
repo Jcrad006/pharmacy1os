@@ -176,3 +176,22 @@ def test_exception_queue_api_is_synthetic_and_role_scoped(case):
     assert demo.get(endpoint, headers={"x-demo-staff-id": outside["AUDITOR"].id}).json()["items"] == []
     assert demo.get("/api/third-party/exception-queue?limit=51",
         headers=header).status_code == 409
+
+
+def test_filtered_cleared_hold_not_lost_beyond_first_page_of_newer_open_holds(case):
+    svc, a, outside, patient, rx, fill, stock, exp, coverages = case
+    ledger = SandboxClaimService(svc)
+    earlier = ledger.inject_rejection(a["PHARMACIST"], fill, coverages[0],
+        "TEST_75", "EXCEPTION-PAGE-OLD-CLEARED",
+        "Oldest pharmacist-reviewed simulated hold in the workqueue")
+    ledger.resolve_rejection(a["PHARMACIST"], earlier,
+        "Cleared the original mock hold before newer test failures were injected")
+    for index in range(31):
+        ledger.inject_rejection(a["PHARMACIST"], fill, coverages[1],
+            "TEST_79", f"EXCEPTION-PAGE-OPEN-{index:04}",
+            "Newer test rejection created to challenge filtered queue pagination")
+    # A capped first 26 event candidates would incorrectly hide this work item.
+    result = ThirdPartyExceptionQueue(svc).snapshot(
+        a["AUDITOR"], status="CLEARED_AWAITING_RETRY", limit=1)
+    assert [x["event_id"] for x in result["items"]] == [earlier]
+    assert result["next_offset"] is None

@@ -70,7 +70,8 @@ class ThirdPartyExceptionQueue:
                  )),
              ).order_by(
                  SandboxClaimTransaction.recorded_at.desc(),
-                 SandboxClaimTransaction.id.desc()).limit(bound)).all()
+                 SandboxClaimTransaction.id.desc()).limit(
+                     bound if status == "ALL" else None)).all()
             ids = [tx.id for tx, *_ in unresolved]
             related = s.scalars(select(SandboxClaimTransaction).where(
                 SandboxClaimTransaction.site_id == actor.site_id,
@@ -154,7 +155,10 @@ class ThirdPartyExceptionQueue:
                  SyntheticRebillLink.site_id == actor.site_id,
                  Prescription.site_id == actor.site_id,
                  Patient.site_id == actor.site_id,
-                 Fill.status.in_(("PRODUCT_FILL", "PHARMACIST_REVIEW")),
+                 Fill.status.in_(
+                     ("PRODUCT_FILL",) if status == "REPLACEMENT_RESCAN_REQUIRED"
+                     else ("PHARMACIST_REVIEW",) if status == "REPLACEMENT_PHARMACIST_REVIEW"
+                     else ("PRODUCT_FILL", "PHARMACIST_REVIEW")),
              ).order_by(
                  SyntheticRebillLink.created_at.desc(),
                  SyntheticRebillLink.id.desc()).limit(bound)).all()
